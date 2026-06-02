@@ -1,0 +1,9 @@
+pandas
+openpyxl
+PyMuPDF
+numpy
+paddlepaddle
+paddleocr
+opencv-python-headless
+pyinstaller
+pytest

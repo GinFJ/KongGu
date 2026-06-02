@@ -1,0 +1,16 @@
+{
+  "description": "青禾计划 · 空谷默认节次时间表。每节课 45 分钟，包含中午和晚上 9-11 节。",
+  "periods": [
+    {"period": 1, "start": "08:00", "end": "08:45", "label": "第1节"},
+    {"period": 2, "start": "08:50", "end": "09:35", "label": "第2节"},
+    {"period": 3, "start": "09:50", "end": "10:35", "label": "第3节"},
+    {"period": 4, "start": "10:40", "end": "11:25", "label": "第4节"},
+    {"period": 5, "start": "12:40", "end": "13:25", "label": "第5节（中午）"},
+    {"period": 6, "start": "13:30", "end": "14:15", "label": "第6节"},
+    {"period": 7, "start": "14:30", "end": "15:15", "label": "第7节"},
+    {"period": 8, "start": "15:20", "end": "16:05", "label": "第8节"},
+    {"period": 9, "start": "18:30", "end": "19:15", "label": "第9节（晚上）"},
+    {"period": 10, "start": "19:20", "end": "20:05", "label": "第10节（晚上）"},
+    {"period": 11, "start": "20:10", "end": "20:55", "label": "第11节（晚上）"}
+  ]
+}

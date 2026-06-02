@@ -1,0 +1,15 @@
+{
+  "description": "空谷扫描件 OCR 离线模型配置。默认使用更轻量的 PP-OCRv4 mobile 中文检测与识别模型。",
+  "models": [
+    {
+      "name": "PP-OCRv4_mobile_det",
+      "type": "text_detection",
+      "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv4_mobile_det_infer.tar"
+    },
+    {
+      "name": "PP-OCRv4_mobile_rec",
+      "type": "text_recognition",
+      "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv4_mobile_rec_infer.tar"
+    }
+  ]
+}

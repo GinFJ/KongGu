@@ -1,0 +1,7 @@
+{
+  "description": "默认学期配置。后续阶段会支持读取真实校历文件或特殊调课。",
+  "semester_start_date": "2026-03-02",
+  "teaching_weeks": 18,
+  "weekdays": ["周一", "周二", "周三", "周四", "周五", "周六", "周日"],
+  "special_adjustments": []
+}
