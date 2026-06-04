@@ -30,7 +30,7 @@ def test_course_block_and_availability_slot_models():
         date="2026-03-16",
         weekday="周一",
         period=1,
-        time_range="08:00-08:45",
+        time_range="08:10-08:55",
         free_members=["李四", "王五"],
         busy_members=["张三"],
     )
