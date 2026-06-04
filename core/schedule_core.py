@@ -34,6 +34,11 @@ PERIOD_GROUPS = {
     "9-11": [9, 10, 11],
 }
 
+NOON_PERIOD_TIMES = {
+    12: ("12:40", "13:25"),
+    13: ("13:30", "14:15"),
+}
+
 NON_CLASS_KEYWORDS = {
     "",
     "午",
@@ -47,7 +52,7 @@ NON_CLASS_KEYWORDS = {
 
 _OCR_ENGINE = None
 LOGGER = logging.getLogger("konggu")
-PARSE_CACHE_VERSION = 10
+PARSE_CACHE_VERSION = 12
 OCR_LAYOUT_CACHE_VERSION = 1
 NAME_STOPWORDS = {
     "办公室",
@@ -112,17 +117,17 @@ def _source_digest(source: dict[str, Any]) -> str:
 def default_timetable() -> pd.DataFrame:
     return pd.DataFrame(
         [
-            {"period": 1, "start": "08:00", "end": "08:45"},
-            {"period": 2, "start": "08:50", "end": "09:35"},
-            {"period": 3, "start": "09:50", "end": "10:35"},
-            {"period": 4, "start": "10:40", "end": "11:25"},
-            {"period": 5, "start": "12:40", "end": "13:25"},
-            {"period": 6, "start": "13:30", "end": "14:15"},
-            {"period": 7, "start": "14:30", "end": "15:15"},
-            {"period": 8, "start": "15:20", "end": "16:05"},
-            {"period": 9, "start": "18:30", "end": "19:15"},
-            {"period": 10, "start": "19:20", "end": "20:05"},
-            {"period": 11, "start": "20:10", "end": "20:55"},
+            {"period": 1, "start": "08:10", "end": "08:55"},
+            {"period": 2, "start": "09:00", "end": "09:45"},
+            {"period": 3, "start": "10:15", "end": "11:00"},
+            {"period": 4, "start": "11:05", "end": "11:50"},
+            {"period": 5, "start": "14:30", "end": "15:15"},
+            {"period": 6, "start": "15:20", "end": "16:05"},
+            {"period": 7, "start": "16:25", "end": "17:10"},
+            {"period": 8, "start": "17:15", "end": "18:00"},
+            {"period": 9, "start": "19:10", "end": "19:55"},
+            {"period": 10, "start": "20:00", "end": "20:45"},
+            {"period": 11, "start": "20:50", "end": "21:35"},
         ]
     )
 
@@ -134,6 +139,15 @@ def validate_timetable(timetable: pd.DataFrame) -> tuple[pd.DataFrame, list[str]
     clean = timetable.copy()
     clean["period"] = clean["period"].astype(int)
     return clean.sort_values("period").reset_index(drop=True), []
+
+
+def period_time_range(period: int) -> str:
+    if int(period) in NOON_PERIOD_TIMES:
+        start, end = NOON_PERIOD_TIMES[int(period)]
+        return f"{start}-{end}"
+    timetable = default_timetable().set_index("period")
+    row = timetable.loc[int(period)]
+    return f"{row['start']}-{row['end']}"
 
 
 def infer_pdf_kind(file_name: str, path: str = "") -> str:
@@ -213,6 +227,84 @@ def _write_parse_cache(source: dict[str, Any], kind: str, blocks: list[dict[str,
         LOGGER.warning("解析缓存写入失败: %s error=%s", cache_path.name, exc)
 
 
+def _open_pdf_document(source: dict[str, Any]) -> Any | None:
+    try:
+        import fitz
+    except Exception:
+        return None
+
+    path = _source_path(source)
+    content = _source_bytes(source)
+    try:
+        if path and Path(path).exists():
+            return fitz.open(path)
+        if content:
+            return fitz.open(stream=content, filetype="pdf")
+    except Exception:
+        return None
+    return None
+
+
+def _page_words(page: Any) -> list[dict[str, Any]]:
+    return [
+        {
+            "x0": float(word[0]),
+            "y0": float(word[1]),
+            "x1": float(word[2]),
+            "y1": float(word[3]),
+            "text": str(word[4]).replace("\xa0", " ").strip(),
+        }
+        for word in page.get_text("words")
+        if str(word[4]).replace("\xa0", " ").strip()
+    ]
+
+
+def _item_center(item: dict[str, Any]) -> tuple[float, float]:
+    return ((float(item["x0"]) + float(item["x1"])) / 2, (float(item["y0"]) + float(item["y1"])) / 2)
+
+
+def _cluster_items_by_y(items: list[dict[str, Any]], tolerance: float) -> list[list[dict[str, Any]]]:
+    groups: list[list[dict[str, Any]]] = []
+    for item in sorted(items, key=lambda value: (_item_center(value)[1], value["x0"])):
+        center_y = _item_center(item)[1]
+        for group in groups:
+            group_y = sum(_item_center(value)[1] for value in group) / len(group)
+            if abs(group_y - center_y) <= tolerance:
+                group.append(item)
+                break
+        else:
+            groups.append([item])
+    return groups
+
+
+def _x_bands(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ordered = sorted(columns, key=lambda column: column["center"])
+    if not ordered:
+        return []
+    centers = [float(column["center"]) for column in ordered]
+    gaps = [b - a for a, b in zip(centers, centers[1:]) if b > a]
+    edge_pad = max(18.0, (min(gaps) if gaps else 45.0) * 0.55)
+    bands: list[dict[str, Any]] = []
+    for index, column in enumerate(ordered):
+        left = (centers[index - 1] + centers[index]) / 2 if index else centers[index] - edge_pad
+        right = (centers[index] + centers[index + 1]) / 2 if index + 1 < len(centers) else centers[index] + edge_pad
+        bands.append({**column, "left": left, "right": right})
+    return bands
+
+
+def _pick_x_band(bands: list[dict[str, Any]], x_center: float) -> dict[str, Any] | None:
+    for band in bands:
+        if band["left"] <= x_center < band["right"]:
+            return band
+    if not bands:
+        return None
+    nearest = min(bands, key=lambda band: abs(band["center"] - x_center))
+    gap = min((b["right"] - b["left"] for b in bands), default=36.0)
+    if abs(nearest["center"] - x_center) <= max(18.0, gap * 0.55):
+        return nearest
+    return None
+
+
 def parse_actual_pdf_sources(
     sources: list[dict[str, Any]],
     uploaded_calendar_df: pd.DataFrame | None = None,
@@ -270,10 +362,12 @@ def parse_actual_pdf_sources(
                     parsed = _parse_chinese_text(ocr_text, file_name) if kind == "中方" else _parse_english_text(ocr_text, file_name)
             if not parsed:
                 parsed = (
-                    _parse_chinese_ocr_legacy_layout(source, file_name)
+                    _parse_chinese_ocr_table_layout(source, file_name)
                     if kind == "中方"
                     else _parse_english_ocr_week_grid(source, file_name)
                 )
+            if not parsed and kind == "中方":
+                parsed = _parse_chinese_ocr_legacy_layout(source, file_name)
             if parsed:
                 parsed = _finalize_parsed_blocks(parsed, file_name, kind)
                 LOGGER.info("文件解析完成: %s blocks=%s", file_name, len(parsed))
@@ -336,7 +430,6 @@ def build_slot_table(
     weekdays: list[str],
     periods: list[int],
 ) -> pd.DataFrame:
-    timetable = default_timetable().set_index("period")
     rows: list[dict[str, Any]] = []
     calendar = synthesize_calendar_from_blocks(
         [{"week": week, "weekday": weekday, "date": _date_for_weekday(week, weekday).isoformat()} for week in weeks for weekday in weekdays]
@@ -348,14 +441,13 @@ def build_slot_table(
             for period in periods:
                 occupied = set(occupancy.get((week, weekday, period), set()))
                 free = sorted(all_students - occupied)
-                period_row = timetable.loc[period]
                 rows.append(
                     {
                         "week": week,
                         "date": date_lookup.get((week, weekday), _date_for_weekday(week, weekday).isoformat()),
                         "weekday": weekday,
                         "period": period,
-                        "time": f"{period_row['start']}-{period_row['end']}",
+                        "time": period_time_range(period),
                         "free_count": len(free),
                         "free_members": "、".join(free),
                         "occupied_count": len(occupied),
@@ -470,15 +562,13 @@ def build_empty_schedule_excel_bytes(
 
 
 def _extract_pdf_text(source: dict[str, Any]) -> str:
-    import fitz
-
-    path = _source_path(source)
-    content = _source_bytes(source)
-    if path and Path(path).exists():
-        doc = fitz.open(path)
-    else:
-        doc = fitz.open(stream=content or b"", filetype="pdf")
-    return "\n".join(page.get_text("text") for page in doc)
+    doc = _open_pdf_document(source)
+    if doc is None:
+        return ""
+    try:
+        return "\n".join(page.get_text("text") for page in doc)
+    finally:
+        doc.close()
 
 
 def _is_usable_extracted_text(text: str, kind: str) -> bool:
@@ -531,30 +621,29 @@ def _extract_pdf_ocr_items(source: dict[str, Any]) -> list[dict[str, Any]]:
             LOGGER.warning("OCR 坐标缓存读取失败: %s error=%s", cache_path.name, exc)
 
     try:
-        import fitz
         import numpy as np
     except Exception:
         return []
 
-    path = _source_path(source)
-    content = _source_bytes(source)
-    if path and Path(path).exists():
-        doc = fitz.open(path)
-    else:
-        doc = fitz.open(stream=content or b"", filetype="pdf")
+    doc = _open_pdf_document(source)
+    if doc is None:
+        return []
 
     ocr = _build_ocr_engine()
     items: list[dict[str, Any]] = []
-    for page_number, page in enumerate(doc):
-        pix = page.get_pixmap(dpi=120, alpha=False)
-        image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
-        if pix.n > 3:
-            image = image[:, :, :3]
-        try:
-            result = ocr.ocr(image) if hasattr(ocr, "ocr") else ocr.predict(image)
-        except TypeError:
-            result = ocr.predict(image)
-        items.extend(_extract_ocr_items_from_result(result, page_number, pix.width, pix.height))
+    try:
+        for page_number, page in enumerate(doc):
+            pix = page.get_pixmap(dpi=120, alpha=False)
+            image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+            if pix.n > 3:
+                image = image[:, :, :3]
+            try:
+                result = ocr.ocr(image) if hasattr(ocr, "ocr") else ocr.predict(image)
+            except TypeError:
+                result = ocr.predict(image)
+            items.extend(_extract_ocr_items_from_result(result, page_number, pix.width, pix.height))
+    finally:
+        doc.close()
 
     payload = {
         "version": OCR_LAYOUT_CACHE_VERSION,
@@ -772,111 +861,137 @@ def _parse_chinese_pdf_layout(source: dict[str, Any], file_name: str) -> list[di
     weekday/period column before building occupancy blocks.
     """
 
-    path = _source_path(source)
-    if not path or not Path(path).exists():
-        return []
-
-    try:
-        import fitz
-    except Exception:
-        return []
-
-    try:
-        doc = fitz.open(path)
-    except Exception:
+    doc = _open_pdf_document(source)
+    if doc is None:
         return []
 
     name = _extract_chinese_name(_extract_pdf_text(source), file_name)
     all_blocks: list[dict[str, Any]] = []
-    slot_labels = ["1-2", "3-4", "午", "5-6", "7-8", "9-11"]
-    expected_slots = [(weekday, label) for weekday in WEEKDAYS[:5] for label in slot_labels]
-
-    for page in doc:
-        words = [
-            {
-                "x0": float(word[0]),
-                "y0": float(word[1]),
-                "x1": float(word[2]),
-                "y1": float(word[3]),
-                "text": str(word[4]).strip(),
-            }
-            for word in page.get_text("words")
-            if str(word[4]).strip()
-        ]
-        if not words:
-            continue
-
-        header_words = [
-            word
-            for word in words
-            if word["text"] in slot_labels and word["y0"] < 140 and word["x0"] > 45
-        ]
-        header_words = sorted(header_words, key=lambda word: (word["y0"], word["x0"]))
-        if len(header_words) < 20:
-            continue
-        header_words = sorted(header_words, key=lambda word: word["x0"])[: len(expected_slots)]
-        if len(header_words) < len(expected_slots):
-            continue
-
-        columns = []
-        for word, (weekday, label) in zip(header_words, expected_slots):
-            center = (word["x0"] + word["x1"]) / 2
-            columns.append({"center": center, "weekday": weekday, "label": label})
-
-        week_words = sorted(
-            [word for word in words if re.fullmatch(r"\d{1,2}周", word["text"])],
-            key=lambda word: word["y0"],
-        )
-        if not week_words:
-            continue
-
-        for index, week_word in enumerate(week_words):
-            week = int(re.match(r"(\d{1,2})", week_word["text"]).group(1))
-            row_top = week_word["y0"] - 1
-            row_bottom = (
-                week_words[index + 1]["y0"] - 1
-                if index + 1 < len(week_words)
-                else min(page.rect.height, week_word["y0"] + 18)
-            )
-            if row_bottom <= row_top:
-                row_bottom = row_top + 12
-
-            row_words = [
-                word
-                for word in words
-                if row_top <= word["y0"] < row_bottom and word["x0"] > 20
-            ]
-            date_text = " ".join(
-                word["text"]
-                for word in sorted(row_words, key=lambda item: (item["y0"], item["x0"]))
-                if word["x0"] < 65 and re.search(r"\d{2}/\d{2}", word["text"])
-            )
-            week_start = _parse_week_start(date_text) if date_text else None
-            cells: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-
-            for word in row_words:
-                text = word["text"]
-                if word is week_word or re.fullmatch(r"\d{1,2}周", text) or re.search(r"\d{2}/\d{2}", text):
-                    continue
-                x_center = (word["x0"] + word["x1"]) / 2
-                nearest = min(columns, key=lambda column: abs(column["center"] - x_center))
-                if abs(nearest["center"] - x_center) > 18:
-                    continue
-                cells[(nearest["weekday"], nearest["label"])].append(word)
-
-            for (weekday, label), cell_words in cells.items():
-                if label == "午":
-                    continue
-                cell_text = _normalize_cell_text(cell_words)
-                if not cell_text or _is_empty_or_non_class(cell_text):
-                    continue
-                if _looks_like_room(cell_text):
-                    continue
-                day = week_start + timedelta(days=WEEKDAY_INDEX.get(weekday, 0)) if week_start else _date_for_weekday(week, weekday)
-                for period in PERIOD_GROUPS.get(label, []):
-                    all_blocks.append(_block(name, "中方", week, day, weekday, period, cell_text))
+    try:
+        for page in doc:
+            all_blocks.extend(_parse_chinese_table_page_items(_page_words(page), name, float(page.rect.height)))
+    finally:
+        doc.close()
 
     return all_blocks
+
+
+def _parse_chinese_ocr_table_layout(source: dict[str, Any], file_name: str) -> list[dict[str, Any]]:
+    items = _extract_pdf_ocr_items(source)
+    if not items:
+        return []
+    name = _extract_chinese_name("", file_name)
+    blocks: list[dict[str, Any]] = []
+    for page in sorted({int(item.get("page", 0)) for item in items}):
+        page_items = [
+            {
+                "x0": float(item.get("x0", 0)),
+                "y0": float(item.get("y0", 0)),
+                "x1": float(item.get("x1", 0)),
+                "y1": float(item.get("y1", 0)),
+                "text": _normalize_ocr_text(str(item.get("text", ""))),
+            }
+            for item in items
+            if int(item.get("page", 0)) == page and str(item.get("text", "")).strip()
+        ]
+        page_height = max((float(item.get("page_height", 0)) for item in items if int(item.get("page", 0)) == page), default=0)
+        blocks.extend(_parse_chinese_table_page_items(page_items, name, page_height))
+    return blocks
+
+
+def _parse_chinese_table_page_items(
+    items: list[dict[str, Any]],
+    name: str,
+    page_height: float,
+) -> list[dict[str, Any]]:
+    if not items:
+        return []
+
+    slot_labels = ["1-2", "3-4", "午", "5-6", "7-8", "9-11"]
+    header_candidates = [
+        item
+        for item in items
+        if item["text"] in slot_labels and _item_center(item)[1] < max(170.0, page_height * 0.28 if page_height else 170.0)
+    ]
+    header_groups = _cluster_items_by_y(header_candidates, 5.0)
+    header_words = max(header_groups, key=len, default=[])
+    if len(header_words) < len(slot_labels) * 5:
+        return []
+
+    header_words = sorted(header_words, key=lambda item: _item_center(item)[0])
+    day_count = max(5, min(7, len(header_words) // len(slot_labels)))
+    header_words = header_words[: day_count * len(slot_labels)]
+    expected_slots = [(weekday, label) for weekday in WEEKDAYS[:day_count] for label in slot_labels]
+    columns = [
+        {"center": _item_center(item)[0], "weekday": weekday, "label": label}
+        for item, (weekday, label) in zip(header_words, expected_slots)
+    ]
+    bands = _x_bands(columns)
+    if not bands:
+        return []
+    header_bottom = max(float(item["y1"]) for item in header_words)
+
+    week_candidates = []
+    for item in items:
+        match = re.fullmatch(r"(?:第)?(\d{1,2})周", item["text"])
+        if match and _item_center(item)[0] < bands[0]["left"]:
+            week_candidates.append({**item, "week": int(match.group(1))})
+    week_rows = []
+    for group in _cluster_items_by_y(week_candidates, 6.0):
+        chosen = min(group, key=lambda item: item["x0"])
+        week_rows.append(chosen)
+    week_rows = sorted(week_rows, key=lambda item: _item_center(item)[1])
+    if not week_rows:
+        return []
+
+    centers_y = [_item_center(item)[1] for item in week_rows]
+    gaps = [b - a for a, b in zip(centers_y, centers_y[1:]) if b > a]
+    default_gap = max(18.0, min(gaps) if gaps else 26.0)
+    blocks: list[dict[str, Any]] = []
+    for index, week_item in enumerate(week_rows):
+        row_center = centers_y[index]
+        row_top = max(header_bottom, (centers_y[index - 1] + row_center) / 2 if index else row_center - default_gap / 2)
+        row_bottom = (
+            (row_center + centers_y[index + 1]) / 2
+            if index + 1 < len(centers_y)
+            else min(page_height or row_center + default_gap, row_center + default_gap / 2)
+        )
+        if row_bottom <= row_top:
+            row_bottom = row_top + default_gap
+
+        row_words = [
+            item
+            for item in items
+            if row_top <= _item_center(item)[1] < row_bottom
+        ]
+        date_text = " ".join(
+            item["text"]
+            for item in sorted(row_words, key=lambda value: (value["y0"], value["x0"]))
+            if _item_center(item)[0] < bands[0]["left"] and re.search(r"\d{2}/\d{2}", item["text"])
+        )
+        week_start = _parse_week_start(date_text) if date_text else None
+        cells: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        for item in row_words:
+            token = item["text"]
+            if token in slot_labels or re.fullmatch(r"(?:第)?\d{1,2}周", token) or re.search(r"\d{2}/\d{2}", token):
+                continue
+            band = _pick_x_band(bands, _item_center(item)[0])
+            if not band:
+                continue
+            cells[(band["weekday"], band["label"])].append(item)
+
+        for (weekday, label), cell_words in cells.items():
+            if label == "午":
+                continue
+            cell_text = _normalize_cell_text(cell_words)
+            if not cell_text or _is_empty_or_non_class(cell_text):
+                continue
+            if _looks_like_room(cell_text):
+                continue
+            day = week_start + timedelta(days=WEEKDAY_INDEX.get(weekday, 0)) if week_start else _date_for_weekday(week_item["week"], weekday)
+            for period in PERIOD_GROUPS.get(label, []):
+                blocks.append(_block(name, "中方", week_item["week"], day, weekday, period, cell_text))
+    return blocks
 
 
 def _normalize_cell_text(cell_words: list[dict[str, Any]]) -> str:
@@ -1162,35 +1277,20 @@ def _parse_english_ocr_week_grid(source: dict[str, Any], file_name: str) -> list
 
 
 def _parse_english_pdf_grid_layout(source: dict[str, Any], file_name: str) -> list[dict[str, Any]]:
-    path = _source_path(source)
-    if not path or not Path(path).exists():
-        return []
-    try:
-        import fitz
-    except Exception:
-        return []
-    try:
-        doc = fitz.open(path)
-    except Exception:
+    doc = _open_pdf_document(source)
+    if doc is None:
         return []
 
     name = _extract_chinese_name("", file_name)
     blocks: list[dict[str, Any]] = []
-    for page in doc:
-        items = [
-            {
-                "x0": float(word[0]),
-                "y0": float(word[1]),
-                "x1": float(word[2]),
-                "y1": float(word[3]),
-                "text": str(word[4]).replace("\xa0", " ").strip(),
-            }
-            for word in page.get_text("words")
-            if str(word[4]).strip()
-        ]
-        if not items:
-            continue
-        blocks.extend(_parse_english_grid_page_items_from_pdf_words(items, name))
+    try:
+        for page in doc:
+            items = _page_words(page)
+            if not items:
+                continue
+            blocks.extend(_parse_english_grid_page_items_from_pdf_words(items, name))
+    finally:
+        doc.close()
     return blocks
 
 
@@ -1208,30 +1308,38 @@ def _parse_english_grid_page_items_from_pdf_words(items: list[dict[str, Any]], n
         header = max((row for row in header_rows if row["y"] < row_y), key=lambda row: row["y"], default=None)
         if not header:
             continue
-        next_day_y = day_rows[index + 1]["y"] if index + 1 < len(day_rows) else row_y + 36
+        previous_day_y = day_rows[index - 1]["y"] if index else None
+        next_day_y = day_rows[index + 1]["y"] if index + 1 < len(day_rows) else None
         next_header_y = min((row["y"] for row in header_rows if row["y"] > row_y), default=row_y + 80)
-        row_bottom = min(next_day_y - 1, next_header_y - 2, row_y + 42)
-        row_top = row_y - 8
+        row_top = (previous_day_y + row_y) / 2 if previous_day_y is not None else row_y - 8
+        row_bottom = (row_y + next_day_y) / 2 if next_day_y is not None else min(next_header_y - 2, row_y + 48)
         if row_bottom <= row_top:
             row_bottom = row_y + 30
 
-        columns = header["columns"]
-        centers = [column["center"] for column in columns]
-        min_gap = min((b - a for a, b in zip(centers, centers[1:])), default=35)
-        tolerance = max(17.0, min_gap * 0.55)
-
+        bands = _x_bands(header["columns"])
+        if not bands:
+            continue
+        cells: dict[int, list[dict[str, Any]]] = defaultdict(list)
         for item in items:
             y_center = (item["y0"] + item["y1"]) / 2
             if not (row_top <= y_center <= row_bottom):
                 continue
             x_center = (item["x0"] + item["x1"]) / 2
-            if x_center < centers[0] - tolerance or x_center > centers[-1] + tolerance:
-                continue
             token = item["text"]
             if _is_english_grid_noise_token(token):
                 continue
-            nearest = min(columns, key=lambda column: abs(column["center"] - x_center))
-            if abs(nearest["center"] - x_center) > tolerance:
+            nearest = _pick_x_band(bands, x_center)
+            if not nearest:
+                continue
+            cells[int(nearest["period"])].append(item)
+
+        for period, cell_items in cells.items():
+            tokens = [
+                item["text"]
+                for item in sorted(cell_items, key=lambda value: (round(value["y0"], 1), value["x0"]))
+            ]
+            course = _merge_english_grid_course_tokens(tokens)
+            if not course:
                 continue
             blocks.append(
                 _block(
@@ -1240,8 +1348,8 @@ def _parse_english_grid_page_items_from_pdf_words(items: list[dict[str, Any]], n
                     _week_from_date(day_row["date"]),
                     day_row["date"],
                     WEEKDAYS[day_row["date"].weekday()],
-                    nearest["period"],
-                    token,
+                    period,
+                    course,
                 )
             )
     return blocks
@@ -1256,7 +1364,8 @@ def _find_english_period_header_rows(items: list[dict[str, Any]]) -> list[dict[s
     grouped: list[list[dict[str, Any]]] = []
     for item in sorted(number_items, key=lambda value: value["y0"]):
         for group in grouped:
-            if abs(group[0]["y0"] - item["y0"]) <= 2.5:
+            group_y = sum(_item_center(value)[1] for value in group) / len(group)
+            if abs(group_y - _item_center(item)[1]) <= 6.0:
                 group.append(item)
                 break
         else:
@@ -1271,11 +1380,11 @@ def _find_english_period_header_rows(items: list[dict[str, Any]]) -> list[dict[s
         if len(by_period) < 8 or not {1, 2, 3, 4}.issubset(by_period):
             continue
         columns = [
-            {"period": period, "center": (item["x0"] + item["x1"]) / 2}
+            {"period": period, "center": _item_center(item)[0]}
             for period, item in sorted(by_period.items())
             if 1 <= period <= 11
         ]
-        rows.append({"y": sum(item["y0"] for item in group) / len(group), "columns": columns})
+        rows.append({"y": sum(_item_center(item)[1] for item in group) / len(group), "columns": columns})
     return sorted(rows, key=lambda row: row["y"])
 
 
@@ -1284,18 +1393,18 @@ def _find_english_day_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     weekday_items = [
         item
         for item in items
-        if item["text"] in ENGLISH_WEEKDAY_MAP and item["x0"] < 70
+        if item["text"] in ENGLISH_WEEKDAY_MAP and item["x0"] < 95
     ]
     date_items = [
         item
         for item in items
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", item["text"]) and item["x0"] < 75
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", item["text"]) and item["x0"] < 105
     ]
     for weekday in weekday_items:
         candidates = [
             item
             for item in date_items
-            if 0 <= item["y0"] - weekday["y0"] <= 14
+            if -4 <= item["y0"] - weekday["y0"] <= 18
         ]
         if not candidates:
             continue
@@ -1308,9 +1417,24 @@ def _find_english_day_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 "weekday_text": weekday["text"],
                 "date": day,
-                "y": min(weekday["y0"], date_item["y0"]),
+                "y": min(_item_center(weekday)[1], _item_center(date_item)[1]),
             }
         )
+    for item in items:
+        if item["x0"] >= 115:
+            continue
+        match = re.search(r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday).*?(\d{4}-\d{2}-\d{2})", item["text"])
+        if not match:
+            match = re.search(r"(\d{4}-\d{2}-\d{2}).*?(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)", item["text"])
+        if not match:
+            continue
+        date_text = match.group(2) if match.group(1) in ENGLISH_WEEKDAY_MAP else match.group(1)
+        weekday_text = match.group(1) if match.group(1) in ENGLISH_WEEKDAY_MAP else match.group(2)
+        try:
+            day = _parse_date(date_text)
+        except Exception:
+            continue
+        rows.append({"weekday_text": weekday_text, "date": day, "y": _item_center(item)[1]})
     dedup: dict[date, dict[str, Any]] = {}
     for row in rows:
         dedup.setdefault(row["date"], row)
@@ -1330,6 +1454,8 @@ def _parse_english_week_grid_page_items(items: list[dict[str, Any]], name: str) 
     time_periods = {
         "8:10": [1, 2],
         "10:15": [3, 4],
+        "12:40": [12, 13],
+        "13:30": [13],
         "14:30": [5, 6],
         "16:25": [7, 8],
         "19:10": [9, 10],
@@ -1477,8 +1603,6 @@ def _parse_english_text(text: str, file_name: str) -> list[dict[str, Any]]:
 
 
 def _block(name: str, source: str, week: int, day: date, weekday: str, period: int, course: str) -> dict[str, Any]:
-    timetable = default_timetable().set_index("period")
-    time = f"{timetable.loc[period, 'start']}-{timetable.loc[period, 'end']}"
     return {
         "name": name,
         "source": source,
@@ -1486,7 +1610,7 @@ def _block(name: str, source: str, week: int, day: date, weekday: str, period: i
         "date": day.isoformat(),
         "weekday": weekday,
         "period": int(period),
-        "time": time,
+        "time": period_time_range(period),
         "course": course,
     }
 
@@ -1551,11 +1675,13 @@ def _date_for_weekday(week: int, weekday: str) -> date:
 
 
 def _is_empty_or_non_class(token: str) -> bool:
-    return token.strip() in NON_CLASS_KEYWORDS
+    compact = re.sub(r"[\s:：;；,，。|｜/\\]+", "", token.strip())
+    return token.strip() in NON_CLASS_KEYWORDS or compact in {"", "午", "无", "空", "不排课", "暂无", "None", "N/A"}
 
 
 def _looks_like_room(token: str) -> bool:
-    return bool(re.search(r"^(?:E\d|C\d|TT|内|大\d|L\d|[A-Z]\d|C075)", token))
+    compact = re.sub(r"\s+", "", token.strip())
+    return bool(re.search(r"^(?:E\d|C\d|TT|内|大\d|L\d|[A-Z]\d|C075|Room|教室)", compact, re.IGNORECASE))
 
 
 def _is_english_course_token(token: str) -> bool:
