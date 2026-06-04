@@ -15,6 +15,19 @@ def test_period_time_config_has_eleven_periods():
         assert {"period", "start", "end", "label"} <= set(item)
         assert item["start"]
         assert item["end"]
+    assert [(item["start"], item["end"]) for item in periods] == [
+        ("08:10", "08:55"),
+        ("09:00", "09:45"),
+        ("10:15", "11:00"),
+        ("11:05", "11:50"),
+        ("14:30", "15:15"),
+        ("15:20", "16:05"),
+        ("16:25", "17:10"),
+        ("17:15", "18:00"),
+        ("19:10", "19:55"),
+        ("20:00", "20:45"),
+        ("20:50", "21:35"),
+    ]
 
 
 def test_school_calendar_config_shape():
