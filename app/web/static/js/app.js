@@ -119,9 +119,9 @@ function renderFiles(files) {
     const member = file.member_name || file.inferred_member || "无法推断成员名";
     row.innerHTML = `
       <td title="${escapeHtml(file.filename || "")}">${escapeHtml(file.filename || "")}</td>
-      <td>${formatBytes(file.size || 0)}</td>
       <td>${badge(typeLabel, sourceTypeBadgeClass(sourceType))}</td>
       <td>${escapeHtml(member)}</td>
+      <td>${formatBytes(file.size || 0)}</td>
       <td>${badge(file.status || "uploaded", "badge-info")}</td>
       <td class="${file.warning ? "cell-warning" : ""}">${escapeHtml(file.warning || file.note || "等待解析")}</td>
     `;
@@ -600,6 +600,10 @@ function bindEvents() {
   $("#clearBtn").addEventListener("click", clearTask);
 
   const dropZone = $("#dropZone");
+  const dropSurface = $(".drop-surface");
+  dropSurface.addEventListener("click", () => {
+    if (!$("#pickFilesBtn").disabled) $("#fileInput").click();
+  });
   for (const eventName of ["dragenter", "dragover"]) {
     dropZone.addEventListener(eventName, (event) => {
       event.preventDefault();

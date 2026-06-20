@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>空谷 Konggu</title>
+    <title>青禾计划 · 空谷 Konggu</title>
     <link rel="stylesheet" href="/static/css/style.css" />
   </head>
   <body>
@@ -12,9 +12,9 @@
     <main class="shell">
       <header class="app-header card">
         <section class="brand-block">
-          <p class="brand-name">空谷 Konggu</p>
-          <h1>多人课表解析与空课表生成</h1>
-          <p class="brand-copy">导入中方 / 英方课表 PDF，自动识别成员占用时间并生成空课表。</p>
+          <div class="brand-lockup">
+            <p class="brand-name">青禾计划 · 空谷</p>
+          </div>
         </section>
         <section class="header-status" aria-live="polite">
           <div class="status-item">
@@ -41,11 +41,10 @@
               <h2>上传 PDF</h2>
               <p>拖入或选择多个中方 / 英方课表 PDF，可分批追加，文件仅在本机处理。</p>
             </div>
-            <span class="step-label">步骤 1</span>
           </div>
           <div class="drop-surface">
-            <div class="drop-icon">PDF</div>
             <div>
+              <span class="upload-mark" aria-hidden="true"></span>
               <strong>拖拽 PDF 到这里，或点击选择文件</strong>
               <span>同一任务未生成前，可多次上传追加 PDF。</span>
             </div>
@@ -118,9 +117,9 @@
               <thead>
                 <tr>
                   <th>文件名</th>
-                  <th>大小</th>
                   <th>类型</th>
                   <th>成员</th>
+                  <th>大小</th>
                   <th>状态</th>
                   <th>提示</th>
                 </tr>
@@ -181,11 +180,12 @@
       </section>
 
       <footer class="footer-note">
-        <span>空谷 Konggu 本地 Web 工作台</span>
+        <span>青禾计划系列项目 · 空谷 Konggu 本地 Web 工作台</span>
+        <span>成都理工大学牛津布鲁克斯学院青年志愿者协会</span>
         <span>仅监听 127.0.0.1，不提供公网服务。</span>
       </footer>
     </main>
 
-    <script src="/static/js/app.js?v=20260603-batch-upload"></script>
+    <script src="/static/js/app.js?v=20260607-qinghe-dashboard"></script>
   </body>
 </html>
