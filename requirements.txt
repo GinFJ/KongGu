@@ -5,9 +5,7 @@ numpy
 paddlepaddle
 paddleocr
 opencv-python-headless
-pyinstaller
 pytest
-customtkinter>=5.2.0
 fastapi
 uvicorn
 python-multipart
