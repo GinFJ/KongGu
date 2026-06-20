@@ -5,38 +5,29 @@
 <h1 align="center">Konggu</h1>
 
 <p align="center">
-  本地运行的课表 PDF 解析与空课汇总工具。
-</p>
-
-<p align="center">
-  <strong>青禾计划系列项目</strong><br>
-  成都理工大学牛津布鲁克斯学院青年志愿者协会
+  Local Web tool for timetable PDF parsing and shared availability summaries.
 </p>
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white">
-  <img alt="Windows" src="https://img.shields.io/badge/Windows-本地桌面端-0078D4?style=flat-square&logo=windows&logoColor=white">
   <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-Web%20UI-009688?style=flat-square&logo=fastapi&logoColor=white">
   <img alt="OCR" src="https://img.shields.io/badge/OCR-PaddleOCR-1F6FEB?style=flat-square">
 </p>
 
 <p align="center">
-  <a href="#项目简介">项目简介</a>
+  <a href="#zh-cn">中文</a>
   <span>&middot;</span>
-  <a href="#项目归属">项目归属</a>
-  <span>&middot;</span>
-  <a href="#核心功能">核心功能</a>
-  <span>&middot;</span>
-  <a href="#快速开始">快速开始</a>
-  <span>&middot;</span>
-  <a href="#使用方式">使用方式</a>
-  <span>&middot;</span>
-  <a href="#开发与打包">开发与打包</a>
+  <a href="#english">English</a>
 </p>
 
 <p align="center">
-  <img src="assets/konggu-readme-hero.png" alt="Konggu 课表空课汇总预览">
+  <img src="assets/konggu-readme-hero.png" alt="Konggu timetable availability preview">
 </p>
+
+<details open>
+<summary><strong>中文</strong></summary>
+
+<a id="zh-cn"></a>
 
 ## 项目简介
 
@@ -44,12 +35,7 @@ Konggu 用于导入成员的中方、英方课表 PDF，解析课程占用时段
 
 Konggu 是 **青禾计划系列项目** 的一部分，服务于成都理工大学牛津布鲁克斯学院青年志愿者协会的课表收集、志愿服务排班和成员空闲时间整理场景。
 
-项目提供两个入口：
-
-| 入口 | 适合场景 |
-| --- | --- |
-| 桌面端 | 日常本机使用，打开后直接上传课表 |
-| Web 端 | 希望用浏览器查看上传状态、识别明细和结果表格 |
+项目提供本地 Web 入口，适合在浏览器中查看上传状态、识别明细和结果表格。
 
 ## 项目归属
 
@@ -90,12 +76,6 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-```
-
-启动桌面端：
-
-```powershell
-python desktop_clean.py
 ```
 
 启动本地 Web 端：
@@ -140,23 +120,20 @@ OCR 模型文件不会提交到仓库。需要识别扫描件或图片型 PDF �
 download_ocr_models.bat
 ```
 
-模型默认保存到 `cache/paddlex/official_models/`。如果已经存在 `dist/Konggu/`，脚本也会同步写入打包目录旁的缓存位置，方便打包程序使用 OCR。
+模型默认保存到 `cache/paddlex/official_models/`，重新启动 Web 服务后即可使用。
 
 ## 项目结构
 
 ```text
 .
 ├── app/
-│   ├── gui/              # 桌面端界面
 │   ├── services/         # PDF 处理、空课预览、Excel 导出等服务
 │   └── web/              # FastAPI 本地 Web UI
 ├── core/                 # 课表解析核心、模型和兼容适配
 ├── config/               # 节次时间、校历、参考库和 OCR 模型配置
 ├── tools/                # OCR 模型下载和参考库预缓存脚本
 ├── tests/                # 单元测试和 Web API 测试
-├── desktop_clean.py      # 桌面端启动入口
 ├── web_launcher.py       # Web 端启动入口
-├── Konggu.spec           # PyInstaller 打包配置
 └── requirements.txt      # Python 依赖
 ```
 
@@ -169,9 +146,9 @@ download_ocr_models.bat
 | `config/reference_library.json` | 本地参考库元数据 |
 | `config/ocr_models.json` | OCR 模型名称和下载地址 |
 
-修改配置后，重新启动桌面端或 Web 端即可生效。
+修改配置后，重新启动 Web 端即可生效。
 
-## 开发与打包
+## 开发与运行
 
 运行测试：
 
@@ -179,16 +156,146 @@ download_ocr_models.bat
 python -m pytest -q
 ```
 
-打包 Windows 程序：
+本地运行产物包括 `.runtime/`、`cache/`、日志和导出的 Excel 文件，不应提交到 Git。
+
+</details>
+
+<details>
+<summary><strong>English</strong></summary>
+
+<a id="english"></a>
+
+## Overview
+
+Konggu imports Chinese-program and English-program timetable PDFs, parses occupied class periods, and generates shared availability summaries. It is designed for local workflows that need to collect many timetables, inspect member availability, and export results to Excel.
+
+Konggu is part of the **Qinghe Plan** project series for the Youth Volunteer Association of the Oxford Brookes College, Chengdu University of Technology.
+
+The project now provides a local Web interface for checking upload status, parsing details, warnings, and result tables in the browser.
+
+## Ownership
+
+| Property | Value |
+| --- | --- |
+| Series | Qinghe Plan |
+| Organization | Youth Volunteer Association, Oxford Brookes College, Chengdu University of Technology |
+| Purpose | Internal timetable collection, availability summary, and volunteer scheduling support |
+
+## Core Features
+
+| Feature | Description |
+| --- | --- |
+| Batch PDF import | Upload multiple member timetable PDFs at once or in batches |
+| Timetable type detection | Infer Chinese-program or English-program timetables from filenames |
+| Member checks | Flag missing timetables, recognition failures, and parsing warnings |
+| Availability preview | Summarize available members by week, weekday, and class period |
+| Excel export | Export availability results as `.xlsx` files |
+| OCR support | Parse text PDFs directly and use PaddleOCR models for scanned PDFs |
+
+## Processing Flow
+
+| Step | Action | Output |
+| --- | --- | --- |
+| 1 | Upload timetable PDFs | Chinese-program / English-program timetable files |
+| 2 | Identify members and timetable types | Member names and timetable sources |
+| 3 | Parse occupied periods | Weeks, weekdays, and class periods |
+| 4 | Check abnormal results | Missing timetables and recognition warnings |
+| 5 | Generate availability summary | Available time slots and member lists |
+| 6 | Export results | Excel file |
+
+## Quick Start
+
+Python 3.12 is recommended.
 
 ```powershell
-pyinstaller Konggu.spec
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-打包结果生成在 `dist/Konggu/`。如需在打包程序中支持 OCR，建议打包后再次运行 `download_ocr_models.bat`。
+Start the local Web app:
 
-本地运行和构建产物包括 `.runtime/`、`cache/`、`build/`、`dist/`、日志和导出的 Excel 文件，不应提交到 Git。
+```powershell
+python web_launcher.py
+```
+
+Default Web URL:
+
+```text
+http://127.0.0.1:8000
+```
+
+You can also run uvicorn directly:
+
+```powershell
+python -m uvicorn app.web.main:app --host 127.0.0.1 --port 8000
+```
+
+## Usage
+
+Recommended filename format:
+
+```text
+Zhang San-Chinese timetable.pdf
+Zhang San-English timetable.pdf
+```
+
+Filename guidance:
+
+- Include the member name so multiple files can be grouped correctly.
+- Include `中方` / `Chinese` or `英方` / `English` to help identify the timetable type.
+- Upload Chinese-program and English-program timetables in pairs where possible.
+- If one side is missing, Konggu reports the risk in member checks.
+
+## OCR Models
+
+OCR model files are not committed to the repository. To recognize scanned or image-based PDFs, download the offline models first:
+
+```powershell
+download_ocr_models.bat
+```
+
+Models are saved to `cache/paddlex/official_models/` by default. Restart the Web service after downloading them.
+
+## Project Structure
+
+```text
+.
+├── app/
+│   ├── services/         # PDF processing, availability preview, Excel export, etc.
+│   └── web/              # FastAPI local Web UI
+├── core/                 # Timetable parsing core, models, and compatibility adapters
+├── config/               # Period times, school calendar, reference library, OCR model config
+├── tools/                # OCR model download and reference-library pre-cache scripts
+├── tests/                # Unit tests and Web API tests
+├── web_launcher.py       # Web entry point
+└── requirements.txt      # Python dependencies
+```
+
+## Configuration
+
+| File | Description |
+| --- | --- |
+| `config/period_time.json` | Period and time-slot configuration |
+| `config/school_calendar.json` | School calendar and week-date mapping |
+| `config/reference_library.json` | Local reference-library metadata |
+| `config/ocr_models.json` | OCR model names and download URLs |
+
+Restart the Web service after changing configuration files.
+
+## Development
+
+Run tests:
+
+```powershell
+python -m pytest -q
+```
+
+Local runtime artifacts such as `.runtime/`, `cache/`, logs, and exported Excel files should not be committed.
+
+</details>
 
 <p align="center">
-  <img src="assets/konggu-readme-footer.png" alt="Konggu 课表空课汇总插图">
+  <img src="assets/konggu-readme-footer.png" alt="Konggu timetable availability illustration">
 </p>

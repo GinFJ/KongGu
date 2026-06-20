@@ -14,11 +14,7 @@ CONFIG_PATH = ROOT / "config" / "ocr_models.json"
 
 
 def _default_targets() -> list[Path]:
-    targets = [ROOT / "cache" / "paddlex" / "official_models"]
-    packaged_cache = ROOT / "dist" / "Konggu" / "cache" / "paddlex" / "official_models"
-    if packaged_cache.parent.parent.parent.exists():
-        targets.append(packaged_cache)
-    return targets
+    return [ROOT / "cache" / "paddlex" / "official_models"]
 
 
 def _download(url: str, dest: Path) -> None:
@@ -55,7 +51,7 @@ def main() -> None:
         "--target",
         action="append",
         type=Path,
-        help="模型保存目录。可重复传入；默认写入项目 cache，若 dist/Konggu 存在也同步写入 exe 旁边的 cache。",
+        help="模型保存目录。可重复传入；默认写入项目 cache。",
     )
     args = parser.parse_args()
 
@@ -75,7 +71,7 @@ def main() -> None:
                 model_dir = _extract_model(archive, name, target)
                 print(f"已安装：{model_dir}")
 
-    print("OCR 模型准备完成。重新打开 Konggu.exe 后即可识别扫描件 PDF。")
+    print("OCR 模型准备完成。重新启动 Konggu Web 后即可识别扫描件 PDF。")
 
 
 if __name__ == "__main__":

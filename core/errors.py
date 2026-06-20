@@ -9,8 +9,8 @@ from enum import Enum
 class ErrorType(str, Enum):
     """Known processing error categories.
 
-    The Chinese values are kept user-facing so the GUI can display them
-    directly without maintaining a second mapping table.
+    The Chinese values are kept user-facing so API and Web UI layers can display
+    them directly without maintaining a second mapping table.
     """
 
     FILE_READ_FAILED = "文件读取失败"
@@ -34,7 +34,7 @@ class ProcessError:
     detail: str | None = None
 
     def to_user_message(self) -> str:
-        """Return a compact message suitable for tkinter status areas."""
+        """Return a compact message suitable for user-facing status areas."""
 
         prefix = f"[{self.error_type.value}]"
         if self.source_file:
