@@ -5,6 +5,8 @@ def test_default_timetable_uses_simple_cdut_schedule():
     timetable = schedule_core.default_timetable().set_index("period")
 
     assert f"{timetable.loc[1, 'start']}-{timetable.loc[1, 'end']}" == "08:10-08:55"
+    assert f"{timetable.loc[12, 'start']}-{timetable.loc[12, 'end']}" == "12:40-13:25"
+    assert f"{timetable.loc[13, 'start']}-{timetable.loc[13, 'end']}" == "13:30-14:15"
     assert f"{timetable.loc[5, 'start']}-{timetable.loc[5, 'end']}" == "14:30-15:15"
     assert f"{timetable.loc[6, 'start']}-{timetable.loc[6, 'end']}" == "15:20-16:05"
     assert f"{timetable.loc[11, 'start']}-{timetable.loc[11, 'end']}" == "20:50-21:35"
@@ -20,6 +22,26 @@ def test_noon_english_periods_do_not_occupy_afternoon_slots():
 
     assert table["time"].tolist() == ["14:30-15:15", "15:20-16:05"]
     assert table["occupied_count"].tolist() == [0, 0]
+
+
+def test_synthesized_calendar_covers_full_teaching_term():
+    calendar = schedule_core.synthesize_calendar_from_blocks([])
+
+    assert len(calendar) == 18 * 7
+    assert calendar.iloc[0].to_dict() == {"date": "2026-03-02", "week": 1, "weekday": "周一"}
+    assert calendar[(calendar["week"] == 6) & (calendar["weekday"] == "周一")].iloc[0]["date"] == "2026-04-06"
+    assert calendar.iloc[-1].to_dict() == {"date": "2026-07-05", "week": 18, "weekday": "周日"}
+
+
+def test_synthesized_calendar_uses_persisted_semester_environment(monkeypatch):
+    monkeypatch.setenv("KONGGU_SEMESTER_START_DATE", "2026-09-07")
+    monkeypatch.setenv("KONGGU_TEACHING_WEEKS", "20")
+
+    calendar = schedule_core.synthesize_calendar_from_blocks([])
+
+    assert len(calendar) == 20 * 7
+    assert calendar.iloc[0].to_dict() == {"date": "2026-09-07", "week": 1, "weekday": "周一"}
+    assert calendar[(calendar["week"] == 6) & (calendar["weekday"] == "周一")].iloc[0]["date"] == "2026-10-12"
 
 
 def _item(text, x, y, w=18, h=8):

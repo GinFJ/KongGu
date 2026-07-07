@@ -5,12 +5,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_period_time_config_has_eleven_periods():
+def test_period_time_config_has_configured_periods():
     config = json.loads((ROOT / "config" / "period_time.json").read_text(encoding="utf-8"))
     periods = config["periods"]
 
-    assert len(periods) == 11
-    assert [item["period"] for item in periods] == list(range(1, 12))
+    assert len(periods) == 13
+    assert [item["period"] for item in periods] == [1, 2, 3, 4, 12, 13, 5, 6, 7, 8, 9, 10, 11]
     for item in periods:
         assert {"period", "start", "end", "label"} <= set(item)
         assert item["start"]
@@ -20,6 +20,8 @@ def test_period_time_config_has_eleven_periods():
         ("09:00", "09:45"),
         ("10:15", "11:00"),
         ("11:05", "11:50"),
+        ("12:40", "13:25"),
+        ("13:30", "14:15"),
         ("14:30", "15:15"),
         ("15:20", "16:05"),
         ("16:25", "17:10"),
@@ -58,3 +60,6 @@ def test_ocr_model_config_shape():
     for model in config["models"]:
         assert model["url"].startswith("https://")
         assert model["url"].endswith(".tar")
+        assert len(model["archive_sha256"]) == 64
+        assert model["archive_size"] > 0
+        assert model["target_dir"].startswith("ocr_models/")

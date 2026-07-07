@@ -4,12 +4,18 @@
     {
       "name": "PP-OCRv4_mobile_det",
       "type": "text_detection",
-      "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv4_mobile_det_infer.tar"
+      "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv4_mobile_det_infer.tar",
+      "archive_sha256": "d212d7a9684e33696f3c817ff1dd8ff23a942c5d4449e6f19c8f3e8259a266ab",
+      "archive_size": 4935680,
+      "target_dir": "ocr_models/PP-OCRv4_mobile_det"
     },
     {
       "name": "PP-OCRv4_mobile_rec",
       "type": "text_recognition",
-      "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv4_mobile_rec_infer.tar"
+      "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv4_mobile_rec_infer.tar",
+      "archive_sha256": "f71ee33646159e43ea5dcb9f0467259ba75e403e6f7e9a9a7d2c6208d36b92ec",
+      "archive_size": 11048960,
+      "target_dir": "ocr_models/PP-OCRv4_mobile_rec"
     }
   ]
 }

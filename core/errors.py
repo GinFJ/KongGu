@@ -21,6 +21,7 @@ class ErrorType(str, Enum):
     CHINESE_PARSE_FAILED = "中方课表解析失败"
     ENGLISH_DATE_MAPPING_FAILED = "英方日期映射失败"
     PERIOD_MAPPING_FAILED = "节次映射失败"
+    SCHEDULE_CONFLICT = "课表时间冲突"
     EXCEL_EXPORT_FAILED = "Excel 导出失败"
 
 

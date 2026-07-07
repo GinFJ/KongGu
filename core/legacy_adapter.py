@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -19,7 +20,21 @@ from .models import (
 )
 
 
-_ROLE_WORDS = {"部长", "干事", "副部长", "负责人", "成员", "中方课表", "英方课表", "课表", "办公室"}
+_ROLE_WORDS = {
+    "办公室",
+    "外联部",
+    "宣传部",
+    "活动部",
+    "部长",
+    "副部长",
+    "干事",
+    "负责人",
+    "成员",
+    "中方课表",
+    "英方课表",
+    "课表",
+}
+_SCHEDULE_WORDS = {"中方", "英方", "中方课表", "英方课表", "课表"}
 
 
 def hash_bytes(data: bytes) -> str:
@@ -80,15 +95,33 @@ def infer_member_name_from_filename(file_name: str) -> str | None:
     """Best-effort member name inference from common department-role filenames."""
 
     stem = Path(file_name).stem
-    normalized = stem.replace("-", " ").replace("_", " ")
+    normalized = re.sub(r"[-_\s]+", " ", stem)
     parts = [part.strip() for part in normalized.split() if part.strip()]
     for part in parts:
         if part in _ROLE_WORDS:
             continue
-        cleaned = part.replace("中方课表", "").replace("英方课表", "").replace("课表", "").strip()
-        if 2 <= len(cleaned) <= 4 and cleaned not in _ROLE_WORDS:
+        cleaned = _clean_member_candidate(part)
+        if _is_member_name_candidate(cleaned):
             return cleaned
+
+    cleaned_stem = stem
+    for word in sorted(_ROLE_WORDS | _SCHEDULE_WORDS, key=len, reverse=True):
+        cleaned_stem = cleaned_stem.replace(word, " ")
+    for token in re.findall(r"[\u4e00-\u9fff]{2,4}", cleaned_stem):
+        if _is_member_name_candidate(token):
+            return token
     return None
+
+
+def _clean_member_candidate(text: str) -> str:
+    cleaned = text
+    for word in sorted(_SCHEDULE_WORDS, key=len, reverse=True):
+        cleaned = cleaned.replace(word, "")
+    return re.sub(r"[^\u4e00-\u9fff]", "", cleaned).strip()
+
+
+def _is_member_name_candidate(text: str) -> bool:
+    return bool(re.fullmatch(r"[\u4e00-\u9fff]{2,4}", text) and text not in _ROLE_WORDS and text not in _SCHEDULE_WORDS)
 
 
 def course_block_from_legacy(block: dict[str, Any]) -> CourseBlock:
@@ -109,6 +142,7 @@ def course_block_from_legacy(block: dict[str, Any]) -> CourseBlock:
         date=str(block.get("date")).strip() if block.get("date") else None,
         start_time=str(block.get("start_time")).strip() if block.get("start_time") else None,
         end_time=str(block.get("end_time")).strip() if block.get("end_time") else None,
+        course=str(block.get("course")).strip() if block.get("course") else None,
         source_file=str(block.get("source_file")).strip() if block.get("source_file") else None,
     )
 
@@ -152,7 +186,36 @@ def build_member_schedules(blocks: Iterable[CourseBlock], known_names: Iterable[
             member.status = "缺中方"
         else:
             member.status = "待处理"
+        member.errors.extend(_detect_member_conflicts(member))
     return list(by_name.values())
+
+
+def _detect_member_conflicts(member: MemberSchedule) -> list[ProcessError]:
+    slots: dict[tuple[int, str, int], list[CourseBlock]] = {}
+    for block in member.blocks:
+        for period in block.periods:
+            slots.setdefault((block.week, block.weekday, int(period)), []).append(block)
+
+    errors: list[ProcessError] = []
+    for (week, weekday, period), blocks in sorted(slots.items()):
+        course_names = sorted({_course_label(block) for block in blocks if _course_label(block)})
+        source_keys = {
+            (block.source_type, block.source_file or "", _course_label(block))
+            for block in blocks
+        }
+        if len(source_keys) <= 1 or len(course_names) <= 1:
+            continue
+        errors.append(
+            ProcessError(
+                error_type=ErrorType.SCHEDULE_CONFLICT,
+                message=f"{member.name} 第{week}周{weekday}第{period}节存在多门课程：{'、'.join(course_names)}",
+            )
+        )
+    return errors
+
+
+def _course_label(block: CourseBlock) -> str:
+    return str(getattr(block, "course", "") or block.source_file or block.source_type).strip()
 
 
 def build_file_records(
@@ -241,10 +304,11 @@ def build_process_result(
     """Create a full ProcessResult summary object for UI and export layers."""
 
     failed_files = [record for record in file_records if record.status == "解析失败"]
+    complete_members = sum(1 for member in members if member.is_complete)
     summary = ProcessSummary(
         member_count=len(members),
-        complete_member_count=sum(1 for member in members if member.status == "完整"),
-        pending_member_count=sum(1 for member in members if member.status != "完整"),
+        complete_member_count=complete_members,
+        pending_member_count=max(0, len(members) - complete_members),
         failed_file_count=len(failed_files),
         source_file_count=len(file_records),
         slot_count=len(slots or []),

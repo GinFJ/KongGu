@@ -36,6 +36,24 @@ def test_add_pdf_sources_infers_kind_and_skips_duplicates(tmp_path: Path):
     assert result.errors == []
 
 
+def test_add_pdf_sources_skips_same_content_duplicate_files(tmp_path: Path):
+    first = tmp_path / "办公室-张三-中方课表.pdf"
+    duplicate = tmp_path / "办公室-张三-中方课表-副本.pdf"
+    first.write_bytes(b"same-pdf-content")
+    duplicate.write_bytes(b"same-pdf-content")
+
+    result = add_pdf_sources(
+        paths=[str(first), str(duplicate)],
+        explicit_kind=None,
+        existing_sources=[],
+        schedule_core=FakeKindCore(),
+    )
+
+    assert [source.file_name for source in result.added] == [first.name]
+    assert result.skipped == [str(duplicate)]
+    assert result.errors == []
+
+
 def test_add_pdf_sources_uses_explicit_kind_and_defaults_unknown_to_chinese(tmp_path: Path):
     unknown = tmp_path / "张三.pdf"
     explicit = tmp_path / "李四.pdf"

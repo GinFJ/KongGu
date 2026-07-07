@@ -44,6 +44,17 @@ class FakeScheduleCore:
     def synthesize_calendar_from_blocks(self, blocks):
         return pd.DataFrame([{"date": "2026-03-16", "week": 3, "weekday": "周一"}])
 
+    def default_timetable(self):
+        return pd.DataFrame(
+            [
+                {"period": 1, "start": "08:10", "end": "08:55"},
+                {"period": 12, "start": "12:40", "end": "13:25"},
+            ]
+        )
+
+    def validate_timetable(self, timetable):
+        return timetable, []
+
     def build_occupancy(self, blocks):
         return {(3, "周一", 1): {"张三"}}
 

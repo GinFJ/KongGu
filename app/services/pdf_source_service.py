@@ -41,6 +41,11 @@ def add_pdf_sources(
 
     result = PdfSourceAddResult()
     existing = {(item.source_path, item.kind) for item in existing_sources}
+    existing_hashes = {
+        (item.content_hash, item.kind)
+        for item in existing_sources
+        if item.content_hash
+    }
     for path in paths:
         pdf_path = Path(path)
         if not pdf_path.exists():
@@ -59,8 +64,15 @@ def add_pdf_sources(
             result.errors.append((pdf_path, exc))
             continue
 
+        hash_key = (source.content_hash, source.kind)
+        if source.content_hash and hash_key in existing_hashes:
+            result.skipped.append(str(pdf_path))
+            continue
+
         result.added.append(source)
         existing.add(key)
+        if source.content_hash:
+            existing_hashes.add(hash_key)
     return result
 
 

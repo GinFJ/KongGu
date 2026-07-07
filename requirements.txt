@@ -6,7 +6,4 @@ paddlepaddle
 paddleocr
 opencv-python-headless
 pytest
-fastapi
-uvicorn
-python-multipart
-jinja2
+pyinstaller

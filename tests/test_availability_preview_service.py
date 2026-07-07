@@ -1,6 +1,6 @@
 import pandas as pd
 
-from app.services.availability_preview_service import build_availability_preview, build_date_map, build_time_map
+from app.services.availability_preview_service import build_availability_preview, build_date_map, build_period_order, build_time_map
 
 
 def test_build_availability_preview_reports_free_and_busy_members():
@@ -16,7 +16,7 @@ def test_build_availability_preview_reports_free_and_busy_members():
         timetable_df=timetable_df,
     )
 
-    assert len(result.free_df) == 11
+    assert len(result.free_df) == 1
     first = result.free_df.iloc[0]
     assert first["周次"] == 3
     assert first["日期"] == "2026-03-16"
@@ -62,3 +62,4 @@ def test_build_date_and_time_maps_skip_invalid_rows():
 
     assert build_date_map(calendar_df) == {(3, "周一"): "2026-03-16"}
     assert build_time_map(timetable_df) == {1: "08:10-08:55"}
+    assert build_period_order(timetable_df) == [1]
