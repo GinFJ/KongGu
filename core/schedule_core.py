@@ -12,10 +12,19 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.worksheet.worksheet import Worksheet
 
 
 WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 WEEKDAY_INDEX = {weekday: index for index, weekday in enumerate(WEEKDAYS)}
+SEMESTER_START = date(2026, 3, 2)
+TEACHING_WEEKS = 18
+PERIOD_DISPLAY_ORDER = [1, 2, 3, 4, 12, 13, 5, 6, 7, 8, 9, 10, 11]
+PERIOD_DISPLAY_INDEX = {period: index for index, period in enumerate(PERIOD_DISPLAY_ORDER)}
 ENGLISH_WEEKDAY_MAP = {
     "Monday": "周一",
     "Tuesday": "周二",
@@ -33,6 +42,16 @@ PERIOD_GROUPS = {
     "7-8": [7, 8],
     "9-11": [9, 10, 11],
 }
+
+EXPORT_WEEKDAYS = ["周一", "周二", "周三", "周四", "周五"]
+EXPORT_PERIOD_BLOCKS = [
+    ("1-2节", [1, 2], 5),
+    ("3-4节", [3, 4], 19),
+    ("中午", [12, 13], 33),
+    ("5-6节", [5, 6], 47),
+    ("7-8节", [7, 8], 61),
+    ("9-11节", [9, 10, 11], 75),
+]
 
 NOON_PERIOD_TIMES = {
     12: ("12:40", "13:25"),
@@ -121,6 +140,8 @@ def default_timetable() -> pd.DataFrame:
             {"period": 2, "start": "09:00", "end": "09:45"},
             {"period": 3, "start": "10:15", "end": "11:00"},
             {"period": 4, "start": "11:05", "end": "11:50"},
+            {"period": 12, "start": "12:40", "end": "13:25"},
+            {"period": 13, "start": "13:30", "end": "14:15"},
             {"period": 5, "start": "14:30", "end": "15:15"},
             {"period": 6, "start": "15:20", "end": "16:05"},
             {"period": 7, "start": "16:25", "end": "17:10"},
@@ -138,7 +159,8 @@ def validate_timetable(timetable: pd.DataFrame) -> tuple[pd.DataFrame, list[str]
         return default_timetable(), ["节次时间表缺失，已使用默认时间表。"]
     clean = timetable.copy()
     clean["period"] = clean["period"].astype(int)
-    return clean.sort_values("period").reset_index(drop=True), []
+    clean["_display_order"] = clean["period"].map(lambda period: PERIOD_DISPLAY_INDEX.get(int(period), 10_000 + int(period)))
+    return clean.sort_values("_display_order").drop(columns="_display_order").reset_index(drop=True), []
 
 
 def period_time_range(period: int) -> str:
@@ -385,25 +407,8 @@ def parse_actual_pdf_sources(
 
 def synthesize_calendar_from_blocks(blocks: list[dict[str, Any]]) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
-    seen: set[tuple[int, str]] = set()
-    for block in blocks:
-        week = int(block.get("week") or 0)
-        date_text = block.get("date")
-        if not week or not date_text:
-            continue
-        key = (week, date_text)
-        if key in seen:
-            continue
-        seen.add(key)
-        day = _parse_date(date_text)
-        weekday = block.get("weekday") or WEEKDAYS[day.weekday()]
-        rows.append({"date": day.isoformat(), "week": week, "weekday": weekday})
-
-    if rows:
-        return pd.DataFrame(rows).sort_values(["week", "date"]).reset_index(drop=True)
-
-    semester_start = date(2026, 3, 2)
-    for week in range(1, 19):
+    semester_start = _semester_start_date()
+    for week in range(1, _teaching_weeks() + 1):
         for index, weekday in enumerate(WEEKDAYS):
             current = semester_start + timedelta(days=(week - 1) * 7 + index)
             rows.append({"date": current.isoformat(), "week": week, "weekday": weekday})
@@ -515,6 +520,9 @@ def build_empty_schedule_excel_bytes(
     export_df = all_slot_df.copy()
     if threshold:
         export_df = export_df[export_df["free_count"] >= threshold]
+    selected_weeks = sorted({int(week) for week in weeks})
+    if selected_weeks and "week" in export_df.columns:
+        export_df = export_df[export_df["week"].astype(int).isin(selected_weeks)]
     export_df = export_df.rename(
         columns={
             "week": "周次",
@@ -537,28 +545,173 @@ def build_empty_schedule_excel_bytes(
         [
             {"项目": "成员数量", "值": len(students)},
             {"项目": "时间格数量", "值": len(all_slot_df)},
+            {"项目": "周次工作表数量", "值": len(weeks)},
             {"项目": "生成时间", "值": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
         ]
     )
 
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        export_df.to_excel(writer, index=False, sheet_name="空课表")
-        member_df.to_excel(writer, index=False, sheet_name="成员完整性检查")
-        if blocks_df is None:
-            blocks_df = pd.DataFrame()
-        blocks_df.to_excel(writer, index=False, sheet_name="课程占用明细")
-        logs_df.to_excel(writer, index=False, sheet_name="处理日志摘要")
+    workbook = Workbook()
+    ordered_weeks = selected_weeks or _ordered_weeks_from_calendar(calendar_df)
+    if ordered_weeks:
+        for index, week in enumerate(ordered_weeks):
+            sheet = workbook.active if index == 0 else workbook.create_sheet()
+            sheet.title = f"第{week}周"
+            _populate_weekly_availability_sheet(
+                sheet=sheet,
+                week=week,
+                students=students,
+                occupancy=occupancy,
+                threshold=threshold,
+            )
+    else:
+        sheet = workbook.active
+        sheet.title = "空课表"
+        _populate_empty_weekly_sheet(sheet)
 
-        for sheet in writer.book.worksheets:
-            sheet.freeze_panes = "A2"
-            for column_cells in sheet.columns:
-                values = [str(cell.value or "") for cell in column_cells]
-                width = min(max(len(value) for value in values) + 2, 42)
-                sheet.column_dimensions[column_cells[0].column_letter].width = width
-            for cell in sheet[1]:
-                cell.font = cell.font.copy(bold=True)
+    _append_dataframe_sheet(workbook, "空课明细", export_df)
+    _append_dataframe_sheet(workbook, "成员完整性检查", member_df)
+    if blocks_df is None:
+        blocks_df = pd.DataFrame()
+    _append_dataframe_sheet(workbook, "课程占用明细", blocks_df)
+    _append_dataframe_sheet(workbook, "处理日志摘要", logs_df)
+
+    workbook.save(output)
     return output.getvalue()
+
+
+def _populate_weekly_availability_sheet(
+    *,
+    sheet: Worksheet,
+    week: int,
+    students: list[str],
+    occupancy: dict[tuple[int, str, int], set[str]],
+    threshold: int,
+) -> None:
+    """Create the association-style weekly free-time matrix."""
+
+    _prepare_weekly_sheet_grid(sheet)
+    sheet["A1"] = f"第{_to_chinese_number(week)}周空课表"
+
+    for day_index, weekday in enumerate(EXPORT_WEEKDAYS):
+        start_column = 2 + day_index * 4
+        end_column = start_column + 3
+        sheet.merge_cells(start_row=3, start_column=start_column, end_row=4, end_column=end_column)
+        cell = sheet.cell(row=3, column=start_column)
+        cell.value = weekday
+        cell.font = Font(name="宋体", size=12)
+
+    for label, periods, start_row in EXPORT_PERIOD_BLOCKS:
+        end_row = start_row + 13
+        sheet.merge_cells(start_row=start_row, start_column=1, end_row=end_row, end_column=1)
+        period_cell = sheet.cell(row=start_row, column=1)
+        period_cell.value = label
+        period_cell.font = Font(name="宋体", size=11)
+
+        for day_index, weekday in enumerate(EXPORT_WEEKDAYS):
+            start_column = 2 + day_index * 4
+            end_column = start_column + 3
+            sheet.merge_cells(start_row=start_row, start_column=start_column, end_row=end_row, end_column=end_column)
+            free_members = _free_members_for_period_block(
+                occupancy=occupancy,
+                students=students,
+                week=week,
+                weekday=weekday,
+                periods=periods,
+            )
+            value = "，".join(free_members) if not threshold or len(free_members) >= threshold else ""
+            cell = sheet.cell(row=start_row, column=start_column)
+            cell.value = value
+            cell.font = Font(name="宋体", size=11)
+
+
+def _populate_empty_weekly_sheet(sheet: Worksheet) -> None:
+    _prepare_weekly_sheet_grid(sheet)
+    sheet["A1"] = "空课表"
+
+
+def _prepare_weekly_sheet_grid(sheet: Worksheet) -> None:
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    sheet.merge_cells("A1:U2")
+    title = sheet["A1"]
+    title.font = Font(name="宋体", size=18)
+    title.fill = PatternFill(fill_type="solid", fgColor="FFFFFF")
+
+    sheet.merge_cells("A3:A4")
+    for column in range(1, 22):
+        sheet.column_dimensions[get_column_letter(column)].width = 13
+    max_row = 4 + len(EXPORT_PERIOD_BLOCKS) * 14
+    for row in range(1, max_row + 1):
+        sheet.row_dimensions[row].height = 18
+        for column in range(1, 22):
+            cell = sheet.cell(row=row, column=column)
+            cell.alignment = alignment
+            cell.border = border
+    sheet.row_dimensions[1].height = 24
+    sheet.row_dimensions[2].height = 24
+
+
+def _free_members_for_period_block(
+    *,
+    occupancy: dict[tuple[int, str, int], set[str]],
+    students: list[str],
+    week: int,
+    weekday: str,
+    periods: list[int],
+) -> list[str]:
+    occupied: set[str] = set()
+    for period in periods:
+        occupied.update(occupancy.get((week, weekday, period), set()))
+    return [student for student in students if student not in occupied]
+
+
+def _append_dataframe_sheet(workbook: Workbook, title: str, dataframe: pd.DataFrame) -> None:
+    sheet = workbook.create_sheet(title=title)
+    for row in dataframe_to_rows(dataframe, index=False, header=True):
+        sheet.append(row)
+    sheet.freeze_panes = "A2"
+    header_font = Font(name="宋体", size=11, bold=True)
+    body_font = Font(name="宋体", size=11)
+    alignment = Alignment(vertical="top", wrap_text=True)
+    for row in sheet.iter_rows():
+        for cell in row:
+            cell.font = header_font if cell.row == 1 else body_font
+            cell.alignment = alignment
+    for column_cells in sheet.columns:
+        values = [str(cell.value or "") for cell in column_cells]
+        width = min(max(len(value) for value in values) + 2, 42)
+        sheet.column_dimensions[column_cells[0].column_letter].width = max(width, 10)
+
+
+def _ordered_weeks_from_calendar(calendar_df: pd.DataFrame) -> list[int]:
+    if calendar_df is None or calendar_df.empty or "week" not in calendar_df.columns:
+        return []
+    weeks: set[int] = set()
+    for value in calendar_df["week"]:
+        try:
+            weeks.add(int(value))
+        except Exception:
+            continue
+    return sorted(weeks)
+
+
+def _to_chinese_number(value: int) -> str:
+    digits = "零一二三四五六七八九"
+    if value <= 0:
+        return str(value)
+    if value < 10:
+        return digits[value]
+    if value == 10:
+        return "十"
+    if value < 20:
+        return "十" + digits[value % 10]
+    if value < 100:
+        tens, ones = divmod(value, 10)
+        return digits[tens] + "十" + (digits[ones] if ones else "")
+    return str(value)
 
 
 def _extract_pdf_text(source: dict[str, Any]) -> str:
@@ -691,8 +844,8 @@ def _build_ocr_engine():
         )
     elif os.environ.get("KONGGU_ALLOW_OCR_MODEL_DOWNLOAD") != "1":
         raise RuntimeError(
-            "扫描件 OCR 模型未就绪。请先运行 tools/download_ocr_models.py 下载 "
-            "PP-OCRv4_mobile_det 和 PP-OCRv4_mobile_rec，或将模型放入 cache/paddlex/official_models。"
+            "扫描件 OCR 模型未就绪。请通过离线安装包修复材料，或将 "
+            "PP-OCRv4_mobile_det 和 PP-OCRv4_mobile_rec 放入 %LOCALAPPDATA%\\Konggu\\ocr_models。"
         )
     _OCR_ENGINE = PaddleOCR(**kwargs)
     return _OCR_ENGINE
@@ -1665,13 +1818,52 @@ def _parse_date(text: str) -> date:
 
 
 def _week_from_date(day: date) -> int:
-    semester_start = date(2026, 3, 2)
-    return max(1, ((day - semester_start).days // 7) + 1)
+    return max(1, ((day - _semester_start_date()).days // 7) + 1)
 
 
 def _date_for_weekday(week: int, weekday: str) -> date:
-    semester_start = date(2026, 3, 2)
-    return semester_start + timedelta(days=(week - 1) * 7 + WEEKDAY_INDEX.get(weekday, 0))
+    return _semester_start_date() + timedelta(days=(week - 1) * 7 + WEEKDAY_INDEX.get(weekday, 0))
+
+
+def _school_calendar_config() -> dict[str, Any]:
+    path = Path(__file__).resolve().parents[1] / "config" / "school_calendar.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _semester_start_date() -> date:
+    configured = os.environ.get("KONGGU_SEMESTER_START_DATE")
+    if configured:
+        try:
+            return date.fromisoformat(configured)
+        except Exception:
+            pass
+    value = _school_calendar_config().get("semester_start_date")
+    if value:
+        try:
+            return date.fromisoformat(str(value))
+        except Exception:
+            pass
+    return SEMESTER_START
+
+
+def _teaching_weeks() -> int:
+    configured = os.environ.get("KONGGU_TEACHING_WEEKS")
+    if configured:
+        try:
+            weeks = int(configured)
+            if weeks > 0:
+                return weeks
+        except Exception:
+            pass
+    value = _school_calendar_config().get("teaching_weeks")
+    try:
+        weeks = int(value)
+    except Exception:
+        return TEACHING_WEEKS
+    return weeks if weeks > 0 else TEACHING_WEEKS
 
 
 def _is_empty_or_non_class(token: str) -> bool:

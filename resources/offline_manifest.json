@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "generated_at": "2026-07-07T08:48:13Z",
+  "entries": [
+    {
+      "source": "resources/ocr_models/PP-OCRv4_mobile_det/inference.json",
+      "target": "ocr_models/PP-OCRv4_mobile_det/inference.json",
+      "sha256": "05feef1acb00aa4cd7362b15f7f501fc4f99d7b1fa73c1c871e0c7b1504b0f5c",
+      "size": 229777,
+      "kind": "ocr_model"
+    },
+    {
+      "source": "resources/ocr_models/PP-OCRv4_mobile_det/inference.pdiparams",
+      "target": "ocr_models/PP-OCRv4_mobile_det/inference.pdiparams",
+      "sha256": "54a85087b4d31fa3ea4e4aba100169a1ec3e3274cd3352b9068b3cfccbca7829",
+      "size": 4692937,
+      "kind": "ocr_model"
+    },
+    {
+      "source": "resources/ocr_models/PP-OCRv4_mobile_det/inference.yml",
+      "target": "ocr_models/PP-OCRv4_mobile_det/inference.yml",
+      "sha256": "4f5bd0def48e20194d87d4c184a3ae3007a1299de7fed0ef763d3e7e873e77f6",
+      "size": 903,
+      "kind": "ocr_model"
+    },
+    {
+      "source": "resources/ocr_models/PP-OCRv4_mobile_rec/inference.json",
+      "target": "ocr_models/PP-OCRv4_mobile_rec/inference.json",
+      "sha256": "30f78ace76b2cce756abba97eb17f4c79e776d88ad68dd44a787a3db84b407a7",
+      "size": 217718,
+      "kind": "ocr_model"
+    },
+    {
+      "source": "resources/ocr_models/PP-OCRv4_mobile_rec/inference.pdiparams",
+      "target": "ocr_models/PP-OCRv4_mobile_rec/inference.pdiparams",
+      "sha256": "948b8d2ca6ad4bd7b64c0ee3fb838a06db87d4cf57137173ce409c995df21012",
+      "size": 10766823,
+      "kind": "ocr_model"
+    },
+    {
+      "source": "resources/ocr_models/PP-OCRv4_mobile_rec/inference.yml",
+      "target": "ocr_models/PP-OCRv4_mobile_rec/inference.yml",
+      "sha256": "1207e8ba3d3dad6b99115f7febf515f5ffc0d87ed77366d7a4b4b3f1709c005d",
+      "size": 53543,
+      "kind": "ocr_model"
+    },
+    {
+      "source": "assets/konggu-home-bg.png",
+      "target": "resources/assets/konggu-home-bg.png",
+      "sha256": "a371b80a27d188027fd8f8314d890c5e5f3fe124ca8c8a0dbc28e2340c014ed6",
+      "size": 1458584,
+      "kind": "asset"
+    },
+    {
+      "source": "assets/konggu-readme-footer.png",
+      "target": "resources/assets/konggu-readme-footer.png",
+      "sha256": "79c571abc1739354345250b0e4248d7769bb5f489180e92b4cf168dbb86ba7ca",
+      "size": 1308711,
+      "kind": "asset"
+    },
+    {
+      "source": "assets/konggu-readme-hero.png",
+      "target": "resources/assets/konggu-readme-hero.png",
+      "sha256": "1790329107dceee743c036d5b7d6da72078f038bfb68c5eb4f3f3edf99705753",
+      "size": 1577541,
+      "kind": "asset"
+    },
+    {
+      "source": "assets/konggu-wordmark.png",
+      "target": "resources/assets/konggu-wordmark.png",
+      "sha256": "13f1ad50f50fc35a375abcba1aaf30e0942607e3f8b5866cecdffa1e48b54397",
+      "size": 296703,
+      "kind": "asset"
+    },
+    {
+      "source": "config/ocr_models.json",
+      "target": "resources/config/ocr_models.json",
+      "sha256": "a6e1a53872f8ffa10f810557b9bc3e6872b894a9736c47eb6d5f1047ee96c53f",
+      "size": 941,
+      "kind": "config"
+    },
+    {
+      "source": "config/period_time.json",
+      "target": "resources/config/period_time.json",
+      "sha256": "754868217cf991c471edd60c1a633a0c62fb3a6e8a1ac4774fb53deb6347c524",
+      "size": 1037,
+      "kind": "config"
+    },
+    {
+      "source": "config/reference_library.json",
+      "target": "resources/config/reference_library.json",
+      "sha256": "91fd7f424c352dcc28db94fbf5497a4c7d2329e899db83d7fa1f18f11a5273d0",
+      "size": 331,
+      "kind": "config"
+    },
+    {
+      "source": "config/school_calendar.json",
+      "target": "resources/config/school_calendar.json",
+      "sha256": "166a1aecd33de7e036db8c2e35aa2c37eb394139d76367b858a0d5511219a8f8",
+      "size": 286,
+      "kind": "config"
+    }
+  ]
+}

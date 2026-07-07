@@ -5,6 +5,8 @@
     {"period": 2, "start": "09:00", "end": "09:45", "label": "第2节"},
     {"period": 3, "start": "10:15", "end": "11:00", "label": "第3节"},
     {"period": 4, "start": "11:05", "end": "11:50", "label": "第4节"},
+    {"period": 12, "start": "12:40", "end": "13:25", "label": "中午第1节"},
+    {"period": 13, "start": "13:30", "end": "14:15", "label": "中午第2节"},
     {"period": 5, "start": "14:30", "end": "15:15", "label": "第5节（下午）"},
     {"period": 6, "start": "15:20", "end": "16:05", "label": "第6节（下午）"},
     {"period": 7, "start": "16:25", "end": "17:10", "label": "第7节（下午）"},

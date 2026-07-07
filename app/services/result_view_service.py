@@ -70,21 +70,21 @@ def build_file_table(sources: list[PdfSource], file_records: list[FileProcessRec
 def _member_health_status(member: MemberSchedule, block_count: int) -> str:
     if block_count == 0:
         return "疑似解析失败"
+    if member.errors:
+        return "需检查"
     if member.status == "完整":
         return "正常"
     if member.status == "缺中方":
         return "缺少中方课表"
     if member.status == "缺英方":
         return "缺少英方课表"
-    if member.errors:
-        return "需检查"
     return member.status
 
 
 def build_summary_text(members: list[MemberSchedule], student_count: int) -> str:
     """Build the short parse-completion summary for the sidebar."""
 
-    complete_members = sum(1 for member in members if member.status == "完整")
+    complete_members = sum(1 for member in members if member.is_complete)
     pending_members = max(0, len(members) - complete_members)
     return f"共 {student_count} 人，完整 {complete_members} 人，待补 {pending_members} 人。"
 

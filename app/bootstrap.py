@@ -13,10 +13,17 @@ from pathlib import Path
 
 import sitecustomize  # noqa: F401  # Keep local/user site-package ordering stable before pandas imports.
 
+from app.offline_resources import configure_offline_environment
+
 
 def resource_path(name: str) -> Path:
     """Return a bundled resource path, or the project-root path in development."""
 
+    configured = os.environ.get("KONGGU_RESOURCE_ROOT")
+    if configured:
+        candidate = Path(configured) / name
+        if candidate.exists():
+            return candidate
     if hasattr(sys, "_MEIPASS"):
         return Path(sys._MEIPASS) / name
     return Path(__file__).resolve().parents[1] / name
@@ -37,25 +44,24 @@ def load_reference_library_config() -> dict:
 def configure_runtime_environment() -> None:
     """Keep third-party caches inside the project or bundle directory."""
 
-    if getattr(sys, "frozen", False):
-        cache_root = Path(sys.executable).resolve().parent / "cache"
-    else:
-        cache_root = resource_path("cache")
-    cache_root.mkdir(parents=True, exist_ok=True)
+    resource_paths = configure_offline_environment()
+    cache_root = resource_paths.cache_root
     cache_paths = {
         "MPLCONFIGDIR": cache_root / "matplotlib",
-        "PADDLE_PDX_CACHE_HOME": cache_root / "paddlex",
+        "PADDLE_PDX_CACHE_HOME": resource_paths.ocr_models_root.parent,
         "PADDLE_HOME": cache_root / "paddle",
         "PADDLEOCR_HOME": cache_root / "paddleocr",
         "KONGGU_OCR_TEXT_CACHE": cache_root / "pdf_text",
         "KONGGU_OCR_LAYOUT_CACHE": cache_root / "pdf_layout",
         "KONGGU_PARSE_CACHE": cache_root / "parsed_blocks",
+        "KONGGU_OCR_MODEL_DIR": resource_paths.ocr_models_root,
     }
     for env_name, path in cache_paths.items():
         path.mkdir(parents=True, exist_ok=True)
         os.environ.setdefault(env_name, str(path))
     os.environ.setdefault("PADDLE_PDX_MODEL_SOURCE", "bos")
     os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+    os.environ.pop("KONGGU_ALLOW_OCR_MODEL_DOWNLOAD", None)
 
 
 def load_schedule_core():

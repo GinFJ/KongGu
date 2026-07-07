@@ -91,3 +91,44 @@ def test_file_records_match_by_inferred_member_name_when_source_file_missing():
     assert infer_member_name_from_filename("办公室-刘金富-部长-中方课表.pdf") == "刘金富"
     assert records[0].member_name == "刘金富"
     assert records[0].block_count == 1
+
+
+def test_infer_member_name_handles_irregular_filename_parts():
+    assert infer_member_name_from_filename("2026春_办公室_张三_中方课表.pdf") == "张三"
+    assert infer_member_name_from_filename("办公室张三中方课表.pdf") == "张三"
+    assert infer_member_name_from_filename("宣传部-李四-英方.pdf") == "李四"
+
+
+def test_build_member_schedules_flags_period_conflicts():
+    blocks = course_blocks_from_legacy(
+        [
+            {
+                "name": "张三",
+                "source_type": "中方",
+                "week": 3,
+                "weekday": "周一",
+                "periods": [1],
+                "course": "高等数学",
+                "source_file": "张三-中方课表.pdf",
+            },
+            {
+                "name": "张三",
+                "source_type": "英方",
+                "week": 3,
+                "weekday": "周一",
+                "periods": [1],
+                "course": "Academic Writing",
+                "source_file": "张三-英方课表.pdf",
+            },
+        ]
+    )
+
+    members = build_member_schedules(blocks, ["张三"])
+
+    assert members[0].status == "完整"
+    assert len(members[0].errors) == 1
+    assert "第3周周一第1节" in members[0].display_remark
+
+    result = build_process_result(blocks=blocks, members=members, file_records=[])
+    assert result.summary.complete_member_count == 0
+    assert result.summary.pending_member_count == 1

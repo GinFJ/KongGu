@@ -50,6 +50,7 @@ class CourseBlock:
     date: str | None = None
     start_time: str | None = None
     end_time: str | None = None
+    course: str | None = None
     source_file: str | None = None
 
 
@@ -92,7 +93,10 @@ class MemberSchedule:
         if self.remark:
             return self.remark
         if self.errors:
-            return "解析失败，请检查 PDF 是否清晰或重新上传"
+            first_error = self.errors[0]
+            if hasattr(first_error, "to_user_message"):
+                return first_error.to_user_message()
+            return str(first_error)
         if self.missing_parts:
             return f"缺少{'、'.join(self.missing_parts)}课表，请补充上传"
         if self.is_complete:

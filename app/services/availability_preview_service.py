@@ -27,7 +27,7 @@ def build_availability_preview(
     calendar_df: pd.DataFrame,
     timetable_df: pd.DataFrame,
 ) -> AvailabilityPreviewResult:
-    """Build the full availability preview for all weeks, weekdays, and 1-11 periods."""
+    """Build the full availability preview for all weeks, weekdays, and configured periods."""
 
     if not students or not weeks:
         return AvailabilityPreviewResult(free_df=pd.DataFrame(), slots=[])
@@ -37,10 +37,11 @@ def build_availability_preview(
     slots = []
     date_map = build_date_map(calendar_df)
     time_map = build_time_map(timetable_df)
+    periods = build_period_order(timetable_df) or list(range(1, 12))
 
     for week in weeks:
         for weekday in weekdays:
-            for period in range(1, 12):
+            for period in periods:
                 busy_students = sorted(occupancy.get((week, weekday, period), set()))
                 free_students = [student for student in students if student not in busy_students]
                 free_count = total_students - len(busy_students)
@@ -81,6 +82,23 @@ def build_date_map(calendar_df: pd.DataFrame) -> dict[tuple[int, str], str]:
         weekday = str(row["weekday"])
         mapping[(week, weekday)] = row["date"].strftime("%Y-%m-%d")
     return mapping
+
+
+def build_period_order(timetable_df: pd.DataFrame) -> list[int]:
+    """Return periods in the timetable's display order."""
+
+    if timetable_df is None or timetable_df.empty or "period" not in timetable_df.columns:
+        return []
+
+    periods: list[int] = []
+    for _, row in timetable_df.iterrows():
+        try:
+            period = int(row["period"])
+        except Exception:
+            continue
+        if period not in periods:
+            periods.append(period)
+    return periods
 
 
 def build_time_map(timetable_df: pd.DataFrame) -> dict[int, str]:

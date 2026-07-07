@@ -8,6 +8,12 @@ __pycache__/
 
 build/
 dist/
+node_modules/
+src-tauri/target/
+src-tauri/binaries/*.exe
+src-tauri/binaries/*-pc-windows-msvc.exe
+downloads/
+tools/nsis/
 cache/
 .runtime/
 
@@ -25,8 +31,3 @@ env/
 
 *.tmp
 *.bak
-
-# Generated export artifacts; keep export/__init__.py as package source.
-export/*.csv
-export/*.json
-export/*.md

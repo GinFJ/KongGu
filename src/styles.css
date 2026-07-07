@@ -1,0 +1,312 @@
+:root {
+  font-family: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+  color: #18212f;
+  background: #f6f7f9;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 1080px;
+  min-height: 100vh;
+}
+
+button {
+  border: 1px solid #cfd7e3;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #18212f;
+  cursor: pointer;
+  font: 600 14px/1 "Microsoft YaHei", "Segoe UI", sans-serif;
+  padding: 12px 14px;
+}
+
+button:hover:not(:disabled) {
+  border-color: #1c7f64;
+  color: #0d644e;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+button.primary {
+  background: #116c54;
+  border-color: #116c54;
+  color: #ffffff;
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.sidebar {
+  background: #0f1722;
+  color: #eef4f2;
+  padding: 26px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.brand img {
+  width: 112px;
+  height: auto;
+  filter: brightness(0) invert(1);
+}
+
+.brand span {
+  color: #9fb4c7;
+  font-size: 13px;
+}
+
+.resourceBox,
+.settingsBox {
+  margin-top: 12px;
+  padding: 16px;
+  border: 1px solid #2c3a49;
+  border-radius: 8px;
+  background: #172231;
+}
+
+.resourceBox h2,
+.settingsBox h2,
+.filePanel h2,
+.logPanel h2 {
+  font-size: 14px;
+  margin: 0 0 10px;
+}
+
+.settingsBox {
+  display: grid;
+  gap: 10px;
+}
+
+.settingsBox label {
+  display: grid;
+  gap: 6px;
+}
+
+.settingsBox span {
+  color: #aec0ce;
+  font-size: 12px;
+}
+
+.settingsBox small {
+  color: #8fa4b6;
+  line-height: 1.45;
+}
+
+.settingsBox input {
+  width: 100%;
+  border: 1px solid #334456;
+  border-radius: 7px;
+  background: #0f1722;
+  color: #eef4f2;
+  font: 600 13px/1 "Microsoft YaHei", "Segoe UI", sans-serif;
+  padding: 10px 11px;
+}
+
+.settingsBox input:disabled {
+  opacity: 0.6;
+}
+
+.settingsBox button {
+  padding: 10px 12px;
+}
+
+.resourceBox p {
+  margin: 0 0 8px;
+  font-weight: 700;
+}
+
+.resourceBox small {
+  color: #aec0ce;
+  line-height: 1.5;
+}
+
+.ok {
+  color: #3ecf8e;
+}
+
+.warn {
+  color: #f0b84b;
+}
+
+.workspace {
+  min-width: 0;
+  padding: 26px;
+  display: grid;
+  grid-template-rows: auto auto minmax(380px, 1fr) auto;
+  gap: 18px;
+}
+
+.topbar,
+.filePanel,
+.resultPanel,
+.logPanel {
+  background: #ffffff;
+  border: 1px solid #dbe2ea;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(32, 42, 54, 0.06);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 22px 24px;
+}
+
+.topbar h1 {
+  margin: 0 0 8px;
+  font-size: 26px;
+  letter-spacing: 0;
+}
+
+.topbar p {
+  margin: 0;
+  color: #5f6d7c;
+  font-size: 14px;
+}
+
+.stats {
+  display: flex;
+  gap: 10px;
+}
+
+.stats div {
+  width: 92px;
+  padding: 12px;
+  border-radius: 7px;
+  background: #f2f5f8;
+  text-align: center;
+}
+
+.stats strong {
+  display: block;
+  font-size: 22px;
+}
+
+.stats span {
+  color: #6b7786;
+  font-size: 12px;
+}
+
+.filePanel,
+.resultPanel,
+.logPanel {
+  padding: 16px;
+}
+
+.fileList {
+  max-height: 130px;
+  overflow: auto;
+}
+
+.fileRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  border-top: 1px solid #edf1f4;
+  padding: 9px 0;
+}
+
+.fileRow span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.fileRow button {
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.tabs button {
+  padding: 10px 12px;
+}
+
+.tabs button.active {
+  background: #e7f4ef;
+  border-color: #64a892;
+  color: #0c624c;
+}
+
+.tableWrap {
+  max-height: 470px;
+  overflow: auto;
+  border: 1px solid #e3e8ee;
+  border-radius: 7px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+th {
+  position: sticky;
+  top: 0;
+  background: #f4f7fa;
+  color: #435264;
+  text-align: left;
+  font-weight: 700;
+  border-bottom: 1px solid #dbe2ea;
+  padding: 10px;
+}
+
+td {
+  border-bottom: 1px solid #edf1f4;
+  color: #253244;
+  padding: 9px 10px;
+  vertical-align: top;
+}
+
+.empty {
+  color: #6a7685;
+  padding: 12px 0;
+}
+
+.empty.large {
+  display: grid;
+  place-items: center;
+  min-height: 280px;
+  color: #7a8795;
+}
+
+.logPanel {
+  max-height: 140px;
+  overflow: auto;
+}
+
+.logPanel p {
+  margin: 0;
+  padding: 5px 0;
+  color: #576575;
+  font-size: 12px;
+}

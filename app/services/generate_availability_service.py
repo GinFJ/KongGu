@@ -71,8 +71,8 @@ def generate_availability(
     course_blocks = course_blocks_from_legacy(blocks)
     occupancy = schedule_core.build_occupancy(blocks)
     students = sorted({block["name"] for block in blocks})
-    weeks = sorted({int(block["week"]) for block in blocks if block.get("week") is not None})
-    periods = list(range(1, 12))
+    weeks = _weeks_from_calendar(calendar_df) or sorted({int(block["week"]) for block in blocks if block.get("week") is not None})
+    periods = _periods_from_timetable(schedule_core)
     all_slot_df = schedule_core.build_slot_table(occupancy, students, weeks, weekdays, periods)
     blocks_df = schedule_core.blocks_to_dataframe(blocks)
     member_schedules = build_member_schedules(course_blocks, students)
@@ -95,3 +95,24 @@ def generate_availability(
         file_records=file_records,
         elapsed_seconds=elapsed,
     )
+
+
+def _weeks_from_calendar(calendar_df: pd.DataFrame) -> list[int]:
+    if calendar_df is None or calendar_df.empty or "week" not in calendar_df.columns:
+        return []
+    weeks: set[int] = set()
+    for value in calendar_df["week"]:
+        try:
+            weeks.add(int(value))
+        except Exception:
+            continue
+    return sorted(weeks)
+
+
+def _periods_from_timetable(schedule_core) -> list[int]:
+    try:
+        timetable = schedule_core.default_timetable()
+        timetable, _ = schedule_core.validate_timetable(timetable)
+        return [int(period) for period in timetable["period"]]
+    except Exception:
+        return list(range(1, 12))
