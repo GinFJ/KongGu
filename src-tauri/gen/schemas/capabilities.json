@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Konggu desktop window permissions","local":true,"windows":["main"],"permissions":["core:default","dialog:default",{"identifier":"shell:allow-execute","allow":[{"args":true,"name":"binaries/konggu-worker","sidecar":true}]}]}}
