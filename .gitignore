@@ -10,6 +10,7 @@ build/
 dist/
 node_modules/
 src-tauri/target/
+src-tauri/gen/schemas/
 src-tauri/binaries/*.exe
 src-tauri/binaries/*-pc-windows-msvc.exe
 downloads/

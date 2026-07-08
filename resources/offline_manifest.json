@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated_at": "2026-07-07T08:48:13Z",
+  "generated_at": "2026-07-08T02:48:14Z",
   "entries": [
     {
       "source": "resources/ocr_models/PP-OCRv4_mobile_det/inference.json",
@@ -45,20 +45,6 @@
       "kind": "ocr_model"
     },
     {
-      "source": "assets/konggu-home-bg.png",
-      "target": "resources/assets/konggu-home-bg.png",
-      "sha256": "a371b80a27d188027fd8f8314d890c5e5f3fe124ca8c8a0dbc28e2340c014ed6",
-      "size": 1458584,
-      "kind": "asset"
-    },
-    {
-      "source": "assets/konggu-readme-footer.png",
-      "target": "resources/assets/konggu-readme-footer.png",
-      "sha256": "79c571abc1739354345250b0e4248d7769bb5f489180e92b4cf168dbb86ba7ca",
-      "size": 1308711,
-      "kind": "asset"
-    },
-    {
       "source": "assets/konggu-readme-hero.png",
       "target": "resources/assets/konggu-readme-hero.png",
       "sha256": "1790329107dceee743c036d5b7d6da72078f038bfb68c5eb4f3f3edf99705753",
@@ -82,8 +68,8 @@
     {
       "source": "config/period_time.json",
       "target": "resources/config/period_time.json",
-      "sha256": "754868217cf991c471edd60c1a633a0c62fb3a6e8a1ac4774fb53deb6347c524",
-      "size": 1037,
+      "sha256": "50e91455cb4f6484b0bbf3743da0db74dd8fb9eca68ac2a6ad05ea9907157079",
+      "size": 1197,
       "kind": "config"
     },
     {
