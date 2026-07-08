@@ -43,6 +43,13 @@ type AppState = {
   logs: string[];
 };
 
+type FileView = {
+  file: string;
+  kind: string;
+  member: string;
+  missingPair: string;
+};
+
 const state: AppState = {
   files: [],
   resourceStatus: null,
@@ -90,7 +97,7 @@ async function refreshResources() {
     state.statusText = state.resourceStatus.ready ? "离线材料已就绪" : "离线材料缺失，可点击修复";
     log(state.statusText);
   } catch (error) {
-    state.statusText = `材料检查失败：${String(error)}`;
+    state.statusText = `材料检查暂不可用：${formatSidecarError(error)}`;
     log(state.statusText);
   } finally {
     state.busy = false;
@@ -108,7 +115,7 @@ async function repairResources() {
     state.statusText = state.resourceStatus.ready ? "离线材料已修复" : "仍有离线材料缺失";
     log(`修复完成，复制 ${repaired.copied.length} 个文件。`);
   } catch (error) {
-    state.statusText = `修复失败：${String(error)}`;
+    state.statusText = `修复失败：${formatSidecarError(error)}`;
     log(state.statusText);
   } finally {
     state.busy = false;
@@ -122,7 +129,7 @@ async function loadCalendarSettings() {
     state.calendarSettings = response.settings;
     render();
   } catch (error) {
-    log(`学期设置读取失败：${String(error)}`);
+    log(`学期设置读取失败：${formatSidecarError(error)}`);
   }
 }
 
@@ -138,7 +145,7 @@ async function saveCalendarSettings() {
     state.statusText = `学期设置已保存：第 1 周周一 ${state.calendarSettings.semester_start_date}，${state.calendarSettings.teaching_weeks} 周。`;
     log(state.statusText);
   } catch (error) {
-    state.statusText = `设置保存失败：${String(error)}`;
+    state.statusText = `设置保存失败：${formatSidecarError(error)}`;
     log(state.statusText);
   } finally {
     state.busy = false;
@@ -166,6 +173,12 @@ async function parseSchedules() {
     render();
     return;
   }
+  const invalidFiles = state.files.filter((file) => !inferFileKind(file));
+  if (invalidFiles.length) {
+    state.statusText = `有 ${invalidFiles.length} 个文件无法识别中方/英方，请先按“姓名-中方课表.pdf”或“姓名-英方课表.pdf”改名。`;
+    render();
+    return;
+  }
   state.busy = true;
   state.statusText = "正在解析课表 PDF";
   render();
@@ -182,7 +195,7 @@ async function parseSchedules() {
     state.statusText = `处理完成：${state.result.summary.member_count || 0} 名成员，识别到 ${formatDetectedWeeks(state.result.detected_weeks)}，可按需调整导出周数。`;
     log(state.statusText);
   } catch (error) {
-    state.statusText = `解析失败：${String(error)}`;
+    state.statusText = `解析失败：${formatSidecarError(error)}`;
     log(state.statusText);
   } finally {
     state.busy = false;
@@ -220,7 +233,7 @@ async function exportExcel() {
     state.statusText = `Excel 已导出：${exported.path}`;
     log(state.statusText);
   } catch (error) {
-    state.statusText = `导出失败：${String(error)}`;
+    state.statusText = `导出失败：${formatSidecarError(error)}`;
     log(state.statusText);
   } finally {
     state.busy = false;
@@ -233,8 +246,23 @@ function removeFile(path: string) {
   render();
 }
 
+function clearFiles() {
+  state.files = [];
+  state.statusText = "已清空待处理 PDF";
+  render();
+}
+
+function clearLogs() {
+  state.logs = [];
+  render();
+}
+
 function render() {
   const summary = state.result?.summary || {};
+  const fileViews = buildFileViews(state.files);
+  const invalidFiles = fileViews.filter((item) => !item.kind);
+  const visibleLogs = state.logs.slice(0, 4);
+  const canParse = state.files.length > 0 && invalidFiles.length === 0 && !state.busy;
   app.innerHTML = `
     <main class="shell">
       <aside class="sidebar">
@@ -243,9 +271,10 @@ function render() {
           <span>离线桌面版</span>
         </div>
         <button id="chooseFiles" class="primary" ${state.busy ? "disabled" : ""}>选择课表 PDF</button>
-        <button id="parseSchedules" ${state.busy ? "disabled" : ""}>开始解析</button>
+        <button id="parseSchedules" ${canParse ? "" : "disabled"}>开始解析</button>
         <button id="exportExcel" ${!state.result || state.busy ? "disabled" : ""}>导出 Excel</button>
         <button id="repairResources" ${state.busy ? "disabled" : ""}>修复离线材料</button>
+        <button id="refreshResources" class="ghost" ${state.busy ? "disabled" : ""}>重新检查材料</button>
         <section class="settingsBox">
           <h2>学期设置</h2>
           <label>
@@ -263,6 +292,7 @@ function render() {
           <h2>离线材料</h2>
           <p class="${state.resourceStatus?.ready ? "ok" : "warn"}">${state.resourceStatus?.ready ? "已就绪" : "需检查"}</p>
           <small>${state.resourceStatus?.ocr.ready ? "OCR 模型可用" : "OCR 模型缺失或未校验"}</small>
+          ${renderResourceIssues()}
         </section>
       </aside>
       <section class="workspace">
@@ -271,34 +301,53 @@ function render() {
             <h1>空课生成工作台</h1>
             <p>${state.statusText}</p>
           </div>
+          <div class="statusChip ${state.busy ? "busy" : ""}">
+            <span></span>
+            ${state.busy ? "处理中" : deriveReadyText(fileViews)}
+          </div>
           <div class="stats">
             <div><strong>${summary.pdf_count || state.files.length}</strong><span>PDF</span></div>
             <div><strong>${summary.member_count || 0}</strong><span>成员</span></div>
             <div><strong>${summary.warning_count || 0}</strong><span>警告</span></div>
           </div>
         </header>
+        ${renderWorkflow(fileViews)}
         <section class="filePanel">
-          <h2>已选文件</h2>
+          <div class="panelHeader">
+            <div>
+              <h2>已选文件</h2>
+              <p>${renderFileSummary(fileViews)}</p>
+            </div>
+            <button id="clearFiles" ${!state.files.length || state.busy ? "disabled" : ""}>清空</button>
+          </div>
           <div class="fileList">
-            ${state.files.length ? state.files.map((file) => `
-              <div class="fileRow">
-                <span>${escapeHtml(file)}</span>
-                <button data-remove="${escapeHtml(file)}" ${state.busy ? "disabled" : ""}>移除</button>
+            ${fileViews.length ? fileViews.map((item) => `
+              <div class="fileRow ${item.kind ? "" : "invalid"}">
+                <div class="fileInfo">
+                  <span>${escapeHtml(item.file)}</span>
+                  <small>${renderFileMeta(item)}</small>
+                </div>
+                <button data-remove="${escapeHtml(item.file)}" ${state.busy ? "disabled" : ""}>移除</button>
               </div>
             `).join("") : `<div class="empty">选择中方/英方课表 PDF 后开始解析。</div>`}
           </div>
+          ${renderFileGuidance(fileViews)}
         </section>
         <section class="resultPanel">
           <div class="tabs">
-            ${tabButton("availability", "空课预览")}
-            ${tabButton("members", "成员检查")}
-            ${tabButton("details", "识别明细")}
+            ${tabButton("availability", `空课预览${state.result ? ` · ${state.result.availability_preview.length}` : ""}`)}
+            ${tabButton("members", `成员检查${state.result ? ` · ${state.result.members.length}` : ""}`)}
+            ${tabButton("details", `识别明细${state.result ? ` · ${state.result.details.length}` : ""}`)}
           </div>
           ${renderActiveTable()}
         </section>
         <section class="logPanel">
-          <h2>处理日志</h2>
-          ${state.logs.length ? state.logs.map((item) => `<p>${escapeHtml(item)}</p>`).join("") : `<p>等待操作。</p>`}
+          <div class="panelHeader compact">
+            <h2>处理日志${state.logs.length ? ` · ${state.logs.length}` : ""}</h2>
+            <button id="clearLogs" ${!state.logs.length ? "disabled" : ""}>清空</button>
+          </div>
+          ${visibleLogs.length ? visibleLogs.map((item) => `<p>${escapeHtml(item)}</p>`).join("") : `<p>等待操作。</p>`}
+          ${state.logs.length > visibleLogs.length ? `<small class="logMeta">仅显示最近 ${visibleLogs.length} 条，完整日志已保留在本次运行记录中。</small>` : ""}
         </section>
       </section>
     </main>
@@ -308,7 +357,10 @@ function render() {
   document.querySelector("#parseSchedules")?.addEventListener("click", parseSchedules);
   document.querySelector("#exportExcel")?.addEventListener("click", exportExcel);
   document.querySelector("#repairResources")?.addEventListener("click", repairResources);
+  document.querySelector("#refreshResources")?.addEventListener("click", refreshResources);
   document.querySelector("#saveCalendarSettings")?.addEventListener("click", saveCalendarSettings);
+  document.querySelector("#clearFiles")?.addEventListener("click", clearFiles);
+  document.querySelector("#clearLogs")?.addEventListener("click", clearLogs);
   document.querySelector<HTMLInputElement>("#semesterStartDate")?.addEventListener("input", (event) => {
     state.calendarSettings.semester_start_date = (event.target as HTMLInputElement).value;
   });
@@ -330,6 +382,124 @@ function tabButton(tab: AppState["activeTab"], label: string) {
   return `<button data-tab="${tab}" class="${state.activeTab === tab ? "active" : ""}">${label}</button>`;
 }
 
+function buildFileViews(files: string[]): FileView[] {
+  const views = files.map((file) => ({
+    file,
+    kind: inferFileKind(file),
+    member: inferMemberName(file),
+    missingPair: ""
+  }));
+  const byMember = new Map<string, Set<string>>();
+  views.forEach((view) => {
+    if (!view.member || !view.kind) {
+      return;
+    }
+    byMember.set(view.member, byMember.get(view.member) || new Set());
+    byMember.get(view.member)?.add(view.kind);
+  });
+  return views.map((view) => {
+    const kinds = view.member ? byMember.get(view.member) : undefined;
+    if (view.kind === "中方" && !kinds?.has("英方")) {
+      return { ...view, missingPair: "缺英方" };
+    }
+    if (view.kind === "英方" && !kinds?.has("中方")) {
+      return { ...view, missingPair: "缺中方" };
+    }
+    return view;
+  });
+}
+
+function deriveReadyText(fileViews: FileView[]) {
+  if (state.result) {
+    return "可导出";
+  }
+  if (!fileViews.length) {
+    return "待选择";
+  }
+  if (fileViews.some((item) => !item.kind)) {
+    return "需改名";
+  }
+  return "可解析";
+}
+
+function renderWorkflow(fileViews: FileView[]) {
+  const hasFiles = fileViews.length > 0;
+  const hasInvalid = fileViews.some((item) => !item.kind);
+  const steps = [
+    { label: "离线材料", done: Boolean(state.resourceStatus?.ready), active: state.busy && state.statusText.includes("材料") },
+    { label: "选择 PDF", done: hasFiles, active: !hasFiles },
+    { label: "文件校验", done: hasFiles && !hasInvalid, active: hasFiles && hasInvalid },
+    { label: "生成空课", done: Boolean(state.result), active: state.busy && state.statusText.includes("解析") },
+    { label: "导出 Excel", done: false, active: Boolean(state.result) && !state.busy }
+  ];
+  return `
+    <section class="workflow" aria-label="处理进度">
+      ${steps.map((step, index) => `
+        <div class="step ${step.done ? "done" : ""} ${step.active ? "active" : ""}">
+          <span>${step.done ? "✓" : index + 1}</span>
+          <strong>${step.label}</strong>
+        </div>
+      `).join("")}
+    </section>
+  `;
+}
+
+function renderResourceIssues() {
+  if (!state.resourceStatus || state.resourceStatus.ready) {
+    return "";
+  }
+  const issues = [...state.resourceStatus.missing, ...state.resourceStatus.invalid].slice(0, 3);
+  if (!issues.length) {
+    return "";
+  }
+  return `<ul class="resourceIssues">${issues.map((item) => `<li>${escapeHtml(item.target)}：${escapeHtml(item.issue)}</li>`).join("")}</ul>`;
+}
+
+function renderFileSummary(fileViews: FileView[]) {
+  if (!fileViews.length) {
+    return "等待导入中方和英方课表。";
+  }
+  const members = new Set(fileViews.map((item) => item.member).filter(Boolean));
+  const invalidCount = fileViews.filter((item) => !item.kind).length;
+  const missingPairCount = fileViews.filter((item) => item.missingPair).length;
+  if (invalidCount) {
+    return `${fileViews.length} 个 PDF，${invalidCount} 个需要改名。`;
+  }
+  if (missingPairCount) {
+    return `${fileViews.length} 个 PDF，${members.size || 0} 名成员，${missingPairCount} 个缺少配对课表。`;
+  }
+  return `${fileViews.length} 个 PDF，${members.size || 0} 名成员，文件类型已就绪。`;
+}
+
+function renderFileMeta(item: FileView) {
+  if (!item.kind) {
+    return "需要改名：文件名包含“中方”或“英方”";
+  }
+  const parts = [`已识别：${escapeHtml(item.kind)}`];
+  if (item.member) {
+    parts.push(escapeHtml(item.member));
+  }
+  if (item.missingPair) {
+    parts.push(`<b>${escapeHtml(item.missingPair)}</b>`);
+  }
+  return parts.join(" · ");
+}
+
+function renderFileGuidance(fileViews: FileView[]) {
+  const invalidCount = fileViews.filter((item) => !item.kind).length;
+  if (invalidCount) {
+    return `<p class="fileWarning">有 ${invalidCount} 个文件无法判断课表类型，已暂停解析。</p>`;
+  }
+  const missingPairCount = fileViews.filter((item) => item.missingPair).length;
+  if (missingPairCount) {
+    return `<p class="fileHint">已允许继续解析，但建议补齐缺少的中方/英方课表，结果更可信。</p>`;
+  }
+  if (fileViews.length) {
+    return `<p class="fileHint">文件校验通过，可以开始解析。</p>`;
+  }
+  return "";
+}
+
 function formatDetectedWeeks(weeks: number[]) {
   if (!weeks.length) {
     return "无";
@@ -338,6 +508,27 @@ function formatDetectedWeeks(weeks: number[]) {
     return weeks.map((week) => `第${week}周`).join("、");
   }
   return `第${weeks[0]}周-第${weeks[weeks.length - 1]}周，共 ${weeks.length} 周`;
+}
+
+function inferFileKind(path: string) {
+  const normalized = path.toLowerCase();
+  if (path.includes("英方") || normalized.includes("english") || normalized.includes("uk")) {
+    return "英方";
+  }
+  if (path.includes("中方") || normalized.includes("chinese")) {
+    return "中方";
+  }
+  return "";
+}
+
+function inferMemberName(path: string) {
+  const fileName = path.split(/[\\/]/).pop() || path;
+  const stem = fileName.replace(/\.[^.]+$/, "");
+  const cleaned = stem
+    .replace(/中方课表|英方课表|中方|英方|课表|办公室|外联部|宣传部|活动部|部长|副部长|干事|负责人|成员/g, " ")
+    .replace(/[-_\s]+/g, " ");
+  const match = cleaned.match(/[\u4e00-\u9fff]{2,4}/);
+  return match?.[0] || "";
 }
 
 function renderActiveTable() {
@@ -377,6 +568,18 @@ function escapeHtml(value: string) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function formatSidecarError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (
+    message.includes("__TAURI") ||
+    message.includes("invoke") ||
+    message.includes("Cannot read properties of undefined")
+  ) {
+    return "桌面运行环境未连接，请在 Konggu 桌面端中使用该功能。";
+  }
+  return message.replace(/^Error:\s*/, "");
 }
 
 render();

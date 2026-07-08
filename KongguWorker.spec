@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, copy_metadata
 
 ROOT = Path.cwd()
 datas = [
@@ -8,11 +9,26 @@ datas = [
     (str(ROOT / "assets"), "assets"),
     (str(ROOT / "resources"), "resources"),
 ]
+datas += collect_data_files("paddlex", includes=["configs/**/*.yaml", "configs/**/*.yml"])
+datas += collect_data_files("paddleocr", includes=["**/*.yaml", "**/*.yml"])
+for metadata_package in [
+    "paddlex",
+    "paddleocr",
+    "imagesize",
+    "opencv-contrib-python",
+    "pyclipper",
+    "pypdfium2",
+    "python-bidi",
+    "shapely",
+]:
+    datas += copy_metadata(metadata_package)
+
+binaries = collect_dynamic_libs("paddle")
 
 a = Analysis(
     ["app/sidecar.py"],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=[
         "paddleocr",
@@ -56,7 +72,6 @@ a = Analysis(
         "skimage",
         "sklearn",
         "nltk",
-        "shapely",
         "tensorflow",
         "conda",
         "rich",

@@ -111,6 +111,20 @@ def test_desktop_workflow_rejects_non_pdf(tmp_path: Path):
         raise AssertionError("Expected non-PDF input to be rejected.")
 
 
+def test_desktop_workflow_rejects_unknown_schedule_kind(tmp_path: Path):
+    pdf = tmp_path / "张三.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n%%EOF")
+
+    try:
+        parse_pdf_paths(schedule_core=FakeDesktopCore(), paths=[str(pdf)])
+    except ValueError as exc:
+        assert "无法识别课表类型" in str(exc)
+        assert "中方" in str(exc)
+        assert "英方" in str(exc)
+    else:
+        raise AssertionError("Expected unknown schedule kind to be rejected.")
+
+
 def test_visual_export_mode_is_reserved(tmp_path: Path):
     pdf = tmp_path / "张三-中方课表.pdf"
     pdf.write_bytes(b"%PDF-1.4\n%%EOF")

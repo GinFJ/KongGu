@@ -15,6 +15,7 @@ class ErrorType(str, Enum):
 
     FILE_READ_FAILED = "文件读取失败"
     PDF_TEXT_EXTRACT_FAILED = "PDF 文本提取失败"
+    OCR_CONFIG_FAILED = "OCR 配置异常"
     OCR_FAILED = "OCR 识别失败"
     SCHEDULE_TYPE_UNKNOWN = "课表类型识别失败"
     NAME_RECOGNITION_FAILED = "姓名识别失败"

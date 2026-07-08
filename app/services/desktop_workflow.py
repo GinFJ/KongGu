@@ -53,6 +53,8 @@ def parse_pdf_paths(*, schedule_core: Any, paths: list[str], explicit_kind: str 
     errors = [f"{path.name}: {exc}" for path, exc in add_result.errors]
     warnings = [f"已跳过：{item}" for item in add_result.skipped]
     if not add_result.added:
+        if errors:
+            raise ValueError("没有可解析的课表 PDF：" + "；".join(errors))
         raise ValueError("PDF 文件读取失败，请检查文件是否可访问。")
 
     generation = generate_availability(

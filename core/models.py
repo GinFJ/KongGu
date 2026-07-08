@@ -52,6 +52,7 @@ class CourseBlock:
     end_time: str | None = None
     course: str | None = None
     source_file: str | None = None
+    text_source: TextSourceType = "未知"
 
 
 @dataclass(slots=True)

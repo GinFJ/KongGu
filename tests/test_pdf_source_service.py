@@ -54,7 +54,7 @@ def test_add_pdf_sources_skips_same_content_duplicate_files(tmp_path: Path):
     assert result.errors == []
 
 
-def test_add_pdf_sources_uses_explicit_kind_and_defaults_unknown_to_chinese(tmp_path: Path):
+def test_add_pdf_sources_uses_explicit_kind_and_rejects_unknown_kind(tmp_path: Path):
     unknown = tmp_path / "张三.pdf"
     explicit = tmp_path / "李四.pdf"
     unknown.write_bytes(b"unknown")
@@ -73,7 +73,10 @@ def test_add_pdf_sources_uses_explicit_kind_and_defaults_unknown_to_chinese(tmp_
         schedule_core=FakeKindCore(),
     )
 
-    assert inferred.added[0].kind == "中方"
+    assert inferred.added == []
+    assert len(inferred.errors) == 1
+    assert "中方" in str(inferred.errors[0][1])
+    assert "英方" in str(inferred.errors[0][1])
     assert forced.added[0].kind == "英方"
 
 

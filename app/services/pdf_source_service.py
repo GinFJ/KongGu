@@ -53,6 +53,14 @@ def add_pdf_sources(
             continue
 
         kind = explicit_kind or _infer_pdf_kind(schedule_core, pdf_path)
+        if kind not in VALID_KINDS:
+            result.errors.append(
+                (
+                    pdf_path,
+                    ValueError("无法识别课表类型，请在文件名中标明“中方”或“英方”。"),
+                )
+            )
+            continue
         key = (str(pdf_path.resolve()), kind)
         if key in existing:
             result.skipped.append(str(pdf_path))
@@ -76,11 +84,11 @@ def add_pdf_sources(
     return result
 
 
-def _infer_pdf_kind(schedule_core: Any, pdf_path: Path) -> ScheduleSourceType:
+def _infer_pdf_kind(schedule_core: Any, pdf_path: Path) -> str:
     inferred = schedule_core.infer_pdf_kind(pdf_path.name, str(pdf_path))
     if inferred in VALID_KINDS:
         return inferred
-    return "中方"
+    return inferred
 
 
 def load_reference_library_summary(reference_library_path: str) -> ReferenceLibrarySummary:
