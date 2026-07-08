@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import contextlib
 import hashlib
 import json
 import logging
@@ -85,6 +86,15 @@ NAME_STOPWORDS = {
     "课表",
     "路人甲",
 }
+
+
+class OCRConfigurationError(RuntimeError):
+    """Raised when the local OCR runtime cannot start or execute."""
+
+
+def _ocr_error_message(exc: BaseException) -> str:
+    message = str(exc).strip() or exc.__class__.__name__
+    return f"OCR 配置异常：{message}"
 
 
 def _source_name(source: dict[str, Any]) -> str:
@@ -337,6 +347,8 @@ def parse_actual_pdf_sources(
     for source in sources:
         file_name = _source_name(source)
         kind = _source_kind(source)
+        image_only_pdf = False
+        used_ocr = False
         try:
             cached = _load_parse_cache(source, kind)
             if cached is not None:
@@ -371,7 +383,9 @@ def parse_actual_pdf_sources(
                     continue
 
             text = _extract_pdf_text(source)
-            used_ocr = False
+            image_only_pdf = _is_image_only_pdf_text(text)
+            if image_only_pdf:
+                LOGGER.info("检测到图片型 PDF，进入 OCR: %s", file_name)
             if not _is_usable_extracted_text(text, kind):
                 LOGGER.info("内嵌文本质量不足，进入 OCR: %s", file_name)
                 text = _extract_pdf_ocr_text(source)
@@ -380,6 +394,7 @@ def parse_actual_pdf_sources(
             if not parsed and not used_ocr:
                 LOGGER.info("内嵌文本解析为空，回退 OCR: %s", file_name)
                 ocr_text = _extract_pdf_ocr_text(source)
+                used_ocr = True
                 if ocr_text.strip():
                     parsed = _parse_chinese_text(ocr_text, file_name) if kind == "中方" else _parse_english_text(ocr_text, file_name)
             if not parsed:
@@ -391,12 +406,23 @@ def parse_actual_pdf_sources(
             if not parsed and kind == "中方":
                 parsed = _parse_chinese_ocr_legacy_layout(source, file_name)
             if parsed:
+                for item in parsed:
+                    item.setdefault("text_source", "OCR" if used_ocr else "内嵌文本")
                 parsed = _finalize_parsed_blocks(parsed, file_name, kind)
                 LOGGER.info("文件解析完成: %s blocks=%s", file_name, len(parsed))
                 _write_parse_cache(source, kind, parsed)
                 blocks.extend(parsed)
             else:
-                errors.append(f"{file_name}：未识别到课程占用。")
+                if image_only_pdf and used_ocr:
+                    errors.append(
+                        f"{file_name}：图片型 PDF 已启用 OCR，但未识别到可解析的课程占用。"
+                        "请重新导出可复制文字的原始 PDF，或检查扫描清晰度。"
+                    )
+                else:
+                    errors.append(f"{file_name}：未识别到课程占用。")
+        except OCRConfigurationError as exc:
+            context = "图片型 PDF 需要 OCR，但 " if image_only_pdf else "课表需要 OCR，但 "
+            errors.append(f"{file_name}：{context}{exc}")
         except Exception as exc:
             errors.append(f"{file_name}：{exc}")
 
@@ -743,6 +769,10 @@ def _is_usable_extracted_text(text: str, kind: str) -> bool:
     )
 
 
+def _is_image_only_pdf_text(text: str) -> bool:
+    return len(text.strip()) == 0
+
+
 def _extract_pdf_ocr_text(source: dict[str, Any]) -> str:
     cache_path = _ocr_cache_path(source)
     if cache_path.exists():
@@ -757,8 +787,11 @@ def _extract_pdf_ocr_text(source: dict[str, Any]) -> str:
         "\n".join(item["text"] for item in sorted(page_items, key=lambda value: (value["y0"], value["x0"])))
         for _, page_items in sorted(pages.items())
     )
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(text, encoding="utf-8")
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(text, encoding="utf-8")
+    except Exception as exc:
+        LOGGER.warning("OCR 文本缓存写入失败: %s error=%s", cache_path.name, exc)
     return text
 
 
@@ -791,9 +824,13 @@ def _extract_pdf_ocr_items(source: dict[str, Any]) -> list[dict[str, Any]]:
             if pix.n > 3:
                 image = image[:, :, :3]
             try:
-                result = ocr.ocr(image) if hasattr(ocr, "ocr") else ocr.predict(image)
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    result = ocr.ocr(image) if hasattr(ocr, "ocr") else ocr.predict(image)
             except TypeError:
-                result = ocr.predict(image)
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    result = ocr.predict(image)
+            except Exception as exc:
+                raise OCRConfigurationError(_ocr_error_message(exc)) from exc
             items.extend(_extract_ocr_items_from_result(result, page_number, pix.width, pix.height))
     finally:
         doc.close()
@@ -817,7 +854,10 @@ def _build_ocr_engine():
     if _OCR_ENGINE is not None:
         return _OCR_ENGINE
 
-    from paddleocr import PaddleOCR
+    try:
+        from paddleocr import PaddleOCR
+    except Exception as exc:
+        raise OCRConfigurationError(_ocr_error_message(exc)) from exc
 
     det_dir = _find_ocr_model_dir("PP-OCRv4_mobile_det")
     rec_dir = _find_ocr_model_dir("PP-OCRv4_mobile_rec")
@@ -843,12 +883,40 @@ def _build_ocr_engine():
             }
         )
     elif os.environ.get("KONGGU_ALLOW_OCR_MODEL_DOWNLOAD") != "1":
-        raise RuntimeError(
-            "扫描件 OCR 模型未就绪。请通过离线安装包修复材料，或将 "
+        raise OCRConfigurationError(
+            "OCR 配置异常：扫描件 OCR 模型未就绪。请通过离线安装包修复材料，或将 "
             "PP-OCRv4_mobile_det 和 PP-OCRv4_mobile_rec 放入 %LOCALAPPDATA%\\Konggu\\ocr_models。"
         )
-    _OCR_ENGINE = PaddleOCR(**kwargs)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            _OCR_ENGINE = PaddleOCR(**kwargs)
+    except Exception as exc:
+        raise OCRConfigurationError(_ocr_error_message(exc)) from exc
     return _OCR_ENGINE
+
+
+def check_ocr_runtime(*, run_probe: bool = True) -> dict[str, Any]:
+    """Verify that the configured OCR runtime can start and execute locally."""
+
+    try:
+        ocr = _build_ocr_engine()
+    except Exception as exc:
+        return {"ready": False, "stage": "init", "error": str(exc)}
+
+    if run_probe:
+        try:
+            import numpy as np
+
+            image = np.full((64, 64, 3), 255, dtype=np.uint8)
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    ocr.ocr(image) if hasattr(ocr, "ocr") else ocr.predict(image)
+                except TypeError:
+                    ocr.predict(image)
+        except Exception as exc:
+            return {"ready": False, "stage": "probe", "error": _ocr_error_message(exc)}
+
+    return {"ready": True, "stage": "ready", "error": ""}
 
 
 def _ocr_cache_path(source: dict[str, Any]) -> Path:

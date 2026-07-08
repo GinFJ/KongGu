@@ -16,6 +16,7 @@ from typing import Any
 APP_NAME = "Konggu"
 MANIFEST_NAME = "offline_manifest.json"
 REQUIRED_OCR_MODELS = ("PP-OCRv4_mobile_det", "PP-OCRv4_mobile_rec")
+_DLL_DIRECTORY_HANDLES: list[Any] = []
 
 
 @dataclass(slots=True)
@@ -55,14 +56,16 @@ def configure_offline_environment() -> ResourcePaths:
     os.environ.setdefault("PADDLE_PDX_CACHE_HOME", str(paths.ocr_models_root.parent))
     os.environ.setdefault("PADDLE_HOME", str(paths.cache_root / "paddle"))
     os.environ.setdefault("PADDLEOCR_HOME", str(paths.cache_root / "paddleocr"))
+    os.environ.setdefault("MPLCONFIGDIR", str(paths.cache_root / "matplotlib"))
+    _configure_paddle_dll_paths()
     os.environ.pop("KONGGU_ALLOW_OCR_MODEL_DOWNLOAD", None)
     return paths
 
 
-def resource_status() -> dict[str, Any]:
-    """Return offline resource integrity details without mutating files."""
+def resource_status(*, check_runtime: bool = False) -> dict[str, Any]:
+    """Return offline resource integrity details after preparing local cache paths."""
 
-    paths = resolve_resource_paths()
+    paths = configure_offline_environment()
     manifest = load_manifest(paths.bundled_root)
     missing: list[dict[str, Any]] = []
     invalid: list[dict[str, Any]] = []
@@ -76,6 +79,11 @@ def resource_status() -> dict[str, Any]:
             invalid.append(_entry_status(entry, target, issue))
 
     ocr = _ocr_status(paths.ocr_models_root)
+    if check_runtime and ocr["ready"]:
+        ocr["runtime"] = _ocr_runtime_status()
+        ocr["ready"] = bool(ocr["ready"] and ocr["runtime"].get("ready"))
+    elif check_runtime:
+        ocr["runtime"] = {"ready": False, "stage": "model-check", "error": "OCR 模型文件缺失或未通过校验。"}
     ready = not missing and not invalid and ocr["ready"]
     return {
         "ok": True,
@@ -116,7 +124,7 @@ def repair_resources() -> dict[str, Any]:
         except Exception as exc:
             failed.append({"source": str(source), "target": str(target), "error": str(exc)})
 
-    status = resource_status()
+    status = resource_status(check_runtime=True)
     return {"ok": not failed, "copied": copied, "failed": failed, "status": status}
 
 
@@ -182,6 +190,26 @@ def _app_data_root() -> Path:
     return Path.home() / f".{APP_NAME.lower()}"
 
 
+def _configure_paddle_dll_paths() -> None:
+    candidates: list[Path] = []
+    if hasattr(sys, "_MEIPASS"):
+        candidates.append(Path(sys._MEIPASS) / "paddle" / "libs")
+    candidates.append(Path(__file__).resolve().parents[1] / "paddle" / "libs")
+    for path in candidates:
+        if not path.exists():
+            continue
+        current_path = os.environ.get("PATH", "")
+        path_text = str(path)
+        if path_text.lower() not in {item.lower() for item in current_path.split(os.pathsep) if item}:
+            os.environ["PATH"] = path_text + os.pathsep + current_path
+        if hasattr(os, "add_dll_directory"):
+            try:
+                handle = os.add_dll_directory(path_text)
+            except OSError:
+                continue
+            _DLL_DIRECTORY_HANDLES.append(handle)
+
+
 def _target_path(paths: ResourcePaths, entry: dict[str, Any]) -> Path:
     target = str(entry["target"]).replace("\\", "/")
     if target.startswith("ocr_models/"):
@@ -216,6 +244,15 @@ def _ocr_status(root: Path) -> dict[str, Any]:
         valid = _is_valid_paddle_model_dir(path)
         models.append({"name": name, "path": str(path), "exists": path.exists(), "valid": valid})
     return {"ready": all(item["valid"] for item in models), "models": models}
+
+
+def _ocr_runtime_status() -> dict[str, Any]:
+    try:
+        from core import schedule_core
+
+        return schedule_core.check_ocr_runtime(run_probe=True)
+    except Exception as exc:
+        return {"ready": False, "stage": "status-check", "error": str(exc)}
 
 
 def _copy_entry(source: Path, target: Path) -> None:

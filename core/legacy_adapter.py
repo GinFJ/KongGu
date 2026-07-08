@@ -144,6 +144,7 @@ def course_block_from_legacy(block: dict[str, Any]) -> CourseBlock:
         end_time=str(block.get("end_time")).strip() if block.get("end_time") else None,
         course=str(block.get("course")).strip() if block.get("course") else None,
         source_file=str(block.get("source_file")).strip() if block.get("source_file") else None,
+        text_source=_normalize_text_source(block.get("text_source")),
     )
 
 
@@ -247,8 +248,9 @@ def build_file_records(
         ]
         first_member = next((block.name for block in related_blocks if block.name), inferred_member)
         if related_errors:
+            error_type = _error_type_for_message(source.kind, related_errors[0])
             error = ProcessError(
-                error_type=ErrorType.CHINESE_PARSE_FAILED if source.kind == "中方" else ErrorType.ENGLISH_DATE_MAPPING_FAILED,
+                error_type=error_type,
                 message=related_errors[0],
                 source_file=source.file_name,
             )
@@ -258,22 +260,52 @@ def build_file_records(
                     status="解析失败",
                     member_name=first_member,
                     detected_kind=source.kind,
+                    text_source="OCR" if error_type in {ErrorType.OCR_CONFIG_FAILED, ErrorType.OCR_FAILED} else "未知",
+                    used_ocr=error_type in {ErrorType.OCR_CONFIG_FAILED, ErrorType.OCR_FAILED},
                     block_count=len(related_blocks),
                     error=error,
                 )
             )
         else:
+            text_source = _record_text_source(related_blocks)
             records.append(
                 FileProcessRecord(
                     source=source,
                     status="已识别" if related_blocks else "待处理",
                     member_name=first_member,
                     detected_kind=source.kind,
-                    text_source="未知",
+                    text_source=text_source,
+                    used_ocr=text_source == "OCR",
                     block_count=len(related_blocks),
                 )
             )
     return records
+
+
+def _normalize_text_source(value: Any) -> str:
+    text = str(value or "").strip()
+    if text in {"内嵌文本", "OCR", "缓存"}:
+        return text
+    return "未知"
+
+
+def _record_text_source(blocks: list[CourseBlock]) -> str:
+    sources = {getattr(block, "text_source", "未知") for block in blocks}
+    if "OCR" in sources:
+        return "OCR"
+    if "内嵌文本" in sources:
+        return "内嵌文本"
+    if "缓存" in sources:
+        return "缓存"
+    return "未知"
+
+
+def _error_type_for_message(kind: ScheduleSourceType, message: str) -> ErrorType:
+    if "OCR 配置异常" in message:
+        return ErrorType.OCR_CONFIG_FAILED
+    if "OCR" in message or "图片型 PDF" in message or "扫描件" in message:
+        return ErrorType.OCR_FAILED
+    return ErrorType.CHINESE_PARSE_FAILED if kind == "中方" else ErrorType.ENGLISH_DATE_MAPPING_FAILED
 
 
 def availability_slot_from_row(row: dict[str, Any]) -> AvailabilitySlot:

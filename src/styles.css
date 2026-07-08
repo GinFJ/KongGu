@@ -2,6 +2,13 @@
   font-family: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
   color: #18212f;
   background: #f6f7f9;
+  --ink: #18212f;
+  --muted: #5f6d7c;
+  --line: #dbe2ea;
+  --panel: #ffffff;
+  --green: #116c54;
+  --green-soft: #e7f4ef;
+  --amber: #a35d00;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
@@ -13,22 +20,38 @@
 body {
   margin: 0;
   min-width: 1080px;
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+html,
+#app {
+  height: 100%;
+  overflow: hidden;
 }
 
 button {
   border: 1px solid #cfd7e3;
   border-radius: 7px;
   background: #ffffff;
-  color: #18212f;
+  color: var(--ink);
   cursor: pointer;
   font: 600 14px/1 "Microsoft YaHei", "Segoe UI", sans-serif;
-  padding: 12px 14px;
+  padding: 10px 14px;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease, transform 140ms ease;
 }
 
 button:hover:not(:disabled) {
-  border-color: #1c7f64;
+  border-color: var(--green);
   color: #0d644e;
+  transform: translateY(-1px);
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 3px solid rgba(28, 127, 100, 0.24);
+  outline-offset: 2px;
 }
 
 button:disabled {
@@ -37,51 +60,115 @@ button:disabled {
 }
 
 button.primary {
-  background: #116c54;
-  border-color: #116c54;
+  background: var(--green);
+  border-color: var(--green);
+  color: #ffffff;
+}
+
+button.ghost {
+  background: transparent;
+  border-color: #334456;
+  color: #c7d3df;
+}
+
+button.ghost:hover:not(:disabled) {
+  background: #1d2a3a;
+  border-color: #4b6177;
   color: #ffffff;
 }
 
 .shell {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .sidebar {
-  background: #0f1722;
-  color: #eef4f2;
-  padding: 26px 22px;
+  background:
+    linear-gradient(180deg, rgba(246, 253, 249, 0.98), rgba(228, 244, 238, 0.98)),
+    radial-gradient(circle at 20% 8%, rgba(142, 217, 180, 0.42), transparent 34%);
+  color: #123428;
+  height: 100vh;
+  overflow: hidden;
+  padding: 18px 22px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 10px;
+  border-right: 1px solid #cfe3da;
 }
 
 .brand {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 18px;
+  margin-bottom: 8px;
 }
 
 .brand img {
-  width: 112px;
+  width: 102px;
   height: auto;
-  filter: brightness(0) invert(1);
 }
 
 .brand span {
-  color: #9fb4c7;
+  color: #3f6b5c;
   font-size: 13px;
+}
+
+.sidebar button {
+  border-color: #bfd9cf;
+  background: rgba(255, 255, 255, 0.82);
+  color: #173a2e;
+  box-shadow: 0 6px 16px rgba(33, 92, 73, 0.08);
+}
+
+.sidebar button:hover:not(:disabled) {
+  background: #ffffff;
+  border-color: #178060;
+  color: #0f664d;
+}
+
+.sidebar button:disabled {
+  background: #dbe3e1;
+  border-color: #d2dcda;
+  color: #6c7a77;
+  opacity: 1;
+  box-shadow: none;
+}
+
+.sidebar button.primary {
+  background: #0f7a5f;
+  border-color: #0f7a5f;
+  color: #ffffff;
+  box-shadow: 0 10px 22px rgba(15, 122, 95, 0.20);
+}
+
+.sidebar button.primary:hover:not(:disabled) {
+  background: #0d6d55;
+  color: #ffffff;
+}
+
+.sidebar button.ghost {
+  background: rgba(255, 255, 255, 0.55);
+  border-color: #b6d3c8;
+  color: #285846;
+  box-shadow: none;
+}
+
+.sidebar button.ghost:hover:not(:disabled) {
+  background: #ffffff;
+  border-color: #178060;
+  color: #0f664d;
 }
 
 .resourceBox,
 .settingsBox {
-  margin-top: 12px;
-  padding: 16px;
-  border: 1px solid #2c3a49;
+  margin-top: 6px;
+  padding: 12px;
+  border: 1px solid #c9ded5;
   border-radius: 8px;
-  background: #172231;
+  background: rgba(255, 255, 255, 0.68);
+  box-shadow: 0 10px 24px rgba(38, 102, 79, 0.08);
 }
 
 .resourceBox h2,
@@ -94,7 +181,7 @@ button.primary {
 
 .settingsBox {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .settingsBox label {
@@ -103,23 +190,23 @@ button.primary {
 }
 
 .settingsBox span {
-  color: #aec0ce;
+  color: #557369;
   font-size: 12px;
 }
 
 .settingsBox small {
-  color: #8fa4b6;
+  color: #5f7d72;
   line-height: 1.45;
 }
 
 .settingsBox input {
   width: 100%;
-  border: 1px solid #334456;
+  border: 1px solid #c1d8cf;
   border-radius: 7px;
-  background: #0f1722;
-  color: #eef4f2;
+  background: #ffffff;
+  color: #173a2e;
   font: 600 13px/1 "Microsoft YaHei", "Segoe UI", sans-serif;
-  padding: 10px 11px;
+  padding: 8px 10px;
 }
 
 .settingsBox input:disabled {
@@ -127,7 +214,7 @@ button.primary {
 }
 
 .settingsBox button {
-  padding: 10px 12px;
+  padding: 9px 12px;
 }
 
 .resourceBox p {
@@ -136,8 +223,16 @@ button.primary {
 }
 
 .resourceBox small {
-  color: #aec0ce;
+  color: #5f7d72;
   line-height: 1.5;
+}
+
+.resourceIssues {
+  margin: 10px 0 0;
+  padding-left: 16px;
+  color: #f0b84b;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .ok {
@@ -150,39 +245,79 @@ button.primary {
 
 .workspace {
   min-width: 0;
-  padding: 26px;
+  height: 100vh;
+  overflow: hidden;
+  padding: 20px 26px;
   display: grid;
-  grid-template-rows: auto auto minmax(380px, 1fr) auto;
-  gap: 18px;
+  grid-template-rows: auto auto minmax(88px, auto) minmax(0, 1fr) 112px;
+  gap: 12px;
 }
 
 .topbar,
+.workflow,
 .filePanel,
 .resultPanel,
 .logPanel {
-  background: #ffffff;
-  border: 1px solid #dbe2ea;
+  background: var(--panel);
+  border: 1px solid var(--line);
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(32, 42, 54, 0.06);
 }
 
 .topbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  justify-content: space-between;
-  padding: 22px 24px;
+  gap: 18px;
+  padding: 16px 22px;
 }
 
 .topbar h1 {
-  margin: 0 0 8px;
-  font-size: 26px;
+  margin: 0 0 6px;
+  font-size: 24px;
   letter-spacing: 0;
+}
+
+.topbar > div:first-child {
+  min-width: 0;
 }
 
 .topbar p {
   margin: 0;
-  color: #5f6d7c;
+  color: var(--muted);
   font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statusChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 86px;
+  justify-content: center;
+  border: 1px solid #b9d8cd;
+  border-radius: 999px;
+  color: #0d644e;
+  background: var(--green-soft);
+  font-size: 13px;
+  font-weight: 700;
+  padding: 8px 12px;
+}
+
+.statusChip span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.statusChip.busy span {
+  background: transparent;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: spin 800ms linear infinite;
 }
 
 .stats {
@@ -192,7 +327,7 @@ button.primary {
 
 .stats div {
   width: 92px;
-  padding: 12px;
+  padding: 10px 12px;
   border-radius: 7px;
   background: #f2f5f8;
   text-align: center;
@@ -200,7 +335,7 @@ button.primary {
 
 .stats strong {
   display: block;
-  font-size: 22px;
+  font-size: 20px;
 }
 
 .stats span {
@@ -208,14 +343,100 @@ button.primary {
   font-size: 12px;
 }
 
+.workflow {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px;
+}
+
+.step {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid #e4eaf0;
+  border-radius: 7px;
+  background: #f8fafc;
+  color: #718093;
+  padding: 9px 10px;
+}
+
+.step span {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #e8edf2;
+  color: #586879;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.step strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.step.done {
+  border-color: #c2e4d8;
+  background: var(--green-soft);
+  color: #0c624c;
+}
+
+.step.done span {
+  background: var(--green);
+  color: #ffffff;
+}
+
+.step.active {
+  border-color: #bfcadb;
+  background: #ffffff;
+  color: var(--ink);
+  box-shadow: inset 3px 0 0 var(--green);
+}
+
 .filePanel,
 .resultPanel,
 .logPanel {
-  padding: 16px;
+  min-height: 0;
+  padding: 14px 16px;
+}
+
+.panelHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.panelHeader h2 {
+  margin-bottom: 4px;
+}
+
+.panelHeader p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.panelHeader button {
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.panelHeader.compact {
+  align-items: center;
+  margin-bottom: 6px;
 }
 
 .fileList {
-  max-height: 130px;
+  max-height: 74px;
   overflow: auto;
 }
 
@@ -225,14 +446,41 @@ button.primary {
   gap: 12px;
   align-items: center;
   border-top: 1px solid #edf1f4;
-  padding: 9px 0;
+  padding: 7px 0;
 }
 
-.fileRow span {
+.fileRow.invalid {
+  background: #fff8ec;
+  margin: 0 -8px;
+  padding: 9px 8px;
+  border-top-color: #f2d7a6;
+}
+
+.fileInfo {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.fileInfo span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
+}
+
+.fileInfo small {
+  color: #667486;
+  font-size: 12px;
+}
+
+.fileInfo b {
+  color: var(--amber);
+}
+
+.fileRow.invalid .fileInfo small {
+  color: var(--amber);
+  font-weight: 700;
 }
 
 .fileRow button {
@@ -240,27 +488,48 @@ button.primary {
   font-size: 12px;
 }
 
+.fileWarning {
+  margin: 10px 0 0;
+  color: var(--amber);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.fileHint {
+  margin: 10px 0 0;
+  color: #466070;
+  font-size: 13px;
+}
+
 .tabs {
   display: flex;
   gap: 8px;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
 }
 
 .tabs button {
-  padding: 10px 12px;
+  padding: 9px 12px;
 }
 
 .tabs button.active {
-  background: #e7f4ef;
+  background: var(--green-soft);
   border-color: #64a892;
   color: #0c624c;
 }
 
 .tableWrap {
-  max-height: 470px;
+  flex: 1;
+  max-height: none;
+  min-height: 0;
   overflow: auto;
   border: 1px solid #e3e8ee;
   border-radius: 7px;
+}
+
+.resultPanel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 table {
@@ -295,18 +564,32 @@ td {
 .empty.large {
   display: grid;
   place-items: center;
-  min-height: 280px;
+  flex: 1;
+  min-height: 0;
   color: #7a8795;
 }
 
 .logPanel {
-  max-height: 140px;
-  overflow: auto;
+  max-height: none;
+  overflow: hidden;
 }
 
 .logPanel p {
   margin: 0;
-  padding: 5px 0;
+  padding: 3px 0;
   color: #576575;
   font-size: 12px;
+}
+
+.logMeta {
+  display: block;
+  margin-top: 4px;
+  color: #7a8795;
+  font-size: 11px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

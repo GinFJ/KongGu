@@ -46,7 +46,7 @@ def dispatch(request: dict[str, Any]) -> dict[str, Any]:
     paths = configure_offline_environment()
 
     if command == "resources.status":
-        return resource_status()
+        return resource_status(check_runtime=True)
     if command == "resources.repair":
         return repair_resources()
     if command == "settings.calendar.get":
