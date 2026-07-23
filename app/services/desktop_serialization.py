@@ -60,6 +60,9 @@ def serialize_member(member: MemberSchedule) -> dict[str, Any]:
     status, risk = _member_risk(member)
     return {
         "member": member.name,
+        "member_key": member.member_key,
+        "department": member.department or "",
+        "role": member.role or "",
         "chinese_schedule": "已导入" if member.has_chinese else "缺失",
         "english_schedule": "已导入" if member.has_english else "缺失",
         "course_block_count": len(member.blocks),
@@ -78,6 +81,9 @@ def serialize_file_record(record: FileProcessRecord) -> dict[str, Any]:
         "cache": "暂未提供",
         "course_block_count": record.block_count,
         "status": record.status or "",
+        "quality_state": record.quality_state,
+        "layout_profile": record.layout_profile or "",
+        "source_hash": record.source_hash or record.source.content_hash or "",
         "warning": record.display_result or "",
         "error": error,
     }
@@ -131,11 +137,17 @@ def serialize_process_result(
     return {
         "ok": True,
         "result_ref": result_ref,
+        "quality_state": result.quality_state,
+        "can_export": result.quality_state == "accepted",
+        "parser_signature": result.parser_signature,
         "summary": summary,
         "availability": [serialize_slot(slot) for slot in result.slots],
         "availability_preview": dataframe_records(preview_df),
         "members": [serialize_member(member) for member in result.members],
         "details": [serialize_file_record(record) for record in result.file_records],
+        "courses": [json_safe(block) for block in result.blocks],
+        "issues": [json_safe(issue) for issue in result.issues],
+        "corrections": [json_safe(correction) for correction in result.corrections],
         "logs": list(result.logs),
         "warnings": warnings,
         "errors": errors,

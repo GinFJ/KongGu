@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "privacy": "No names, paths, raw course text or original PDFs are stored here.",
+  "release_thresholds": {
+    "profile_accuracy": 1.0,
+    "overall_slot_f1": 0.98,
+    "minimum_profile_slot_f1": 0.95,
+    "known_bad_false_accepts": 0
+  },
+  "samples": [
+    {"sample_id":"KG-01","content_hash":"5da850bd03a8bf7daef6f87621e48fd069d044d3ddb78f3e5d709de0f4595e40","kind":"中方","profile":"cdut_undergrad_full_term_cn","source_mode":"text","annotation_status":"pending","occupied_slots":[]},
+    {"sample_id":"KG-02","content_hash":"0bf4a194a8d5cd6b2aafe4cbeedec4766edcd59f3ce6d88eefdae22332e6a1f3","kind":"中方","profile":"cdut_undergrad_full_term_cn","source_mode":"text","annotation_status":"pending","occupied_slots":[]},
+    {"sample_id":"KG-03","content_hash":"37499d28abc99a4cf014b36dfa7e9cd75d3c095bc210789687f2d23f273a1a5c","kind":"中方","profile":"cdut_undergrad_full_term_cn","source_mode":"image","annotation_status":"pending","occupied_slots":[]},
+    {"sample_id":"KG-04","content_hash":"69126bc63084e58ffd63442fb0e269e7d47ae489e06c4098db8d2b88492cc237","kind":"中方","profile":"cdut_undergrad_full_term_cn","source_mode":"image","annotation_status":"pending","occupied_slots":[]},
+    {"sample_id":"KG-05","content_hash":"f0e2b745cdf34a16753eaf013d9753a06e3f0e98c8f375f0d257bd2c93247383","kind":"中方","profile":"cdut_undergrad_full_term_cn","source_mode":"image","annotation_status":"pending","occupied_slots":[]},
+    {"sample_id":"KG-06","content_hash":"9f50706d853ea0364d97ffa057b6e7ce080a36e3e57d3ed8103beb2ca53af4cf","kind":"中方","profile":"cdut_legacy_chinese_web","source_mode":"text","annotation_status":"pending","occupied_slots":[]},
+    {"sample_id":"KG-07","content_hash":"7c66bcae532a3f1da55d9c395c16530b7a0ed9d476f6d23e3d126a102895325f","kind":"英方","profile":"cdut_sino_british_english_web","source_mode":"text","annotation_status":"pending","occupied_slots":[]},
+    {"sample_id":"KG-08","content_hash":"9f4bf548c5d67a9c5571e26ba7b77e9eedfce68eb08f16d58ba0c6f335aae2d3","kind":"英方","profile":"cdut_sino_british_english_web","source_mode":"text","annotation_status":"pending","occupied_slots":[]},
+    {"sample_id":"KG-09","content_hash":"a71f68aa701b7f6f396cee9ac1cdb0e1d84486af00e085f05c767de10ca55bcd","kind":"英方","profile":"cdut_sino_british_english_web","source_mode":"image","annotation_status":"pending","occupied_slots":[]},
+    {"sample_id":"KG-10","content_hash":"9203a7bfd75196740b29e34b404892da6473a2c69911d50878b9280854a0ef01","kind":"英方","profile":"cdut_sino_british_english_web","source_mode":"image","annotation_status":"pending","occupied_slots":[]},
+    {"sample_id":"KG-11","content_hash":"79c710c47f34fa579861e1fac4a05a2ac740ddc89e1d2e6d96672ebad2f1cfb7","kind":"英方","profile":"cdut_sino_british_english_web","source_mode":"image","annotation_status":"pending","occupied_slots":[]},
+    {"sample_id":"KG-12","content_hash":"6be700c822a8a6801b5d409a6bfb08915e92ea7f65c66a39206c12ddcd7a9b43","kind":"英方","profile":"cdut_sino_british_english_week_grid","source_mode":"image","annotation_status":"pending","occupied_slots":[]}
+  ]
+}

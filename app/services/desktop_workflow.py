@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
-import pickle
+import json
 
 import pandas as pd
 
@@ -16,6 +16,11 @@ from app.services.export_excel_service import ExcelExportRequest, build_export_e
 from app.services.generate_availability_service import AvailabilityGenerationResult, generate_availability
 from app.services.pdf_source_service import add_pdf_sources
 from app.services.result_view_service import build_gui_process_result
+from app.services.state_store import StateStore
+from app.services.workflow_persistence import restore_workflow, snapshot_workflow
+from core.quality import assert_export_allowed, evaluate_quality
+from core.signature import build_parser_signature
+from core.runtime_control import cancellation_scope
 from core.models import ProcessResult
 
 
@@ -33,7 +38,15 @@ class DesktopWorkflowResult:
     errors: list[str]
 
 
-def parse_pdf_paths(*, schedule_core: Any, paths: list[str], explicit_kind: str | None = None) -> DesktopWorkflowResult:
+def parse_pdf_paths(
+    *,
+    schedule_core: Any,
+    paths: list[str],
+    explicit_kind: str | None = None,
+    enforce_quality: bool = False,
+    progress: Callable[[str, int, int, str], None] | None = None,
+    cancelled: Callable[[], bool] | None = None,
+) -> DesktopWorkflowResult:
     """Parse selected PDFs and produce preview/export-ready data."""
 
     pdf_paths = [str(Path(path)) for path in paths if str(path).strip()]
@@ -43,6 +56,10 @@ def parse_pdf_paths(*, schedule_core: Any, paths: list[str], explicit_kind: str 
     non_pdf = [path for path in pdf_paths if Path(path).suffix.lower() != ".pdf"]
     if non_pdf:
         raise ValueError("仅支持 PDF 文件：" + "、".join(Path(path).name for path in non_pdf))
+    if cancelled and cancelled():
+        raise InterruptedError("任务已取消。")
+    if progress:
+        progress("text_layer", 0, len(pdf_paths), "正在读取 PDF 文本层并识别课表类型")
 
     add_result = add_pdf_sources(
         paths=pdf_paths,
@@ -57,12 +74,17 @@ def parse_pdf_paths(*, schedule_core: Any, paths: list[str], explicit_kind: str 
             raise ValueError("没有可解析的课表 PDF：" + "；".join(errors))
         raise ValueError("PDF 文件读取失败，请检查文件是否可访问。")
 
-    generation = generate_availability(
-        schedule_core=schedule_core,
-        selected_sources=add_result.added,
-        root_dir="",
-        weekdays=WEEKDAYS,
-    )
+    if progress:
+        progress("course_parse", 0, len(add_result.added), "正在解析课程占用槽")
+    with cancellation_scope(cancelled):
+        generation = generate_availability(
+            schedule_core=schedule_core,
+            selected_sources=add_result.added,
+            root_dir="",
+            weekdays=WEEKDAYS,
+        )
+    if cancelled and cancelled():
+        raise InterruptedError("任务已取消。")
     preview = build_availability_preview(
         occupancy=generation.occupancy,
         students=generation.students,
@@ -83,6 +105,22 @@ def parse_pdf_paths(*, schedule_core: Any, paths: list[str], explicit_kind: str 
     )
     warnings = _collect_result_warnings(process_result, [*warnings, *generation.errors])
     errors.extend(generation.errors or [])
+    signature = build_parser_signature()
+    quality_state, issues = evaluate_quality(
+        file_records=process_result.file_records,
+        members=process_result.members,
+        enforce_identity=enforce_quality,
+    )
+    process_result.quality_state = quality_state
+    process_result.issues = issues
+    process_result.parser_signature = signature.digest
+    if progress:
+        progress(
+            "review" if quality_state != "accepted" else "completed",
+            len(add_result.added),
+            len(add_result.added),
+            "解析完成，等待人工复核" if quality_state != "accepted" else "解析与质量门禁已通过",
+        )
 
     return DesktopWorkflowResult(
         generation_result=generation,
@@ -105,6 +143,10 @@ def export_excel(
 
     if mode != "classic":
         raise ValueError("visual 导出模式已预留，等待可视化表格样式后实现。")
+    assert_export_allowed(
+        workflow_result.process_result.quality_state,
+        workflow_result.process_result.issues,
+    )
     target = Path(target_path)
     if target.suffix.lower() != ".xlsx":
         target = target.with_suffix(".xlsx")
@@ -122,32 +164,103 @@ def export_excel(
             threshold=0,
             blocks_df=generation.blocks_df,
             all_slot_df=generation.all_slot_df,
+            member_course_df=generation.blocks_df,
+            issue_df=pd.DataFrame(
+                [
+                    {
+                        "问题ID": issue.issue_id,
+                        "级别": issue.severity,
+                        "错误码": issue.code,
+                        "来源文件": issue.source_file or "",
+                        "字段": issue.field or "",
+                        "问题": issue.message,
+                        "修复建议": issue.suggestion,
+                        "已确认": "是" if issue.confirmed else "否",
+                    }
+                    for issue in workflow_result.process_result.issues
+                ]
+            ),
+            file_df=pd.DataFrame(
+                [
+                    {
+                        "文件名": record.source.file_name,
+                        "成员": record.member_name or "",
+                        "类型": record.display_kind,
+                        "状态": record.status,
+                        "质量状态": record.quality_state,
+                        "课程块数": record.block_count,
+                        "来源哈希": record.source_hash or record.source.content_hash or "",
+                        "说明": record.display_result,
+                    }
+                    for record in workflow_result.process_result.file_records
+                ]
+            ),
+            correction_df=pd.DataFrame(
+                [
+                    {
+                        "来源哈希": correction.source_hash,
+                        "课程块ID": correction.block_id,
+                        "字段": correction.field,
+                        "原值": json.dumps(correction.original_value, ensure_ascii=False),
+                        "新值": json.dumps(correction.new_value, ensure_ascii=False),
+                        "原因": correction.reason,
+                        "操作者": correction.operator_id,
+                        "时间": correction.created_at,
+                        "是否过期": "是" if correction.stale else "否",
+                    }
+                    for correction in workflow_result.process_result.corrections
+                ]
+            ),
+            instructions_df=pd.DataFrame(
+                [
+                    {"项目": "质量状态", "说明": workflow_result.process_result.quality_state},
+                    {"项目": "解析器签名", "说明": workflow_result.process_result.parser_signature},
+                    {"项目": "数据范围", "说明": "仅包含本次导入并通过质量门禁的课表。"},
+                    {"项目": "隐私", "说明": "原始 PDF 未复制到数据库或工作簿。"},
+                    {"项目": "复核", "说明": "问题和人工修正分别记录在对应工作表。"},
+                ]
+            ),
         ),
     )
     target.write_bytes(data)
     return target
 
 
-def save_workflow_result(workflow_result: DesktopWorkflowResult, cache_root: Path) -> Path:
-    """Persist a parse result so a later sidecar command can export it."""
+def save_workflow_result(
+    workflow_result: DesktopWorkflowResult,
+    store: StateStore,
+    job_id: str | None = None,
+    request: dict[str, Any] | None = None,
+) -> str:
+    """Persist a versioned JSON result under a stable job UUID."""
 
-    result_dir = cache_root / "results"
-    result_dir.mkdir(parents=True, exist_ok=True)
-    path = result_dir / f"{uuid4().hex}.pkl"
-    with path.open("wb") as file:
-        pickle.dump(workflow_result, file)
-    return path
+    result_id = job_id or store.create_job(
+        request or {},
+        workflow_result.process_result.parser_signature,
+        [source.source_path for source in workflow_result.generation_result.model_sources],
+    )
+    workflow_result.process_result.job_id = result_id
+    snapshot = snapshot_workflow(workflow_result)
+    store.update_job(
+        result_id,
+        status="completed",
+        result_json=json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
+        error="",
+        quality_state=workflow_result.process_result.quality_state,
+        current=len(workflow_result.generation_result.model_sources),
+        total=len(workflow_result.generation_result.model_sources),
+    )
+    store.replace_issues(result_id, snapshot.get("issues", []))
+    return result_id
 
 
-def load_workflow_result(path: str | Path) -> DesktopWorkflowResult:
-    """Load a previously persisted desktop workflow result."""
+def load_workflow_result(result_ref: str, store: StateStore, schedule_core: Any) -> DesktopWorkflowResult:
+    """Load a JSON workflow snapshot by stable job UUID."""
 
-    result_path = Path(path)
-    with result_path.open("rb") as file:
-        loaded = pickle.load(file)
-    if not isinstance(loaded, DesktopWorkflowResult):
-        raise ValueError("解析结果引用无效，请重新解析后导出。")
-    return loaded
+    job = store.get_job(result_ref)
+    if not job or not job.get("result"):
+        raise ValueError("解析结果引用无效或来自旧版，请重新解析后导出。")
+    return restore_workflow(job["result"], schedule_core)
 
 
 def serialize_workflow_result(workflow_result: DesktopWorkflowResult, result_ref: str) -> dict[str, Any]:

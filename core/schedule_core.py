@@ -20,6 +20,10 @@ from openpyxl.utils import get_column_letter
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.worksheet.worksheet import Worksheet
 
+from core.ocr_engines import PaddleV4Engine
+from core.runtime_control import raise_if_cancelled
+from core.signature import cache_signature
+
 
 WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 WEEKDAY_INDEX = {weekday: index for index, weekday in enumerate(WEEKDAYS)}
@@ -78,8 +82,8 @@ NON_CLASS_KEYWORDS = {
 
 _OCR_ENGINE = None
 LOGGER = logging.getLogger("konggu")
-PARSE_CACHE_VERSION = 32
-OCR_LAYOUT_CACHE_VERSION = 2
+PARSE_CACHE_VERSION = 33
+OCR_LAYOUT_CACHE_VERSION = 3
 NAME_STOPWORDS = {
     "办公室",
     "外联部",
@@ -222,7 +226,8 @@ def _parse_cache_path(source: dict[str, Any], kind: str) -> Path:
     digest = _source_digest(source)
     name_digest = hashlib.sha1(_source_name(source).encode("utf-8", errors="ignore")).hexdigest()[:12]
     safe_kind = re.sub(r"[^0-9A-Za-z_\-\u4e00-\u9fff]+", "_", kind).strip("_") or "unknown"
-    return _parse_cache_root() / f"{digest}_{name_digest}_{safe_kind}.json"
+    signature = cache_signature()[:16]
+    return _parse_cache_root() / f"{digest}_{name_digest}_{safe_kind}_{signature}.json"
 
 
 def _load_parse_cache(source: dict[str, Any], kind: str) -> list[dict[str, Any]] | None:
@@ -236,6 +241,7 @@ def _load_parse_cache(source: dict[str, Any], kind: str) -> list[dict[str, Any]]
         return None
     if (
         payload.get("version") != PARSE_CACHE_VERSION
+        or payload.get("parser_signature") != cache_signature()
         or payload.get("hash") != _source_digest(source)
         or payload.get("file_name") != _source_name(source)
         or payload.get("kind") != kind
@@ -251,6 +257,7 @@ def _write_parse_cache(source: dict[str, Any], kind: str, blocks: list[dict[str,
     cache_path = _parse_cache_path(source, kind)
     payload = {
         "version": PARSE_CACHE_VERSION,
+        "parser_signature": cache_signature(),
         "hash": _source_digest(source),
         "kind": kind,
         "file_name": _source_name(source),
@@ -350,6 +357,7 @@ def parse_actual_pdf_sources(
     errors: list[str] = []
 
     for source in sources:
+        raise_if_cancelled()
         file_name = _source_name(source)
         kind = _source_kind(source)
         image_only_pdf = False
@@ -515,6 +523,8 @@ def parse_actual_pdf_sources(
                     )
                 else:
                     errors.append(f"{file_name}：未识别到课程占用。")
+        except InterruptedError:
+            raise
         except OCRConfigurationError as exc:
             context = "图片型 PDF 需要 OCR，但 " if image_only_pdf else "课表需要 OCR，但 "
             errors.append(f"{file_name}：{context}{exc}")
@@ -542,7 +552,7 @@ def build_occupancy(blocks: list[dict[str, Any]]) -> dict[tuple[int, str, int], 
         week = block.get("week")
         weekday = block.get("weekday")
         period = block.get("period")
-        name = block.get("name")
+        name = block.get("member_key") or block.get("name")
         if week is None or not weekday or period is None or not name:
             continue
         occupancy[(int(week), str(weekday), int(period))].add(str(name))
@@ -768,6 +778,11 @@ def build_empty_schedule_excel_bytes(
     threshold: int = 0,
     blocks_df: pd.DataFrame | None = None,
     all_slot_df: pd.DataFrame | None = None,
+    member_course_df: pd.DataFrame | None = None,
+    issue_df: pd.DataFrame | None = None,
+    file_df: pd.DataFrame | None = None,
+    correction_df: pd.DataFrame | None = None,
+    instructions_df: pd.DataFrame | None = None,
 ) -> bytes:
     timetable, _ = validate_timetable(timetable_df)
     if all_slot_df is None or all_slot_df.empty:
@@ -831,6 +846,36 @@ def build_empty_schedule_excel_bytes(
         blocks_df = pd.DataFrame()
     _append_dataframe_sheet(workbook, "课程占用明细", blocks_df)
     _append_dataframe_sheet(workbook, "处理日志摘要", logs_df)
+    _append_dataframe_sheet(
+        workbook,
+        "全部空课明细",
+        export_df,
+    )
+    _append_dataframe_sheet(
+        workbook,
+        "成员课程明细",
+        member_course_df if member_course_df is not None else blocks_df,
+    )
+    _append_dataframe_sheet(
+        workbook,
+        "解析问题清单",
+        issue_df if issue_df is not None else pd.DataFrame(),
+    )
+    _append_dataframe_sheet(
+        workbook,
+        "文件处理记录",
+        file_df if file_df is not None else pd.DataFrame(),
+    )
+    _append_dataframe_sheet(
+        workbook,
+        "人工修正历史",
+        correction_df if correction_df is not None else pd.DataFrame(),
+    )
+    _append_dataframe_sheet(
+        workbook,
+        "使用说明",
+        instructions_df if instructions_df is not None else pd.DataFrame(),
+    )
 
     workbook.save(output)
     return output.getvalue()
@@ -1030,7 +1075,11 @@ def _extract_pdf_ocr_items(source: dict[str, Any]) -> list[dict[str, Any]]:
     if cache_path.exists():
         try:
             payload = json.loads(cache_path.read_text(encoding="utf-8"))
-            if payload.get("version") == OCR_LAYOUT_CACHE_VERSION and isinstance(payload.get("items"), list):
+            if (
+                payload.get("version") == OCR_LAYOUT_CACHE_VERSION
+                and payload.get("parser_signature") == cache_signature()
+                and isinstance(payload.get("items"), list)
+            ):
                 LOGGER.info("命中 OCR 坐标缓存: %s", _source_name(source))
                 return payload["items"]
         except Exception as exc:
@@ -1062,11 +1111,13 @@ def _extract_pdf_ocr_items(source: dict[str, Any]) -> list[dict[str, Any]]:
             except Exception as exc:
                 raise OCRConfigurationError(_ocr_error_message(exc)) from exc
             items.extend(_extract_ocr_items_from_result(result, page_number, pix.width, pix.height))
+            raise_if_cancelled()
     finally:
         doc.close()
 
     payload = {
         "version": OCR_LAYOUT_CACHE_VERSION,
+        "parser_signature": cache_signature(),
         "hash": _source_digest(source),
         "file_name": _source_name(source),
         "items": sorted(items, key=lambda value: (value["page"], value["y0"], value["x0"])),
@@ -1119,7 +1170,7 @@ def _build_ocr_engine():
         )
     try:
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            _OCR_ENGINE = PaddleOCR(**kwargs)
+            _OCR_ENGINE = PaddleV4Engine(PaddleOCR(**kwargs))
     except Exception as exc:
         raise OCRConfigurationError(_ocr_error_message(exc)) from exc
     return _OCR_ENGINE
@@ -1309,10 +1360,15 @@ def _extract_ocr_items_from_result(result: Any, page_number: int, width: int, he
                 boxes = mapping.get("dt_polys")
             texts = texts or []
             boxes = boxes if boxes is not None else []
+            scores = mapping.get("rec_scores")
+            if scores is None:
+                scores = mapping.get("scores")
+            if scores is None:
+                scores = []
         except Exception:
-            texts, boxes = [], []
+            texts, boxes, scores = [], [], []
         if len(texts) and len(boxes):
-            for text, box in zip(texts, boxes):
+            for index, (text, box) in enumerate(zip(texts, boxes)):
                 rect = _ocr_box_to_rect(box)
                 cleaned = str(text or "").replace("\xa0", " ").strip()
                 if cleaned and rect is not None:
@@ -1326,6 +1382,9 @@ def _extract_ocr_items_from_result(result: Any, page_number: int, width: int, he
                             "text": cleaned,
                             "page_width": width,
                             "page_height": height,
+                            "confidence": float(scores[index]) if index < len(scores) else None,
+                            "engine": "paddle_v4",
+                            "model_version": "PP-OCRv4-mobile",
                         }
                     )
             return items

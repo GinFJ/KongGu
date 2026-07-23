@@ -5,6 +5,8 @@
   "permissions": [
     "core:default",
     "dialog:default",
+    "fs:default",
+    "fs:allow-read-file",
     {
       "identifier": "shell:allow-execute",
       "allow": [
@@ -14,6 +16,18 @@
           "args": true
         }
       ]
-    }
+    },
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "binaries/konggu-worker",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    },
+    "shell:allow-stdin-write",
+    "shell:allow-kill"
   ]
 }

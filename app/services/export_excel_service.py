@@ -20,6 +20,11 @@ class ExcelExportRequest:
     blocks_df: pd.DataFrame
     all_slot_df: pd.DataFrame
     threshold: int = 0
+    member_course_df: pd.DataFrame | None = None
+    issue_df: pd.DataFrame | None = None
+    file_df: pd.DataFrame | None = None
+    correction_df: pd.DataFrame | None = None
+    instructions_df: pd.DataFrame | None = None
 
 
 def build_export_excel_bytes(*, schedule_core: Any, request: ExcelExportRequest) -> bytes:
@@ -34,4 +39,9 @@ def build_export_excel_bytes(*, schedule_core: Any, request: ExcelExportRequest)
         threshold=request.threshold,
         blocks_df=request.blocks_df,
         all_slot_df=request.all_slot_df,
+        member_course_df=request.member_course_df,
+        issue_df=request.issue_df,
+        file_df=request.file_df,
+        correction_df=request.correction_df,
+        instructions_df=request.instructions_df,
     )

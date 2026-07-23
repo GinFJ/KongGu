@@ -13,9 +13,14 @@
     "prepare:offline:dev": "python tools/prepare_offline_resources.py --allow-missing-ocr"
   },
   "dependencies": {
+    "@fullcalendar/core": "^6.1.21",
+    "@fullcalendar/interaction": "^6.1.21",
+    "@fullcalendar/timegrid": "^6.1.21",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.0.0",
-    "@tauri-apps/plugin-shell": "^2.0.0"
+    "@tauri-apps/plugin-fs": "^2.5.1",
+    "@tauri-apps/plugin-shell": "^2.0.0",
+    "pdfjs-dist": "^6.1.200"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",

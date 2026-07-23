@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .errors import ErrorType, ProcessError
+from .identity import identity_from_filename
 from .models import (
     AvailabilitySlot,
     CourseBlock,
@@ -82,6 +83,7 @@ def model_source_to_legacy(source: PdfSource) -> dict[str, Any]:
         "kind": source.kind,
         "bytes": source.bytes_data,
         "source_path": source.source_path,
+        "content_hash": source.content_hash,
     }
 
 
@@ -133,8 +135,17 @@ def course_block_from_legacy(block: dict[str, Any]) -> CourseBlock:
     source_type = block.get("source_type") or block.get("kind") or "中方"
     if source_type not in {"中方", "英方"}:
         source_type = "中方"
+    name = str(block.get("name", "")).strip()
+    source_file = str(block.get("source_file")).strip() if block.get("source_file") else None
+    identity = identity_from_filename(source_file or "", fallback_name=name)
+    bbox_value = block.get("bbox")
+    if bbox_value is None and all(block.get(key) is not None for key in ("x0", "y0", "x1", "y1")):
+        bbox_value = (block["x0"], block["y0"], block["x1"], block["y1"])
+    bbox = None
+    if isinstance(bbox_value, (list, tuple)) and len(bbox_value) >= 4:
+        bbox = tuple(float(value) for value in bbox_value[:4])
     return CourseBlock(
-        name=str(block.get("name", "")).strip(),
+        name=name,
         source_type=source_type,
         week=int(block.get("week")),
         weekday=str(block.get("weekday", "")).strip(),
@@ -143,8 +154,20 @@ def course_block_from_legacy(block: dict[str, Any]) -> CourseBlock:
         start_time=str(block.get("start_time")).strip() if block.get("start_time") else None,
         end_time=str(block.get("end_time")).strip() if block.get("end_time") else None,
         course=str(block.get("course")).strip() if block.get("course") else None,
-        source_file=str(block.get("source_file")).strip() if block.get("source_file") else None,
+        source_file=source_file,
         text_source=_normalize_text_source(block.get("text_source")),
+        block_id=str(block.get("block_id") or ""),
+        member_key=str(
+            block.get("member_key")
+            or (name if identity.confirmation_required else identity.member_key)
+        ),
+        department=str(block.get("department") or identity.department or "").strip() or None,
+        role=str(block.get("role") or identity.role or "").strip() or None,
+        source_hash=str(block.get("source_hash") or "").strip() or None,
+        page=int(block["page"]) if block.get("page") is not None else None,
+        bbox=bbox,
+        confidence=float(block["confidence"]) if block.get("confidence") is not None else None,
+        provenance=dict(block.get("provenance") or {}),
     )
 
 
@@ -163,13 +186,21 @@ def course_blocks_from_legacy(blocks: Iterable[dict[str, Any]]) -> list[CourseBl
 def build_member_schedules(blocks: Iterable[CourseBlock], known_names: Iterable[str]) -> list[MemberSchedule]:
     """Build member completeness rows from normalized course blocks."""
 
-    by_name: dict[str, MemberSchedule] = {
-        name: MemberSchedule(name=name) for name in sorted({name for name in known_names if name})
-    }
-    for block in blocks:
+    block_list = list(blocks)
+    by_key: dict[str, MemberSchedule] = {}
+    for block in block_list:
         if not block.name:
             continue
-        member = by_name.setdefault(block.name, MemberSchedule(name=block.name))
+        key = block.member_key or block.name
+        member = by_key.setdefault(
+            key,
+            MemberSchedule(
+                name=block.name,
+                department=block.department,
+                role=block.role,
+                member_key=key,
+            ),
+        )
         member.blocks.append(block)
         if block.source_type == "中方":
             member.has_chinese = True
@@ -178,7 +209,14 @@ def build_member_schedules(blocks: Iterable[CourseBlock], known_names: Iterable[
             member.has_english = True
             member.english_status = "已导入"
 
-    for member in by_name.values():
+    known = sorted({name for name in known_names if name})
+    represented_names = {member.name for member in by_key.values()}
+    represented_keys = {member.member_key for member in by_key.values()}
+    for name in known:
+        if name not in represented_names and name not in represented_keys:
+            by_key[name] = MemberSchedule(name=name)
+
+    for member in by_key.values():
         if member.has_chinese and member.has_english:
             member.status = "完整"
         elif member.has_chinese:
@@ -188,7 +226,7 @@ def build_member_schedules(blocks: Iterable[CourseBlock], known_names: Iterable[
         else:
             member.status = "待处理"
         member.errors.extend(_detect_member_conflicts(member))
-    return list(by_name.values())
+    return list(by_key.values())
 
 
 def _detect_member_conflicts(member: MemberSchedule) -> list[ProcessError]:
@@ -264,6 +302,8 @@ def build_file_records(
                     used_ocr=error_type in {ErrorType.OCR_CONFIG_FAILED, ErrorType.OCR_FAILED},
                     block_count=len(related_blocks),
                     error=error,
+                    source_hash=source.content_hash,
+                    quality_state="blocked",
                 )
             )
         else:
@@ -277,6 +317,8 @@ def build_file_records(
                     text_source=text_source,
                     used_ocr=text_source == "OCR",
                     block_count=len(related_blocks),
+                    source_hash=source.content_hash,
+                    quality_state="accepted" if related_blocks else "blocked",
                 )
             )
     return records

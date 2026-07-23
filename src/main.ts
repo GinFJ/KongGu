@@ -1,104 +1,216 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { Command } from "@tauri-apps/plugin-shell";
+import type { Calendar } from "@fullcalendar/core";
 import wordmarkUrl from "../assets/konggu-wordmark.png";
+import { mountCalendar } from "./calendarView";
+import { mountReview } from "./reviewView";
+import { SidecarClient } from "./sidecarClient";
+import type {
+  CalendarSettings,
+  JobResponse,
+  ParseResult,
+  ProgressEvent,
+  ResourceStatus,
+  ReviewPayload
+} from "./types";
 import "./styles.css";
 
-type ResourceStatus = {
-  ready: boolean;
-  app_data_root: string;
-  resources_root: string;
-  ocr_models_root: string;
-  missing: Array<{ target: string; kind: string; issue: string }>;
-  invalid: Array<{ target: string; kind: string; issue: string }>;
-  ocr: { ready: boolean; models: Array<{ name: string; path: string; exists: boolean; valid: boolean }> };
-};
-
-type ParseResult = {
-  ok: boolean;
-  result_ref: string;
-  summary: Record<string, number>;
-  detected_weeks: number[];
-  detected_week_count: number;
-  detected_max_week: number;
-  availability_preview: Array<Record<string, unknown>>;
-  members: Array<Record<string, unknown>>;
-  details: Array<Record<string, unknown>>;
-  warnings: string[];
-  errors: string[];
-};
-
-type CalendarSettings = {
-  semester_start_date: string;
-  teaching_weeks: number;
-};
+type Tab = "availability" | "members" | "files" | "issues" | "review" | "calendar";
 
 type AppState = {
   files: string[];
   resourceStatus: ResourceStatus | null;
   calendarSettings: CalendarSettings;
   result: ParseResult | null;
-  activeTab: "availability" | "members" | "details";
+  review: ReviewPayload | null;
+  activeTab: Tab;
   busy: boolean;
+  jobId: string;
   statusText: string;
+  stage: string;
+  progress: { current: number; total: number };
   logs: string[];
 };
 
-type FileView = {
-  file: string;
-  kind: string;
-  member: string;
-  missingPair: string;
-};
-
+const client = new SidecarClient();
 const state: AppState = {
   files: [],
   resourceStatus: null,
-  calendarSettings: {
-    semester_start_date: "2026-03-02",
-    teaching_weeks: 18
-  },
+  calendarSettings: { semester_start_date: "2026-03-02", teaching_weeks: 18 },
   result: null,
+  review: null,
   activeTab: "availability",
   busy: false,
-  statusText: "正在检查离线材料",
+  jobId: "",
+  statusText: "正在连接离线解析引擎",
+  stage: "boot",
+  progress: { current: 0, total: 0 },
   logs: []
 };
 
 const app = document.querySelector<HTMLDivElement>("#app");
-if (!app) {
-  throw new Error("App root not found.");
-}
+if (!app) throw new Error("App root not found.");
+let calendar: Calendar | null = null;
 
-function log(message: string) {
-  state.logs = [`${new Date().toLocaleTimeString()} ${message}`, ...state.logs].slice(0, 80);
+client.onEvent((event) => {
+  if (event.event === "sidecar.fatal") {
+    state.statusText = `解析引擎启动失败：${event.message}`;
+    state.busy = false;
+    render();
+    return;
+  }
+  if (state.jobId && event.job_id !== state.jobId) return;
+  state.stage = event.stage;
+  state.progress = { current: event.current, total: event.total };
+  state.statusText = event.message;
+  log(event.message, false);
   render();
-}
+});
 
-async function callSidecar<T>(command: string, payload: Record<string, unknown> = {}): Promise<T> {
-  const request = JSON.stringify({ command, ...payload });
-  const output = await Command.sidecar("binaries/konggu-worker", ["--request-json", request]).execute();
-  const raw = output.stdout.trim() || output.stderr.trim();
-  if (!raw) {
-    throw new Error("sidecar 没有返回数据。");
-  }
-  const parsed = JSON.parse(raw);
-  if (!parsed.ok) {
-    throw new Error(parsed.error || "sidecar 执行失败。");
-  }
-  return parsed as T;
-}
-
-async function refreshResources() {
-  state.busy = true;
-  state.statusText = "正在检查离线材料";
+async function boot() {
   render();
   try {
-    state.resourceStatus = await callSidecar<ResourceStatus>("resources.status");
-    state.statusText = state.resourceStatus.ready ? "离线材料已就绪" : "离线材料缺失，可点击修复";
+    await client.start();
+    const [resources, settings] = await Promise.all([
+      client.request<ResourceStatus>("resources.status"),
+      client.request<{ ok: boolean; settings: CalendarSettings }>("settings.calendar.get")
+    ]);
+    state.resourceStatus = resources;
+    state.calendarSettings = settings.settings;
+    state.statusText = resources.ready ? "离线材料已就绪，可以导入课表" : "离线材料不完整，请先修复";
+    state.stage = "ready";
+  } catch (error) {
+    state.statusText = formatError(error);
+  }
+  render();
+}
+
+async function chooseFiles() {
+  const selected = await open({ multiple: true, filters: [{ name: "PDF", extensions: ["pdf"] }] });
+  const paths = Array.isArray(selected) ? selected : typeof selected === "string" ? [selected] : [];
+  state.files = Array.from(new Set([...state.files, ...paths]));
+  state.result = null;
+  state.review = null;
+  state.statusText = state.files.length ? `已选择 ${state.files.length} 份课表` : state.statusText;
+  render();
+}
+
+async function parseSchedules() {
+  if (!state.files.length) return setStatus("请先选择课表 PDF。");
+  const invalid = state.files.filter((path) => !inferKind(path));
+  if (invalid.length) return setStatus(`${invalid.length} 个文件无法判断中方/英方，请先按规则改名。`);
+  state.busy = true;
+  state.result = null;
+  state.review = null;
+  state.stage = "queued";
+  state.statusText = "正在建立持久任务";
+  render();
+  try {
+    await saveSettings(false);
+    const started = await client.request<{ ok: boolean; job_id: string }>("job.start", { paths: state.files });
+    state.jobId = started.job_id;
+    log(`任务 ${state.jobId.slice(0, 8)} 已建立`);
+    await waitForJob(started.job_id);
+  } catch (error) {
+    state.busy = false;
+    state.statusText = `解析失败：${formatError(error)}`;
+    log(state.statusText);
+    render();
+  }
+}
+
+async function waitForJob(jobId: string) {
+  while (state.jobId === jobId) {
+    const response = await client.request<JobResponse>("job.get", { job_id: jobId });
+    const job = response.job;
+    state.progress = { current: job.current, total: job.total };
+    if (job.status === "completed") {
+      state.result = job.output || null;
+      state.busy = false;
+      if (state.result?.detected_max_week) {
+        state.calendarSettings.teaching_weeks = state.result.detected_max_week;
+      }
+      state.review = await client.request<ReviewPayload>("review.get", { job_id: jobId });
+      state.activeTab = state.result?.can_export ? "availability" : "issues";
+      state.statusText = state.result?.can_export
+        ? "解析完成，质量门禁已通过"
+        : `解析完成：${qualityLabel(state.result?.quality_state || "blocked")}`;
+      log(state.statusText);
+      render();
+      return;
+    }
+    if (["failed", "cancelled", "interrupted"].includes(job.status)) {
+      state.busy = false;
+      state.statusText = job.error || `任务状态：${job.status}`;
+      log(state.statusText);
+      render();
+      return;
+    }
+    await delay(650);
+  }
+}
+
+async function cancelJob() {
+  if (!state.jobId || !state.busy) return;
+  const jobId = state.jobId;
+  state.statusText = "正在等待当前 OCR 页结束";
+  state.stage = "cancelling";
+  render();
+  await client.request("job.cancel", { job_id: jobId }).catch(() => undefined);
+  window.setTimeout(async () => {
+    if (state.busy && state.jobId === jobId && state.stage === "cancelling") {
+      state.statusText = "软取消超时，正在重启解析引擎";
+      render();
+      await client.forceRestart();
+      state.busy = false;
+      state.stage = "interrupted";
+      state.statusText = "任务已中断，可点击“重试失败文件”。";
+      render();
+    }
+  }, 10_000);
+}
+
+async function retryFailed() {
+  if (!state.jobId || state.busy) return;
+  state.busy = true;
+  render();
+  try {
+    const started = await client.request<{ ok: boolean; job_id: string }>("job.retry_failed", {
+      job_id: state.jobId
+    });
+    state.jobId = started.job_id;
+    await waitForJob(started.job_id);
+  } catch (error) {
+    state.busy = false;
+    setStatus(formatError(error));
+  }
+}
+
+async function exportExcel() {
+  if (!state.result?.result_ref) return setStatus("请先完成解析。");
+  if (!state.result.can_export) {
+    state.activeTab = "issues";
+    return setStatus("质量门禁未通过；请先确认或修正所有阻塞项。");
+  }
+  const target = await save({
+    defaultPath: "Konggu_availability.xlsx",
+    filters: [{ name: "Excel", extensions: ["xlsx"] }]
+  });
+  if (!target) return;
+  state.busy = true;
+  state.statusText = "正在执行导出前质量复核";
+  render();
+  try {
+    const response = await client.request<{ ok: boolean; path: string }>("exports.excel", {
+      result_ref: state.result.result_ref,
+      target_path: target,
+      mode: "classic",
+      export_week_count: state.calendarSettings.teaching_weeks
+    });
+    state.statusText = `可信 Excel 已导出：${response.path}`;
     log(state.statusText);
   } catch (error) {
-    state.statusText = `材料检查暂不可用：${formatSidecarError(error)}`;
-    log(state.statusText);
+    state.statusText = `导出被阻止：${formatError(error)}`;
+    state.activeTab = "issues";
   } finally {
     state.busy = false;
     render();
@@ -107,481 +219,280 @@ async function refreshResources() {
 
 async function repairResources() {
   state.busy = true;
-  state.statusText = "正在从安装包修复离线材料";
-  render();
+  setStatus("正在从安装包校验并修复离线材料");
   try {
-    const repaired = await callSidecar<{ status: ResourceStatus; copied: string[] }>("resources.repair");
-    state.resourceStatus = repaired.status;
-    state.statusText = state.resourceStatus.ready ? "离线材料已修复" : "仍有离线材料缺失";
-    log(`修复完成，复制 ${repaired.copied.length} 个文件。`);
+    const response = await client.request<{ ok: boolean; status: ResourceStatus; copied: string[] }>("resources.repair");
+    state.resourceStatus = response.status;
+    state.statusText = response.status.ready ? `修复完成，复制 ${response.copied.length} 项` : "仍有资源未通过校验";
   } catch (error) {
-    state.statusText = `修复失败：${formatSidecarError(error)}`;
-    log(state.statusText);
+    state.statusText = formatError(error);
   } finally {
     state.busy = false;
     render();
   }
 }
 
-async function loadCalendarSettings() {
-  try {
-    const response = await callSidecar<{ settings: CalendarSettings }>("settings.calendar.get");
-    state.calendarSettings = response.settings;
-    render();
-  } catch (error) {
-    log(`学期设置读取失败：${formatSidecarError(error)}`);
-  }
-}
-
-async function saveCalendarSettings() {
-  state.busy = true;
-  state.statusText = "正在保存学期设置";
-  render();
-  try {
-    const response = await callSidecar<{ settings: CalendarSettings }>("settings.calendar.save", {
-      settings: state.calendarSettings
-    });
-    state.calendarSettings = response.settings;
-    state.statusText = `学期设置已保存：第 1 周周一 ${state.calendarSettings.semester_start_date}，${state.calendarSettings.teaching_weeks} 周。`;
-    log(state.statusText);
-  } catch (error) {
-    state.statusText = `设置保存失败：${formatSidecarError(error)}`;
-    log(state.statusText);
-  } finally {
-    state.busy = false;
-    render();
-  }
-}
-
-async function chooseFiles() {
-  const selected = await open({
-    multiple: true,
-    filters: [{ name: "PDF", extensions: ["pdf"] }]
+async function saveSettings(showFeedback = true) {
+  const response = await client.request<{ ok: boolean; settings: CalendarSettings }>("settings.calendar.save", {
+    settings: state.calendarSettings
   });
-  if (Array.isArray(selected)) {
-    state.files = Array.from(new Set([...state.files, ...selected]));
-  } else if (typeof selected === "string") {
-    state.files = Array.from(new Set([...state.files, selected]));
-  }
-  state.statusText = state.files.length ? `已选择 ${state.files.length} 个 PDF` : state.statusText;
-  render();
+  state.calendarSettings = response.settings;
+  if (showFeedback) setStatus("学期设置已保存。");
 }
 
-async function parseSchedules() {
-  if (!state.files.length) {
-    state.statusText = "请先选择 PDF。";
-    render();
-    return;
-  }
-  const invalidFiles = state.files.filter((file) => !inferFileKind(file));
-  if (invalidFiles.length) {
-    state.statusText = `有 ${invalidFiles.length} 个文件无法识别中方/英方，请先按“姓名-中方课表.pdf”或“姓名-英方课表.pdf”改名。`;
-    render();
-    return;
-  }
-  state.busy = true;
-  state.statusText = "正在解析课表 PDF";
-  render();
-  try {
-    const savedSettings = await callSidecar<{ settings: CalendarSettings }>("settings.calendar.save", {
-      settings: state.calendarSettings
-    });
-    state.calendarSettings = savedSettings.settings;
-    state.result = await callSidecar<ParseResult>("schedules.parse", { paths: state.files });
-    if (state.result.detected_max_week > 0) {
-      state.calendarSettings.teaching_weeks = state.result.detected_max_week;
-    }
-    state.activeTab = "availability";
-    state.statusText = `处理完成：${state.result.summary.member_count || 0} 名成员，识别到 ${formatDetectedWeeks(state.result.detected_weeks)}，可按需调整导出周数。`;
-    log(state.statusText);
-  } catch (error) {
-    state.statusText = `解析失败：${formatSidecarError(error)}`;
-    log(state.statusText);
-  } finally {
-    state.busy = false;
-    render();
-  }
-}
-
-async function exportExcel() {
-  if (!state.result?.result_ref) {
-    state.statusText = "请先生成空课表。";
-    render();
-    return;
-  }
-  const target = await save({
-    defaultPath: "Konggu_availability.xlsx",
-    filters: [{ name: "Excel", extensions: ["xlsx"] }]
+async function applyReview(blockId: string, field: string, value: unknown, reason: string) {
+  if (!state.jobId) return;
+  if (!reason.trim()) throw new Error("请填写修正原因。");
+  state.review = await client.request<ReviewPayload>("review.apply", {
+    job_id: state.jobId,
+    block_id: blockId,
+    field,
+    new_value: value,
+    reason,
+    operator_id: "本机用户"
   });
-  if (!target) {
-    return;
+  await refreshJobOutput();
+}
+
+async function confirmIssue(issueId: string) {
+  if (!state.jobId) return;
+  state.review = await client.request<ReviewPayload>("review.confirm", {
+    job_id: state.jobId,
+    issue_id: issueId
+  });
+  await refreshJobOutput();
+}
+
+async function refreshJobOutput() {
+  const response = await client.request<JobResponse>("job.get", { job_id: state.jobId });
+  state.result = response.job.output || state.result;
+  if (state.result) {
+    state.statusText = qualityLabel(state.result.quality_state);
   }
-  state.busy = true;
-  state.statusText = "正在导出 Excel";
-  render();
-  try {
-    const savedSettings = await callSidecar<{ settings: CalendarSettings }>("settings.calendar.save", {
-      settings: state.calendarSettings
-    });
-    state.calendarSettings = savedSettings.settings;
-    const exported = await callSidecar<{ path: string }>("exports.excel", {
-      result_ref: state.result.result_ref,
-      target_path: target,
-      mode: "classic",
-      export_week_count: state.calendarSettings.teaching_weeks
-    });
-    state.statusText = `Excel 已导出：${exported.path}`;
-    log(state.statusText);
-  } catch (error) {
-    state.statusText = `导出失败：${formatSidecarError(error)}`;
-    log(state.statusText);
-  } finally {
-    state.busy = false;
-    render();
-  }
-}
-
-function removeFile(path: string) {
-  state.files = state.files.filter((item) => item !== path);
-  render();
-}
-
-function clearFiles() {
-  state.files = [];
-  state.statusText = "已清空待处理 PDF";
-  render();
-}
-
-function clearLogs() {
-  state.logs = [];
   render();
 }
 
 function render() {
-  const summary = state.result?.summary || {};
-  const fileViews = buildFileViews(state.files);
-  const invalidFiles = fileViews.filter((item) => !item.kind);
-  const visibleLogs = state.logs.slice(0, 4);
-  const canParse = state.files.length > 0 && invalidFiles.length === 0 && !state.busy;
+  calendar?.destroy();
+  calendar = null;
+  const result = state.result;
+  const quality = result?.quality_state || "blocked";
+  const invalidCount = state.files.filter((path) => !inferKind(path)).length;
+  const canParse = state.files.length > 0 && invalidCount === 0 && !state.busy;
+  const progressPercent = state.progress.total
+    ? Math.min(100, Math.round((state.progress.current / state.progress.total) * 100))
+    : state.busy ? 8 : 0;
+
   app.innerHTML = `
     <main class="shell">
-      <aside class="sidebar">
-        <div class="brand">
-          <img src="${wordmarkUrl}" alt="Konggu" />
-          <span>离线桌面版</span>
-        </div>
-        <button id="chooseFiles" class="primary" ${state.busy ? "disabled" : ""}>选择课表 PDF</button>
-        <button id="parseSchedules" ${canParse ? "" : "disabled"}>开始解析</button>
-        <button id="exportExcel" ${!state.result || state.busy ? "disabled" : ""}>导出 Excel</button>
-        <button id="repairResources" ${state.busy ? "disabled" : ""}>修复离线材料</button>
-        <button id="refreshResources" class="ghost" ${state.busy ? "disabled" : ""}>重新检查材料</button>
-        <section class="settingsBox">
-          <h2>学期设置</h2>
-          <label>
-            <span>第 1 周周一</span>
-            <input id="semesterStartDate" type="date" value="${escapeHtml(state.calendarSettings.semester_start_date)}" ${state.busy ? "disabled" : ""} />
-          </label>
-          <label>
-            <span>导出周数</span>
-            <input id="teachingWeeks" type="number" min="1" max="30" step="1" value="${state.calendarSettings.teaching_weeks}" ${state.busy ? "disabled" : ""} />
-          </label>
-          ${state.result?.detected_max_week ? `<small>已识别：${formatDetectedWeeks(state.result.detected_weeks)}，已自动填到第 ${state.result.detected_max_week} 周。</small>` : `<small>解析后会自动填入识别到的最大周数。</small>`}
-          <button id="saveCalendarSettings" ${state.busy ? "disabled" : ""}>保存设置</button>
+      <aside class="rail">
+        <div class="brand"><img src="${wordmarkUrl}" alt="空谷" /><span>排班复核工作台</span></div>
+        <nav class="primaryActions">
+          <button id="chooseFiles" class="primary" ${state.busy ? "disabled" : ""}>＋ 导入课表 PDF</button>
+          <button id="parseSchedules" ${canParse ? "" : "disabled"}>开始解析与质检</button>
+          ${state.busy ? `<button id="cancelJob" class="danger">取消当前任务</button>` : `<button id="retryFailed" ${state.jobId ? "" : "disabled"}>重试失败文件</button>`}
+          <button id="exportExcel" ${!result?.can_export || state.busy ? "disabled" : ""}>导出可信 Excel</button>
+        </nav>
+        <section class="railSection">
+          <div class="sectionLabel">学期边界</div>
+          <label>第 1 周周一<input id="semesterStart" type="date" value="${state.calendarSettings.semester_start_date}" /></label>
+          <label>教学周数<input id="teachingWeeks" type="number" min="1" max="30" value="${state.calendarSettings.teaching_weeks}" /></label>
+          <button id="saveSettings" ${state.busy ? "disabled" : ""}>保存设置</button>
         </section>
-        <section class="resourceBox">
-          <h2>离线材料</h2>
-          <p class="${state.resourceStatus?.ready ? "ok" : "warn"}">${state.resourceStatus?.ready ? "已就绪" : "需检查"}</p>
-          <small>${state.resourceStatus?.ocr.ready ? "OCR 模型可用" : "OCR 模型缺失或未校验"}</small>
-          ${renderResourceIssues()}
+        <section class="railSection resourceState">
+          <div class="sectionLabel">离线资源</div>
+          <strong class="${state.resourceStatus?.ready ? "good" : "warning"}">${state.resourceStatus?.ready ? "完整并通过校验" : "需要修复"}</strong>
+          <small>${state.resourceStatus?.ocr.ready ? "PP-OCRv4 CPU 模型可用" : "OCR 模型未就绪"}</small>
+          <button id="repairResources" ${state.busy ? "disabled" : ""}>修复离线材料</button>
         </section>
+        <div class="privacyMark">原始 PDF 仅在本机读取<br/>数据库不复制源文件</div>
       </aside>
-      <section class="workspace">
-        <header class="topbar">
+      <section class="workbench">
+        <header class="masthead">
           <div>
-            <h1>空课生成工作台</h1>
-            <p>${state.statusText}</p>
+            <span class="eyebrow">QINGHE · KONGGU / 空谷</span>
+            <h1>从“识别出来”到“确认可信”</h1>
+            <p>${escapeHtml(state.statusText)}</p>
           </div>
-          <div class="statusChip ${state.busy ? "busy" : ""}">
-            <span></span>
-            ${state.busy ? "处理中" : deriveReadyText(fileViews)}
-          </div>
-          <div class="stats">
-            <div><strong>${summary.pdf_count || state.files.length}</strong><span>PDF</span></div>
-            <div><strong>${summary.member_count || 0}</strong><span>成员</span></div>
-            <div><strong>${summary.warning_count || 0}</strong><span>警告</span></div>
+          <div class="qualitySeal ${quality}">
+            <span>${result ? qualityLabel(quality) : "尚未质检"}</span>
+            <small>${result?.parser_signature ? `签名 ${result.parser_signature.slice(0, 10)}` : "等待解析结果"}</small>
           </div>
         </header>
-        ${renderWorkflow(fileViews)}
-        <section class="filePanel">
-          <div class="panelHeader">
-            <div>
-              <h2>已选文件</h2>
-              <p>${renderFileSummary(fileViews)}</p>
-            </div>
-            <button id="clearFiles" ${!state.files.length || state.busy ? "disabled" : ""}>清空</button>
-          </div>
-          <div class="fileList">
-            ${fileViews.length ? fileViews.map((item) => `
-              <div class="fileRow ${item.kind ? "" : "invalid"}">
-                <div class="fileInfo">
-                  <span>${escapeHtml(item.file)}</span>
-                  <small>${renderFileMeta(item)}</small>
-                </div>
-                <button data-remove="${escapeHtml(item.file)}" ${state.busy ? "disabled" : ""}>移除</button>
-              </div>
-            `).join("") : `<div class="empty">选择中方/英方课表 PDF 后开始解析。</div>`}
-          </div>
-          ${renderFileGuidance(fileViews)}
+        <section class="runStrip">
+          <div class="runMeta"><b>${stageLabel(state.stage)}</b><span>${state.jobId ? `任务 ${state.jobId.slice(0, 8)}` : "未建立任务"}</span></div>
+          <div class="progressTrack"><i style="width:${progressPercent}%"></i></div>
+          <div class="runCounts"><strong>${result?.summary.pdf_count || state.files.length}</strong><span>文件</span><strong>${result?.summary.member_count || 0}</strong><span>成员</span><strong>${result?.issues.filter((issue) => !issue.confirmed).length || 0}</strong><span>待复核</span></div>
         </section>
-        <section class="resultPanel">
+        <section class="sourceRibbon">
+          <div class="sourceHeader"><b>本次来源</b><span>${state.files.length ? `${state.files.length} 份 PDF · ${invalidCount ? `${invalidCount} 份类型不明` : "命名检查通过"}` : "尚未选择文件"}</span><button id="clearFiles" ${state.busy || !state.files.length ? "disabled" : ""}>清空</button></div>
+          <div class="sourceChips">${state.files.length ? state.files.map(fileChip).join("") : `<span class="emptySource">导入中方与英方课表后，空谷会顺序解析并建立可复核记录。</span>`}</div>
+        </section>
+        <section class="contentCard">
           <div class="tabs">
-            ${tabButton("availability", `空课预览${state.result ? ` · ${state.result.availability_preview.length}` : ""}`)}
-            ${tabButton("members", `成员检查${state.result ? ` · ${state.result.members.length}` : ""}`)}
-            ${tabButton("details", `识别明细${state.result ? ` · ${state.result.details.length}` : ""}`)}
+            ${tabButton("availability", "多人空闲", result?.availability_preview.length)}
+            ${tabButton("members", "成员身份", result?.members.length)}
+            ${tabButton("files", "文件处理", result?.details.length)}
+            ${tabButton("issues", "问题门禁", result?.issues.length)}
+            ${tabButton("review", "PDF 复核", state.review?.blocks.length)}
+            ${tabButton("calendar", "交互周课表", result?.courses.length)}
           </div>
-          ${renderActiveTable()}
+          <div class="tabBody" id="tabBody">${renderTabShell()}</div>
         </section>
-        <section class="logPanel">
-          <div class="panelHeader compact">
-            <h2>处理日志${state.logs.length ? ` · ${state.logs.length}` : ""}</h2>
-            <button id="clearLogs" ${!state.logs.length ? "disabled" : ""}>清空</button>
-          </div>
-          ${visibleLogs.length ? visibleLogs.map((item) => `<p>${escapeHtml(item)}</p>`).join("") : `<p>等待操作。</p>`}
-          ${state.logs.length > visibleLogs.length ? `<small class="logMeta">仅显示最近 ${visibleLogs.length} 条，完整日志已保留在本次运行记录中。</small>` : ""}
-        </section>
+        <footer class="activityLog">
+          <b>审计轨迹</b>
+          <div>${state.logs.slice(0, 3).map((item) => `<span>${escapeHtml(item)}</span>`).join("") || "<span>等待操作。</span>"}</div>
+        </footer>
       </section>
     </main>
   `;
 
+  bindActions();
+  void mountActiveTab();
+}
+
+function bindActions() {
   document.querySelector("#chooseFiles")?.addEventListener("click", chooseFiles);
   document.querySelector("#parseSchedules")?.addEventListener("click", parseSchedules);
+  document.querySelector("#cancelJob")?.addEventListener("click", cancelJob);
+  document.querySelector("#retryFailed")?.addEventListener("click", retryFailed);
   document.querySelector("#exportExcel")?.addEventListener("click", exportExcel);
   document.querySelector("#repairResources")?.addEventListener("click", repairResources);
-  document.querySelector("#refreshResources")?.addEventListener("click", refreshResources);
-  document.querySelector("#saveCalendarSettings")?.addEventListener("click", saveCalendarSettings);
-  document.querySelector("#clearFiles")?.addEventListener("click", clearFiles);
-  document.querySelector("#clearLogs")?.addEventListener("click", clearLogs);
-  document.querySelector<HTMLInputElement>("#semesterStartDate")?.addEventListener("input", (event) => {
+  document.querySelector("#saveSettings")?.addEventListener("click", () => void saveSettings());
+  document.querySelector("#clearFiles")?.addEventListener("click", () => {
+    state.files = []; state.result = null; state.review = null; render();
+  });
+  document.querySelector<HTMLInputElement>("#semesterStart")?.addEventListener("change", (event) => {
     state.calendarSettings.semester_start_date = (event.target as HTMLInputElement).value;
   });
-  document.querySelector<HTMLInputElement>("#teachingWeeks")?.addEventListener("input", (event) => {
-    state.calendarSettings.teaching_weeks = Number((event.target as HTMLInputElement).value || 0);
-  });
-  document.querySelectorAll<HTMLButtonElement>("[data-remove]").forEach((button) => {
-    button.addEventListener("click", () => removeFile(button.dataset.remove || ""));
+  document.querySelector<HTMLInputElement>("#teachingWeeks")?.addEventListener("change", (event) => {
+    state.calendarSettings.teaching_weeks = Number((event.target as HTMLInputElement).value);
   });
   document.querySelectorAll<HTMLButtonElement>("[data-tab]").forEach((button) => {
     button.addEventListener("click", () => {
-      state.activeTab = button.dataset.tab as AppState["activeTab"];
+      state.activeTab = button.dataset.tab as Tab;
+      render();
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-remove]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.files = state.files.filter((path) => path !== button.dataset.remove);
       render();
     });
   });
 }
 
-function tabButton(tab: AppState["activeTab"], label: string) {
-  return `<button data-tab="${tab}" class="${state.activeTab === tab ? "active" : ""}">${label}</button>`;
-}
-
-function buildFileViews(files: string[]): FileView[] {
-  const views = files.map((file) => ({
-    file,
-    kind: inferFileKind(file),
-    member: inferMemberName(file),
-    missingPair: ""
-  }));
-  const byMember = new Map<string, Set<string>>();
-  views.forEach((view) => {
-    if (!view.member || !view.kind) {
-      return;
+async function mountActiveTab() {
+  const body = document.querySelector<HTMLElement>("#tabBody");
+  if (!body) return;
+  if (state.activeTab === "review" && state.review) {
+    try {
+      await mountReview(body, state.review, { apply: applyReview, confirm: confirmIssue });
+    } catch (error) {
+      body.innerHTML = `<div class="emptyPanel">PDF 加载失败：${escapeHtml(formatError(error))}</div>`;
     }
-    byMember.set(view.member, byMember.get(view.member) || new Set());
-    byMember.get(view.member)?.add(view.kind);
-  });
-  return views.map((view) => {
-    const kinds = view.member ? byMember.get(view.member) : undefined;
-    if (view.kind === "中方" && !kinds?.has("英方")) {
-      return { ...view, missingPair: "缺英方" };
-    }
-    if (view.kind === "英方" && !kinds?.has("中方")) {
-      return { ...view, missingPair: "缺中方" };
-    }
-    return view;
-  });
+  }
+  if (state.activeTab === "calendar" && state.result) {
+    calendar = mountCalendar(body, state.result.courses, state.calendarSettings, async (block, patch) => {
+      for (const [field, value] of Object.entries(patch)) {
+        await applyReview(block.block_id, field, value, "周课表拖拽修正");
+      }
+    });
+  }
 }
 
-function deriveReadyText(fileViews: FileView[]) {
-  if (state.result) {
-    return "可导出";
-  }
-  if (!fileViews.length) {
-    return "待选择";
-  }
-  if (fileViews.some((item) => !item.kind)) {
-    return "需改名";
-  }
-  return "可解析";
-}
-
-function renderWorkflow(fileViews: FileView[]) {
-  const hasFiles = fileViews.length > 0;
-  const hasInvalid = fileViews.some((item) => !item.kind);
-  const steps = [
-    { label: "离线材料", done: Boolean(state.resourceStatus?.ready), active: state.busy && state.statusText.includes("材料") },
-    { label: "选择 PDF", done: hasFiles, active: !hasFiles },
-    { label: "文件校验", done: hasFiles && !hasInvalid, active: hasFiles && hasInvalid },
-    { label: "生成空课", done: Boolean(state.result), active: state.busy && state.statusText.includes("解析") },
-    { label: "导出 Excel", done: false, active: Boolean(state.result) && !state.busy }
-  ];
-  return `
-    <section class="workflow" aria-label="处理进度">
-      ${steps.map((step, index) => `
-        <div class="step ${step.done ? "done" : ""} ${step.active ? "active" : ""}">
-          <span>${step.done ? "✓" : index + 1}</span>
-          <strong>${step.label}</strong>
-        </div>
-      `).join("")}
-    </section>
-  `;
-}
-
-function renderResourceIssues() {
-  if (!state.resourceStatus || state.resourceStatus.ready) {
-    return "";
-  }
-  const issues = [...state.resourceStatus.missing, ...state.resourceStatus.invalid].slice(0, 3);
-  if (!issues.length) {
-    return "";
-  }
-  return `<ul class="resourceIssues">${issues.map((item) => `<li>${escapeHtml(item.target)}：${escapeHtml(item.issue)}</li>`).join("")}</ul>`;
-}
-
-function renderFileSummary(fileViews: FileView[]) {
-  if (!fileViews.length) {
-    return "等待导入中方和英方课表。";
-  }
-  const members = new Set(fileViews.map((item) => item.member).filter(Boolean));
-  const invalidCount = fileViews.filter((item) => !item.kind).length;
-  const missingPairCount = fileViews.filter((item) => item.missingPair).length;
-  if (invalidCount) {
-    return `${fileViews.length} 个 PDF，${invalidCount} 个需要改名。`;
-  }
-  if (missingPairCount) {
-    return `${fileViews.length} 个 PDF，${members.size || 0} 名成员，${missingPairCount} 个缺少配对课表。`;
-  }
-  return `${fileViews.length} 个 PDF，${members.size || 0} 名成员，文件类型已就绪。`;
-}
-
-function renderFileMeta(item: FileView) {
-  if (!item.kind) {
-    return "需要改名：文件名包含“中方”或“英方”";
-  }
-  const parts = [`已识别：${escapeHtml(item.kind)}`];
-  if (item.member) {
-    parts.push(escapeHtml(item.member));
-  }
-  if (item.missingPair) {
-    parts.push(`<b>${escapeHtml(item.missingPair)}</b>`);
-  }
-  return parts.join(" · ");
-}
-
-function renderFileGuidance(fileViews: FileView[]) {
-  const invalidCount = fileViews.filter((item) => !item.kind).length;
-  if (invalidCount) {
-    return `<p class="fileWarning">有 ${invalidCount} 个文件无法判断课表类型，已暂停解析。</p>`;
-  }
-  const missingPairCount = fileViews.filter((item) => item.missingPair).length;
-  if (missingPairCount) {
-    return `<p class="fileHint">已允许继续解析，但建议补齐缺少的中方/英方课表，结果更可信。</p>`;
-  }
-  if (fileViews.length) {
-    return `<p class="fileHint">文件校验通过，可以开始解析。</p>`;
-  }
-  return "";
-}
-
-function formatDetectedWeeks(weeks: number[]) {
-  if (!weeks.length) {
-    return "无";
-  }
-  if (weeks.length <= 8) {
-    return weeks.map((week) => `第${week}周`).join("、");
-  }
-  return `第${weeks[0]}周-第${weeks[weeks.length - 1]}周，共 ${weeks.length} 周`;
-}
-
-function inferFileKind(path: string) {
-  const normalized = path.toLowerCase();
-  if (path.includes("英方") || normalized.includes("english") || normalized.includes("uk")) {
-    return "英方";
-  }
-  if (path.includes("中方") || normalized.includes("chinese")) {
-    return "中方";
-  }
-  return "";
-}
-
-function inferMemberName(path: string) {
-  const fileName = path.split(/[\\/]/).pop() || path;
-  const stem = fileName.replace(/\.[^.]+$/, "");
-  const cleaned = stem
-    .replace(/中方课表|英方课表|中方|英方|课表|办公室|外联部|宣传部|活动部|部长|副部长|干事|负责人|成员/g, " ")
-    .replace(/[-_\s]+/g, " ");
-  const match = cleaned.match(/[\u4e00-\u9fff]{2,4}/);
-  return match?.[0] || "";
-}
-
-function renderActiveTable() {
+function renderTabShell() {
   const result = state.result;
-  if (!result) {
-    return `<div class="empty large">解析完成后会显示空课预览、成员检查和识别明细。</div>`;
-  }
+  if (!result) return `<div class="emptyPanel"><b>尚无结构化结果</b><span>完成解析后可在这里查看空闲槽、质量问题、PDF 坐标和交互式周课表。</span></div>`;
   if (state.activeTab === "members") {
-    return table(result.members, ["member", "chinese_schedule", "english_schedule", "course_block_count", "status", "risk"]);
+    return table(result.members, ["member", "department", "role", "member_key", "chinese_schedule", "english_schedule", "course_block_count", "status"]);
   }
-  if (state.activeTab === "details") {
-    return table(result.details, ["filename", "member", "source_type", "course_block_count", "status", "warning"]);
+  if (state.activeTab === "files") {
+    return table(result.details, ["filename", "member", "source_type", "layout_profile", "course_block_count", "quality_state", "status", "warning"]);
   }
-  return table(result.availability_preview.slice(0, 300), ["周次", "日期", "星期", "节次", "时间", "空闲人数", "空闲人员"]);
+  if (state.activeTab === "issues") {
+    if (!result.issues.length) return `<div class="emptyPanel"><b>没有质量问题</b><span>当前结果可以进入正式导出。</span></div>`;
+    return `<div class="issueTable">${result.issues.map((issue) => `<article class="${issue.confirmed ? "confirmed" : issue.severity}">
+      <div><code>${escapeHtml(issue.code)}</code><b>${issue.confirmed ? "已确认" : issue.severity === "error" ? "阻断" : "待确认"}</b></div>
+      <h3>${escapeHtml(issue.message)}</h3><p>${escapeHtml(issue.suggestion || "请在 PDF 复核页核对来源。")}</p>
+      ${issue.confirmed ? "" : `<button data-confirm-inline="${issue.issue_id}">确认已核对</button>`}
+    </article>`).join("")}</div>`;
+  }
+  if (state.activeTab === "review") return `<div class="loadingPanel">正在载入本地 PDF 复核画布…</div>`;
+  if (state.activeTab === "calendar") return `<div class="calendarHost"></div>`;
+  return table(result.availability_preview.slice(0, 800), ["周次", "日期", "星期", "节次", "时间", "空闲人数", "空闲人员", "占用人数", "有课人员"]);
 }
 
 function table(rows: Array<Record<string, unknown>>, columns: string[]) {
-  if (!rows.length) {
-    return `<div class="empty large">暂无数据。</div>`;
-  }
-  return `
-    <div class="tableWrap">
-      <table>
-        <thead><tr>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr></thead>
-        <tbody>
-          ${rows.map((row) => `<tr>${columns.map((column) => `<td>${escapeHtml(String(row[column] ?? ""))}</td>`).join("")}</tr>`).join("")}
-        </tbody>
-      </table>
-    </div>
-  `;
+  if (!rows.length) return `<div class="emptyPanel">暂无数据。</div>`;
+  return `<div class="tableWrap"><table><thead><tr>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr></thead>
+    <tbody>${rows.map((row) => `<tr>${columns.map((column) => `<td>${escapeHtml(String(row[column] ?? ""))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
 
-function escapeHtml(value: string) {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+function tabButton(tab: Tab, label: string, count?: number) {
+  return `<button data-tab="${tab}" class="${state.activeTab === tab ? "active" : ""}">${label}${typeof count === "number" ? `<em>${count}</em>` : ""}</button>`;
 }
 
-function formatSidecarError(error: unknown) {
+function fileChip(path: string) {
+  const name = path.split(/[\\/]/).pop() || path;
+  const kind = inferKind(path);
+  return `<span class="sourceChip ${kind ? "" : "invalid"}"><i>${kind || "?"}</i><b>${escapeHtml(name)}</b><button data-remove="${escapeHtml(path)}">×</button></span>`;
+}
+
+function inferKind(path: string) {
+  const text = path.toLowerCase();
+  if (path.includes("英方") || text.includes("english") || text.includes("uk")) return "英方";
+  if (path.includes("中方") || text.includes("chinese")) return "中方";
+  return "";
+}
+
+function stageLabel(stage: string) {
+  const labels: Record<string, string> = {
+    boot: "启动", ready: "就绪", queued: "排队", waiting: "等待", text_layer: "读取文本层",
+    profile: "识别版式", ocr: "离线 OCR", course_parse: "课程解析", review: "人工复核",
+    completed: "完成", failed: "失败", cancelling: "正在取消", cancelled: "已取消", interrupted: "已中断"
+  };
+  return labels[stage] || stage;
+}
+
+function qualityLabel(stateValue: string) {
+  if (stateValue === "accepted") return "绿色 · 可导出";
+  if (stateValue === "needs_review") return "黄色 · 待人工确认";
+  return "红色 · 阻止导出";
+}
+
+function setStatus(message: string) {
+  state.statusText = message;
+  log(message);
+  render();
+}
+
+function log(message: string, rerender = true) {
+  const row = `${new Date().toLocaleTimeString("zh-CN", { hour12: false })}  ${message}`;
+  if (state.logs[0] !== row) state.logs = [row, ...state.logs].slice(0, 60);
+  if (rerender) render();
+}
+
+function formatError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
-  if (
-    message.includes("__TAURI") ||
-    message.includes("invoke") ||
-    message.includes("Cannot read properties of undefined")
-  ) {
+  if (message.includes("__TAURI") || message.includes("invoke") || message.includes("Command")) {
     return "桌面运行环境未连接，请在 Konggu 桌面端中使用该功能。";
   }
   return message.replace(/^Error:\s*/, "");
 }
 
-render();
-loadCalendarSettings();
-refreshResources();
+function escapeHtml(value: string) {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+document.addEventListener("click", (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-confirm-inline]");
+  if (button) void confirmIssue(button.dataset.confirmInline || "");
+});
+
+void boot();

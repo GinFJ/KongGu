@@ -69,14 +69,45 @@ def generate_availability(
         raise ValueError("没有识别到可用课表时间块。请确认 PDF 清晰，且文件类型选择为中方或英方。")
 
     course_blocks = course_blocks_from_legacy(blocks)
+    for legacy_block, model_block in zip(blocks, course_blocks):
+        legacy_block.setdefault("block_id", model_block.block_id)
+        legacy_block.setdefault("member_key", model_block.member_key)
+        legacy_block.setdefault("department", model_block.department)
+        legacy_block.setdefault("role", model_block.role)
+        matching_source = next(
+            (
+                source
+                for source in model_sources
+                if model_block.source_file in {source.file_name, source.source_path}
+            ),
+            None,
+        )
+        if matching_source:
+            model_block.source_hash = matching_source.content_hash
+            legacy_block.setdefault("source_hash", matching_source.content_hash)
     occupancy = schedule_core.build_occupancy(blocks)
-    students = sorted({block["name"] for block in blocks})
+    students = sorted({str(block.get("member_key") or block["name"]) for block in blocks})
     weeks = _weeks_from_calendar(calendar_df) or sorted({int(block["week"]) for block in blocks if block.get("week") is not None})
     periods = _periods_from_timetable(schedule_core)
     all_slot_df = schedule_core.build_slot_table(occupancy, students, weeks, weekdays, periods)
     blocks_df = schedule_core.blocks_to_dataframe(blocks)
     member_schedules = build_member_schedules(course_blocks, students)
     file_records = build_file_records(model_sources, course_blocks, errors or [])
+    legacy_by_path = {
+        source.source_path: legacy
+        for source, legacy in zip(model_sources, legacy_sources)
+    }
+    for record in file_records:
+        legacy = legacy_by_path.get(record.source.source_path)
+        if legacy is None:
+            continue
+        try:
+            record.layout_profile = schedule_core.detect_schedule_layout_profile(
+                legacy,
+                record.display_kind,
+            )
+        except Exception:
+            record.layout_profile = None
     elapsed = (pd.Timestamp.now() - started_at).total_seconds()
 
     return AvailabilityGenerationResult(
