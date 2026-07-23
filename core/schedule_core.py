@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -61,6 +62,7 @@ NOON_PERIOD_TIMES = {
 
 NON_CLASS_KEYWORDS = {
     "",
+    "-",
     "午",
     "不排课",
     "报到注册",
@@ -68,12 +70,16 @@ NON_CLASS_KEYWORDS = {
     "运动会",
     "端午节",
     "劳动节",
+    "校外",
+    "教研",
+    "期末周",
+    "考试周",
 }
 
 _OCR_ENGINE = None
 LOGGER = logging.getLogger("konggu")
-PARSE_CACHE_VERSION = 12
-OCR_LAYOUT_CACHE_VERSION = 1
+PARSE_CACHE_VERSION = 32
+OCR_LAYOUT_CACHE_VERSION = 2
 NAME_STOPWORDS = {
     "办公室",
     "外联部",
@@ -126,7 +132,6 @@ def _source_kind(source: dict[str, Any]) -> str:
     if detected:
         return str(detected)
     return infer_pdf_kind("chinese")
-    return str(source.get("kind") or infer_pdf_kind(file_name, path) or "涓柟")
 
 
 def _source_digest(source: dict[str, Any]) -> str:
@@ -376,6 +381,17 @@ def parse_actual_pdf_sources(
             else:
                 parsed = _parse_english_pdf_grid_layout(source, file_name)
                 if parsed:
+                    if len(parsed) < 8:
+                        try:
+                            ocr_parsed = _parse_english_ocr_week_grid(source, file_name)
+                        except OCRConfigurationError as exc:
+                            LOGGER.warning("英方稀疏坐标解析 OCR 补扫失败: %s error=%s", file_name, exc)
+                            ocr_parsed = []
+                        if len(ocr_parsed) > len(parsed):
+                            LOGGER.info("英方 OCR 补扫替换稀疏结果: %s blocks=%s -> %s", file_name, len(parsed), len(ocr_parsed))
+                            for item in ocr_parsed:
+                                item.setdefault("text_source", "OCR")
+                            parsed = ocr_parsed
                     LOGGER.info("英方坐标表格解析完成: %s blocks=%s", file_name, len(parsed))
                     parsed = _finalize_parsed_blocks(parsed, file_name, kind)
                     _write_parse_cache(source, kind, parsed)
@@ -390,6 +406,21 @@ def parse_actual_pdf_sources(
                 LOGGER.info("内嵌文本质量不足，进入 OCR: %s", file_name)
                 text = _extract_pdf_ocr_text(source)
                 used_ocr = True
+            if kind == "中方" and used_ocr:
+                embedded_name = _extract_chinese_name_from_text(text)
+                filename_name = _extract_name_from_filename(file_name)
+                if embedded_name and filename_name and embedded_name != filename_name:
+                    errors.append(
+                        f"{file_name}：课表正文姓名“{embedded_name}”与文件名姓名“{filename_name}”不一致，"
+                        "已跳过自动占用计算。请确认是否传错或复制错课表。"
+                    )
+                    LOGGER.warning(
+                        "中方 OCR 姓名不一致，已跳过: %s embedded=%s filename=%s",
+                        file_name,
+                        embedded_name,
+                        filename_name,
+                    )
+                    continue
             parsed = _parse_chinese_text(text, file_name) if kind == "中方" else _parse_english_text(text, file_name)
             if not parsed and not used_ocr:
                 LOGGER.info("内嵌文本解析为空，回退 OCR: %s", file_name)
@@ -403,12 +434,76 @@ def parse_actual_pdf_sources(
                     if kind == "中方"
                     else _parse_english_ocr_week_grid(source, file_name)
                 )
+            elif kind == "中方" and used_ocr and image_only_pdf:
+                profile = detect_schedule_layout_profile(source, kind)
+                if profile == "cdut_undergrad_full_term_cn":
+                    table_parsed = _parse_chinese_ocr_table_layout(source, file_name)
+                    parsed = _choose_chinese_ocr_parse_candidate(parsed, table_parsed, file_name)
+            if kind != "中方" and parsed and len(parsed) < 8:
+                try:
+                    ocr_parsed = _parse_english_ocr_week_grid(source, file_name)
+                except OCRConfigurationError as exc:
+                    LOGGER.warning("英方稀疏文本解析 OCR 补扫失败: %s error=%s", file_name, exc)
+                    ocr_parsed = []
+                if len(ocr_parsed) > len(parsed):
+                    LOGGER.info("英方 OCR 补扫替换稀疏文本结果: %s blocks=%s -> %s", file_name, len(parsed), len(ocr_parsed))
+                    for item in ocr_parsed:
+                        item.setdefault("text_source", "OCR")
+                    parsed = ocr_parsed
+                    used_ocr = True
             if not parsed and kind == "中方":
                 parsed = _parse_chinese_ocr_legacy_layout(source, file_name)
             if parsed:
                 for item in parsed:
                     item.setdefault("text_source", "OCR" if used_ocr else "内嵌文本")
                 parsed = _finalize_parsed_blocks(parsed, file_name, kind)
+                full_term_issue = ""
+                full_term_profile = kind == "中方" and used_ocr and detect_schedule_layout_profile(source, kind) == "cdut_undergrad_full_term_cn"
+                if full_term_profile:
+                    full_term_issue = _chinese_full_term_ocr_confidence_issue(parsed, used_ocr=used_ocr)
+                if full_term_profile:
+                    visual_parsed = _parse_chinese_full_term_visual_occupancy(source, file_name)
+                    visual_parsed = _finalize_parsed_blocks(visual_parsed, file_name, kind)
+                    visual_issue = _chinese_full_term_ocr_confidence_issue(visual_parsed, used_ocr=bool(visual_parsed))
+                    if visual_parsed and not visual_issue and (
+                        full_term_issue or _should_prefer_chinese_full_term_visual_result(parsed, visual_parsed)
+                    ):
+                        for item in visual_parsed:
+                            item.setdefault("text_source", "视觉表格")
+                        LOGGER.info(
+                            "中方整学期视觉表格解析替换 OCR: %s issue=%s blocks=%s -> %s",
+                            file_name,
+                            full_term_issue or "视觉覆盖更完整",
+                            len(parsed),
+                            len(visual_parsed),
+                        )
+                        _write_parse_cache(source, kind, visual_parsed)
+                        blocks.extend(visual_parsed)
+                        continue
+                if full_term_issue:
+                    errors.append(
+                        f"{file_name}：图片型中方整学期课表 OCR 结果低置信（{full_term_issue}），"
+                        "已跳过自动占用计算。请提供可复制文字的课表，或在人工校对表中确认。"
+                    )
+                    LOGGER.warning("低置信中方整学期 OCR 结果已跳过: %s issue=%s blocks=%s", file_name, full_term_issue, len(parsed))
+                    continue
+                if _is_low_confidence_chinese_ocr_result(parsed, used_ocr=used_ocr):
+                    metrics = _course_fragment_metrics(parsed, source="中方")
+                    errors.append(
+                        f"{file_name}：图片型中方课表 OCR 结果低置信"
+                        f"（候选 {metrics['count']} 条，碎片 {metrics['fragment_count']} 条，"
+                        f"碎片率 {float(metrics['fragment_ratio']):.0%}），已跳过自动占用计算。"
+                        "请提供可复制文字的课表，或在人工校对表中确认。"
+                    )
+                    LOGGER.warning("低置信中方 OCR 结果已跳过: %s blocks=%s", file_name, len(parsed))
+                    continue
+                if _is_low_confidence_english_ocr_result(parsed, used_ocr=used_ocr):
+                    errors.append(
+                        f"{file_name}：图片型英方课表 OCR 覆盖不足，仅识别到 {len(parsed)} 条占用，已跳过自动占用计算。"
+                        "请提供可复制文字的课表，或在人工校对表中确认。"
+                    )
+                    LOGGER.warning("低覆盖英方 OCR 结果已跳过: %s blocks=%s", file_name, len(parsed))
+                    continue
                 LOGGER.info("文件解析完成: %s blocks=%s", file_name, len(parsed))
                 _write_parse_cache(source, kind, parsed)
                 blocks.extend(parsed)
@@ -510,7 +605,25 @@ def _dedupe_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _finalize_parsed_blocks(blocks: list[dict[str, Any]], file_name: str, kind: str) -> list[dict[str, Any]]:
-    finalized = _dedupe_blocks(blocks)
+    cleaned: list[dict[str, Any]] = []
+    for item in blocks:
+        course = str(item.get("course") or "").strip()
+        if _is_empty_or_non_class(course):
+            continue
+
+        item = dict(item)
+        item["course"] = course
+        try:
+            day = _parse_date(str(item.get("date") or ""))
+        except Exception:
+            day = None
+        if day is not None:
+            item["date"] = day.isoformat()
+            item["week"] = _week_from_date(day)
+            item["weekday"] = WEEKDAYS[day.weekday()]
+        cleaned.append(item)
+
+    finalized = _dedupe_blocks(cleaned)
     for item in finalized:
         item.setdefault("source_file", file_name)
         item.setdefault("kind", kind)
@@ -527,6 +640,123 @@ def _course_quality(course: Any) -> int:
     if re.search(r"^[A-Z]\d|^E\d|^C\d|^校外|^\d", text):
         score -= 30
     return score
+
+
+def _is_low_confidence_chinese_ocr_result(blocks: list[dict[str, Any]], *, used_ocr: bool) -> bool:
+    if not used_ocr or not blocks:
+        return False
+    metrics = _course_fragment_metrics(blocks, source="中方")
+    count = int(metrics["count"])
+    ratio = float(metrics["fragment_ratio"])
+    if count < 12:
+        return False
+    return ratio >= 0.50 if count < 20 else ratio >= 0.35
+
+
+def _chinese_full_term_ocr_confidence_issue(blocks: list[dict[str, Any]], *, used_ocr: bool) -> str:
+    if not used_ocr:
+        return ""
+    chinese_blocks = [block for block in blocks if block.get("source") == "中方"]
+    if len(chinese_blocks) < 20:
+        return f"候选占用仅 {len(chinese_blocks)} 条"
+
+    weeks = sorted({int(block.get("week") or 0) for block in chinese_blocks if int(block.get("week") or 0) > 0})
+    if not weeks:
+        return "未识别到有效周次"
+    if len(chinese_blocks) >= 40 and len(weeks) < 10:
+        return f"只覆盖 {len(weeks)} 个离散周次：{','.join(str(week) for week in weeks)}"
+    if len(chinese_blocks) >= 80 and len(weeks) < 12:
+        return f"高占用结果只覆盖 {len(weeks)} 个周次：{','.join(str(week) for week in weeks)}"
+    return ""
+
+
+def _should_prefer_chinese_full_term_visual_result(
+    parsed_blocks: list[dict[str, Any]],
+    visual_blocks: list[dict[str, Any]],
+) -> bool:
+    if not parsed_blocks or not visual_blocks:
+        return False
+    parsed_weeks = {int(block.get("week") or 0) for block in parsed_blocks if int(block.get("week") or 0) > 0}
+    visual_weeks = {int(block.get("week") or 0) for block in visual_blocks if int(block.get("week") or 0) > 0}
+    if len(visual_weeks) < max(10, min(len(parsed_weeks), 18)):
+        return False
+    return len(visual_blocks) >= max(len(parsed_blocks) + 40, int(len(parsed_blocks) * 1.6))
+
+
+def _choose_chinese_ocr_parse_candidate(
+    text_parsed: list[dict[str, Any]],
+    table_parsed: list[dict[str, Any]],
+    file_name: str,
+) -> list[dict[str, Any]]:
+    if not text_parsed or not table_parsed:
+        return text_parsed or table_parsed
+
+    finalized_text = _finalize_parsed_blocks(text_parsed, file_name, "中方")
+    if not _is_low_confidence_chinese_ocr_result(finalized_text, used_ocr=True):
+        return text_parsed
+
+    finalized_table = _finalize_parsed_blocks(table_parsed, file_name, "中方")
+    if not _is_low_confidence_chinese_ocr_result(finalized_table, used_ocr=True):
+        return table_parsed
+    return text_parsed
+
+
+def _is_low_confidence_english_ocr_result(blocks: list[dict[str, Any]], *, used_ocr: bool) -> bool:
+    if not used_ocr:
+        return False
+    english_blocks = [block for block in blocks if block.get("source") == "英方"]
+    if not english_blocks:
+        return False
+    return len(english_blocks) < 8
+
+
+def _looks_like_low_confidence_course_fragment(course: str) -> bool:
+    text = re.sub(r"\s+", "", str(course or "").strip())
+    if len(text) <= 1:
+        return True
+    if _looks_like_plausible_chinese_encoded_course_cell(text):
+        return False
+    if "*" in text:
+        return True
+    if re.search(r"\d{3,}-\d|\d{4}-\d{2}|\d{3,}", text):
+        return True
+    if re.fullmatch(r"[A-Za-z]{0,3}\d{1,4}[A-Za-z0-9-]*", text):
+        return True
+    if re.fullmatch(r"[A-Za-z]+", text) and len(text) <= 5:
+        return True
+    return False
+
+
+def _looks_like_plausible_chinese_encoded_course_cell(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if not re.search(r"[\u4e00-\u9fff]", compact):
+        return False
+    if _is_empty_or_non_class(compact) or _looks_like_room(compact):
+        return False
+    if re.search(r"(报到注册|运动会|清明节|劳动节|端午节|考试周|期末周|不排|教研|教妍|微研|教好)", compact):
+        return False
+    if re.search(r"[\u4e00-\u9fff][A-Za-z]\d{1,3}", compact):
+        return True
+    if re.search(r"[A-Za-z]\d{1,3}[\u4e00-\u9fff]", compact):
+        return True
+    if re.search(r"[\u4e00-\u9fff]\d{1,2}(?!\d)", compact):
+        return True
+    return False
+
+
+def _course_fragment_metrics(blocks: list[dict[str, Any]], *, source: str = "") -> dict[str, Any]:
+    scoped = [block for block in blocks if not source or block.get("source") == source]
+    fragments = [
+        str(block.get("course") or "")
+        for block in scoped
+        if _looks_like_low_confidence_course_fragment(str(block.get("course") or ""))
+    ]
+    return {
+        "count": len(scoped),
+        "fragment_count": len(fragments),
+        "fragment_ratio": len(fragments) / max(1, len(scoped)),
+        "fragment_samples": fragments[:8],
+    }
 
 
 def build_empty_schedule_excel_bytes(
@@ -919,6 +1149,54 @@ def check_ocr_runtime(*, run_probe: bool = True) -> dict[str, Any]:
     return {"ready": True, "stage": "ready", "error": ""}
 
 
+def detect_schedule_layout_profile(source: dict[str, Any], kind: str | None = None) -> str:
+    detected_kind = kind or _source_kind(source)
+    text = _extract_pdf_text(source)
+    items: list[dict[str, Any]] = []
+    if len(text.strip()) < 50:
+        try:
+            items = _extract_pdf_ocr_items(source)
+        except Exception:
+            items = []
+    return _detect_schedule_layout_profile_from_text_items(detected_kind, text, items)
+
+
+def _detect_schedule_layout_profile_from_text_items(
+    kind: str,
+    text: str,
+    items: list[dict[str, Any]],
+) -> str:
+    normalized_text = unicodedata.normalize("NFKC", text)
+    tokens = [_normalize_ocr_text(str(item.get("text") or "")) for item in items]
+    tokens = [unicodedata.normalize("NFKC", token) for token in tokens]
+    joined = "\n".join([normalized_text, *tokens])
+    compact = re.sub(r"\s+", "", joined)
+    if kind == "中方":
+        if (
+            "成都理工大学本科学生课表" in compact
+            and ("周/节" in compact or "周节" in compact or "图节" in compact or "频节" in compact)
+            and ("星期" in compact or "星斯" in compact)
+            and (
+                re.search(r"(?:第)?1\s*[周期期]", compact)
+                or len(re.findall(r"\d{2}/\d{2}", compact)) >= 3
+                or _looks_like_chinese_slot_header_token(compact)
+            )
+        ):
+            return "cdut_undergrad_full_term_cn"
+        if "学期理论课表" in compact or "旧版课表打印" in compact:
+            return "cdut_legacy_chinese_web"
+    if kind == "英方":
+        if (
+            ("Timetablefor" in compact or "Timetable for" in joined)
+            and ("CDUTSino-British" in compact or "Sino-British" in joined)
+            and any(day in joined for day in ENGLISH_WEEKDAY_MAP)
+        ):
+            return "cdut_sino_british_english_web"
+        if "第" in compact and "周" in compact and any(day in compact for day in WEEKDAYS):
+            return "cdut_sino_british_english_week_grid"
+    return "unknown"
+
+
 def _ocr_cache_path(source: dict[str, Any]) -> Path:
     digest = _source_digest(source)
     cache_root = Path(os.environ.get("KONGGU_OCR_TEXT_CACHE", "")) if os.environ.get("KONGGU_OCR_TEXT_CACHE") else Path(__file__).resolve().parents[1] / "cache" / "pdf_text"
@@ -939,6 +1217,7 @@ def _find_ocr_model_dir(model_name: str) -> Path | None:
     roots = [
         Path(os.environ.get("KONGGU_OCR_MODEL_DIR", "")),
         Path(os.environ.get("PADDLE_PDX_CACHE_HOME", "")) / "official_models",
+        Path(__file__).resolve().parents[1] / "resources" / "ocr_models",
         Path(__file__).resolve().parents[1] / "models" / "paddleocr",
         Path(__file__).resolve().parents[1] / "cache" / "paddlex" / "official_models",
     ]
@@ -1116,6 +1395,11 @@ def _parse_chinese_ocr_table_layout(source: dict[str, Any], file_name: str) -> l
             if int(item.get("page", 0)) == page and str(item.get("text", "")).strip()
         ]
         page_height = max((float(item.get("page_height", 0)) for item in items if int(item.get("page", 0)) == page), default=0)
+        if _detect_schedule_layout_profile_from_text_items("中方", "", page_items) == "cdut_undergrad_full_term_cn":
+            specialized = _parse_chinese_full_term_grid_page_items(page_items, name, page_height)
+            if specialized:
+                blocks.extend(specialized)
+                continue
         blocks.extend(_parse_chinese_table_page_items(page_items, name, page_height))
     return blocks
 
@@ -1213,6 +1497,387 @@ def _parse_chinese_table_page_items(
             for period in PERIOD_GROUPS.get(label, []):
                 blocks.append(_block(name, "中方", week_item["week"], day, weekday, period, cell_text))
     return blocks
+
+
+def _parse_chinese_full_term_grid_page_items(
+    items: list[dict[str, Any]],
+    name: str,
+    page_height: float,
+) -> list[dict[str, Any]]:
+    if not items:
+        return []
+
+    week_rows = _find_chinese_full_term_week_rows(items)
+    if len(week_rows) < 8:
+        return []
+    grid = _infer_chinese_full_term_grid(items, week_rows, page_height)
+    if not grid:
+        return []
+    legend_aliases = _extract_chinese_full_term_legend_aliases(items, week_rows, grid)
+
+    blocks: list[dict[str, Any]] = []
+    for index, week_row in enumerate(week_rows):
+        row_top = grid["header_bottom"] if index == 0 else (week_rows[index - 1]["y"] + week_row["y"]) / 2
+        row_bottom = (week_row["y"] + week_rows[index + 1]["y"]) / 2 if index + 1 < len(week_rows) else week_row["y"] + grid["row_gap"] * 0.55
+        if row_bottom <= row_top:
+            row_bottom = week_row["y"] + grid["row_gap"] * 0.55
+
+        row_items = [item for item in items if row_top <= _item_center(item)[1] < row_bottom]
+        week_start = _parse_week_start(week_row.get("date_text", "")) if week_row.get("date_text") else None
+        for cell in grid["cells"]:
+            cell_items = [
+                item
+                for item in row_items
+                if cell["left"] <= _item_center(item)[0] < cell["right"]
+                and not _is_chinese_full_term_axis_token(str(item.get("text") or ""))
+            ]
+            if not cell_items:
+                continue
+            cell_text = _normalize_cell_text(cell_items)
+            if not _is_chinese_full_term_course_text(cell_text, legend_aliases):
+                continue
+            day = (
+                week_start + timedelta(days=WEEKDAY_INDEX.get(cell["weekday"], 0))
+                if week_start
+                else _date_for_weekday(week_row["week"], cell["weekday"])
+            )
+            for period in PERIOD_GROUPS.get(cell["label"], []):
+                blocks.append(_block(name, "中方", week_row["week"], day, cell["weekday"], period, cell_text))
+    return blocks
+
+
+def _parse_chinese_full_term_visual_occupancy(source: dict[str, Any], file_name: str) -> list[dict[str, Any]]:
+    doc = _open_pdf_document(source)
+    if doc is None:
+        return []
+    try:
+        import cv2
+        import numpy as np
+    except Exception:
+        doc.close()
+        return []
+
+    try:
+        name = _extract_name_from_filename(file_name) or Path(file_name).stem
+        ocr_items_by_page: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        try:
+            for item in _extract_pdf_ocr_items(source):
+                ocr_items_by_page[int(item.get("page", 0))].append(item)
+        except Exception:
+            ocr_items_by_page = defaultdict(list)
+
+        blocks: list[dict[str, Any]] = []
+        for page_number, page in enumerate(doc):
+            pix = page.get_pixmap(dpi=180, alpha=False)
+            image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+            if pix.n > 3:
+                image = image[:, :, :3]
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY) if image.ndim == 3 else image
+            blocks.extend(_parse_chinese_full_term_visual_image(gray, name, ocr_items_by_page.get(page_number, [])))
+        return blocks
+    finally:
+        doc.close()
+
+
+def _parse_chinese_full_term_visual_image(gray: Any, name: str, ocr_items: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    try:
+        import cv2
+        import numpy as np
+    except Exception:
+        return []
+    if gray is None:
+        return []
+
+    inverted = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)[1]
+    height, width = inverted.shape[:2]
+    horizontal = cv2.morphologyEx(
+        inverted,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (max(30, width // 80), 1)),
+    )
+    vertical = cv2.morphologyEx(
+        inverted,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(20, height // 80))),
+    )
+    text_mask = cv2.subtract(inverted, cv2.bitwise_or(horizontal, vertical))
+
+    row_lines = _cluster_int_positions(np.where((horizontal.sum(axis=1) // 255) > width * 0.18)[0], gap=5)
+    col_lines = _cluster_int_positions(np.where((vertical.sum(axis=0) // 255) > height * 0.08)[0], gap=5)
+    if len(row_lines) < 24 or len(col_lines) < 30:
+        return []
+
+    row_centers = [line[2] for line in row_lines]
+    col_centers = [line[2] for line in col_lines]
+    week_bounds = [row_centers[2], *row_centers[3:24]]
+    if len(week_bounds) < 22:
+        return []
+
+    day_left = col_centers[1]
+    day_right = col_centers[-1]
+    if day_right <= day_left:
+        return []
+
+    ocr_items = ocr_items or []
+    x_scale, y_scale = _ocr_to_visual_scale(ocr_items, width, height)
+    blocks: list[dict[str, Any]] = []
+    slot_units = [("1-2", 2), ("3-4", 2), ("午", 1), ("5-6", 2), ("7-8", 2), ("9-11", 3)]
+    unit_total = sum(unit for _label, unit in slot_units)
+    day_width = (day_right - day_left) / 7
+
+    for week in range(1, 22):
+        row_top = week_bounds[week - 1] + 2
+        row_bottom = week_bounds[week] - 2
+        if row_bottom <= row_top:
+            continue
+        for day_index, weekday in enumerate(WEEKDAYS):
+            day_start = day_left + day_index * day_width
+            day_end = day_left + (day_index + 1) * day_width
+            cursor = day_start
+            unit_width = (day_end - day_start) / unit_total
+            for label, units in slot_units:
+                next_cursor = cursor + unit_width * units
+                if label != "午" and _visual_cell_has_occupancy(
+                    text_mask,
+                    int(cursor),
+                    int(row_top),
+                    int(next_cursor),
+                    int(row_bottom),
+                    ocr_items,
+                    x_scale,
+                    y_scale,
+                ):
+                    day = _date_for_weekday(week, weekday)
+                    for period in PERIOD_GROUPS.get(label, []):
+                        blocks.append(_block(name, "中方", week, day, weekday, period, "视觉表格占用"))
+                cursor = next_cursor
+    return blocks
+
+
+def _cluster_int_positions(values: Any, gap: int = 5) -> list[tuple[int, int, int]]:
+    positions = [int(value) for value in values]
+    if not positions:
+        return []
+    clusters: list[tuple[int, int, int]] = []
+    start = previous = positions[0]
+    for value in positions[1:]:
+        if value - previous <= gap:
+            previous = value
+        else:
+            clusters.append((start, previous, (start + previous) // 2))
+            start = previous = value
+    clusters.append((start, previous, (start + previous) // 2))
+    return clusters
+
+
+def _ocr_to_visual_scale(ocr_items: list[dict[str, Any]], width: int, height: int) -> tuple[float, float]:
+    page_width = max((float(item.get("page_width", 0)) for item in ocr_items), default=0.0)
+    page_height = max((float(item.get("page_height", 0)) for item in ocr_items), default=0.0)
+    return (
+        width / page_width if page_width else 1.0,
+        height / page_height if page_height else 1.0,
+    )
+
+
+def _visual_cell_has_occupancy(
+    text_mask: Any,
+    left: int,
+    top: int,
+    right: int,
+    bottom: int,
+    ocr_items: list[dict[str, Any]],
+    x_scale: float,
+    y_scale: float,
+) -> bool:
+    if right - left < 6 or bottom - top < 6:
+        return False
+    cell_texts = [
+        _normalize_ocr_text(str(item.get("text") or ""))
+        for item in ocr_items
+        if left <= _item_center(item)[0] * x_scale < right and top <= _item_center(item)[1] * y_scale < bottom
+    ]
+    if cell_texts and all(_is_empty_or_non_class(text) or _is_chinese_full_term_axis_token(text) for text in cell_texts):
+        return False
+
+    crop = text_mask[top + 2 : bottom - 2, left + 3 : right - 3]
+    if crop.size <= 0:
+        return False
+    dark_pixels = int((crop > 0).sum())
+    ratio = dark_pixels / max(1, crop.size)
+    return dark_pixels >= 35 and ratio >= 0.035
+
+
+def _find_chinese_full_term_week_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    week_items = []
+    for item in items:
+        text = str(item.get("text") or "")
+        match = re.search(r"(?<!\d)(\d{1,2})\s*[周期同]", text)
+        if match and _item_center(item)[0] < 105:
+            week = int(match.group(1))
+            if 1 <= week <= 21:
+                week_items.append({**item, "week": week})
+    for group in _cluster_items_by_y(week_items, 7.0):
+        chosen = min(group, key=lambda item: item["x0"])
+        row_words = [
+            item
+            for item in items
+            if abs(_item_center(item)[1] - _item_center(chosen)[1]) <= 12 and _item_center(item)[0] < 115
+        ]
+        date_text = " ".join(str(item.get("text") or "") for item in sorted(row_words, key=lambda value: value["x0"]))
+        rows.append({"week": int(chosen["week"]), "y": _item_center(chosen)[1], "date_text": date_text})
+    dedup: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        dedup.setdefault(int(row["week"]), row)
+    return sorted(dedup.values(), key=lambda row: row["y"])
+
+
+def _infer_chinese_full_term_grid(
+    items: list[dict[str, Any]],
+    week_rows: list[dict[str, Any]],
+    page_height: float,
+) -> dict[str, Any] | None:
+    header_items = [
+        item
+        for item in items
+        if 85 <= _item_center(item)[1] <= 135 and _item_center(item)[0] > 85
+    ]
+    if not header_items:
+        return None
+    left = min(float(item["x0"]) for item in header_items)
+    right_candidates = [
+        float(item["x1"])
+        for item in items
+        if 90 <= _item_center(item)[0] and _item_center(item)[1] < min(page_height or 10_000, 570)
+    ]
+    right = max(right_candidates, default=0.0)
+    if right <= left + 420:
+        return None
+
+    week_ys = [float(row["y"]) for row in week_rows]
+    gaps = [b - a for a, b in zip(week_ys, week_ys[1:]) if b > a]
+    row_gap = max(16.0, min(gaps) if gaps else 22.0)
+    header_bottom = min(week_ys) - row_gap * 0.45
+    day_width = (right - left) / 7
+    units = [("1-2", 2), ("3-4", 2), ("午", 1), ("5-6", 2), ("7-8", 2), ("9-11", 3)]
+    cells: list[dict[str, Any]] = []
+    for day_index, weekday in enumerate(WEEKDAYS):
+        day_left = left + day_index * day_width
+        day_right = left + (day_index + 1) * day_width
+        cursor = day_left
+        unit_width = (day_right - day_left) / sum(width for _label, width in units)
+        for label, width in units:
+            next_cursor = cursor + unit_width * width
+            cells.append({"weekday": weekday, "label": label, "left": cursor, "right": next_cursor})
+            cursor = next_cursor
+    return {"left": left, "right": right, "header_bottom": header_bottom, "row_gap": row_gap, "cells": cells}
+
+
+def _extract_chinese_full_term_legend_aliases(
+    items: list[dict[str, Any]],
+    week_rows: list[dict[str, Any]],
+    grid: dict[str, Any],
+) -> set[str]:
+    if not week_rows:
+        return set()
+    legend_top = max(float(row["y"]) for row in week_rows) + float(grid.get("row_gap", 20.0)) * 0.65
+    legend_tokens = [
+        str(item.get("text") or "").strip()
+        for item in sorted(items, key=lambda value: (float(value.get("y0", 0)), float(value.get("x0", 0))))
+        if _item_center(item)[1] >= legend_top and str(item.get("text") or "").strip()
+    ]
+    joined = " ".join(legend_tokens)
+    aliases: set[str] = set()
+    for match in re.finditer(r"[（(]\s*([A-Za-z0-9\u4e00-\u9fff]{1,4})\s*[)）]", joined):
+        alias = match.group(1).strip()
+        if _is_plausible_course_alias(alias):
+            aliases.add(alias)
+
+    # Some OCR chunks lose the surrounding parentheses but preserve common course names.
+    known_course_aliases = {
+        "高等数学": "高",
+        "中国近现代史纲要": "中",
+        "大学英语": "大",
+        "大学体育": "大",
+        "大学生心理健康": "大",
+        "国家安全教育": "国",
+        "形势与政策": "形",
+        "思想政治": "思",
+        "写作与演讲": "写",
+        "人工智能": "人",
+        "Python": "P",
+        "社会重义发展史": "社",
+        "社会主义发展史": "社",
+    }
+    for name, alias in known_course_aliases.items():
+        if name in joined:
+            aliases.add(alias)
+    return aliases
+
+
+def _is_plausible_course_alias(alias: str) -> bool:
+    if not alias:
+        return False
+    if alias in {"校区", "主校区", "备注", "理", "实", "师", "室", "时", "学分"}:
+        return False
+    return bool(re.search(r"[\u4e00-\u9fffA-Za-z]", alias))
+
+
+def _is_chinese_full_term_axis_token(token: str) -> bool:
+    text = str(token or "").strip()
+    if not text:
+        return True
+    if re.search(r"(?:学号|姓名|班级|学院|专业|生成日期|年级|周[/节]?|星期|成都理工大学)", text):
+        return True
+    if re.search(r"(?<!\d)\d{1,2}\s*[周期同]", text):
+        return True
+    if re.search(r"\d{2}/\d{2}", text):
+        return True
+    if _looks_like_chinese_slot_header_token(text):
+        return True
+    return False
+
+
+def _looks_like_chinese_slot_header_token(token: str) -> bool:
+    compact = re.sub(r"\s+", "", str(token or ""))
+    if not compact:
+        return False
+    normalized = compact.replace("年", "午").replace("午", "午").replace("·", "-").replace("+", "-")
+    return bool(
+        re.search(r"1-?2", normalized)
+        and (re.search(r"3-?4", normalized) or "34" in normalized)
+        and ("午" in normalized or "5-6" in normalized or "56" in normalized)
+    )
+
+
+def _is_chinese_full_term_course_text(token: str, legend_aliases: set[str] | None = None) -> bool:
+    text = str(token or "").strip()
+    compact = re.sub(r"\s+", "", text)
+    if _is_empty_or_non_class(compact) or _looks_like_room(compact):
+        return False
+    if re.search(r"(报到注册|运动会|运动食|清明节|请明节|劳动节|劳功节|劳助节|端午节|烯午节|考试周|全国英语四六级|不排|教研|教妍|微研|教好)", compact):
+        return False
+    if len(compact) <= 1:
+        return False
+    if re.fullmatch(r"[A-Za-z0-9:：/._-]+", compact) and not re.search(r"[A-Za-z]\d|\d[A-Za-z]", compact):
+        return False
+    aliases = legend_aliases or set()
+    if aliases:
+        if not any(_alias_matches_cell_text(alias, compact) for alias in aliases):
+            return False
+    return bool(re.search(r"[\u4e00-\u9fffA-Za-z]", compact))
+
+
+def _alias_matches_cell_text(alias: str, compact: str) -> bool:
+    if not alias or not compact:
+        return False
+    if alias in compact:
+        return True
+    if len(alias) == 1 and re.search(rf"{re.escape(alias)}[A-Za-z]?\d", compact):
+        return True
+    if alias.upper() in compact.upper() and re.search(r"[A-Za-z]\d", compact):
+        return True
+    return False
 
 
 def _normalize_cell_text(cell_words: list[dict[str, Any]]) -> str:
@@ -1475,11 +2140,43 @@ def _parse_english_ocr_week_grid(source: dict[str, Any], file_name: str) -> list
     items = _extract_pdf_ocr_items(source)
     if not items:
         return []
+    name = _extract_chinese_name("", file_name)
+    date_grid_blocks: list[dict[str, Any]] = []
+    fallback_columns: list[dict[str, Any]] | None = None
+    for page in sorted({int(item.get("page", 0)) for item in items}):
+        page_items = [
+            {
+                "x0": float(item.get("x0", 0)),
+                "y0": float(item.get("y0", 0)),
+                "x1": float(item.get("x1", 0)),
+                "y1": float(item.get("y1", 0)),
+                "text": _normalize_ocr_text(str(item.get("text", ""))),
+            }
+            for item in items
+            if int(item.get("page", 0)) == page and str(item.get("text", "")).strip()
+        ]
+        headers = _find_english_period_header_rows(page_items)
+        if headers:
+            fallback_columns = headers[-1]["columns"]
+        elif fallback_columns and _find_english_day_rows(page_items):
+            page_items.extend(
+                {
+                    "x0": float(column["center"]) - 2,
+                    "y0": 0.0,
+                    "x1": float(column["center"]) + 2,
+                    "y1": 8.0,
+                    "text": str(column["period"]),
+                }
+                for column in fallback_columns
+            )
+        date_grid_blocks.extend(_parse_english_grid_page_items_from_pdf_words(page_items, name))
+    if date_grid_blocks:
+        return date_grid_blocks
+
     normalized_text = "\n".join(_normalize_ocr_text(str(item.get("text", ""))) for item in items)
     if "第" not in normalized_text or "周" not in normalized_text or "周一" not in normalized_text:
         return []
 
-    name = _extract_chinese_name("", file_name)
     blocks: list[dict[str, Any]] = []
     for page in sorted({int(item.get("page", 0)) for item in items}):
         page_items = [
@@ -1577,16 +2274,21 @@ def _parse_english_grid_page_items_from_pdf_words(items: list[dict[str, Any]], n
 
 
 def _find_english_period_header_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    number_items = [
-        item
-        for item in items
-        if re.fullmatch(r"(?:[1-9]|10|11)", item["text"])
-    ]
+    number_items: list[dict[str, Any]] = []
+    for item in items:
+        periods = _extract_english_period_header_numbers(str(item.get("text") or ""))
+        if not periods:
+            continue
+        width = max(1.0, float(item["x1"]) - float(item["x0"]))
+        for offset, period in enumerate(periods):
+            left = float(item["x0"]) + width * offset / len(periods)
+            right = float(item["x0"]) + width * (offset + 1) / len(periods)
+            number_items.append({**item, "text": str(period), "x0": left, "x1": right})
     grouped: list[list[dict[str, Any]]] = []
     for item in sorted(number_items, key=lambda value: value["y0"]):
         for group in grouped:
             group_y = sum(_item_center(value)[1] for value in group) / len(group)
-            if abs(group_y - _item_center(item)[1]) <= 6.0:
+            if abs(group_y - _item_center(item)[1]) <= 12.0:
                 group.append(item)
                 break
         else:
@@ -1598,15 +2300,127 @@ def _find_english_period_header_rows(items: list[dict[str, Any]]) -> list[dict[s
         for item in group:
             period = int(item["text"])
             by_period[period] = item
-        if len(by_period) < 8 or not {1, 2, 3, 4}.issubset(by_period):
+        columns = _complete_english_period_columns(by_period)
+        if len(columns) < 8 or not {1, 2, 3, 4}.issubset({int(column["period"]) for column in columns}):
             continue
-        columns = [
-            {"period": period, "center": _item_center(item)[0]}
-            for period, item in sorted(by_period.items())
-            if 1 <= period <= 11
-        ]
-        rows.append({"y": sum(_item_center(item)[1] for item in group) / len(group), "columns": columns})
-    return sorted(rows, key=lambda row: row["y"])
+        rows.append(
+            {
+                "y": sum(_item_center(item)[1] for item in group) / len(group),
+                "columns": columns,
+                "direct_count": sum(1 for column in columns if not column.get("synthetic")),
+            }
+        )
+    return _align_english_header_rows(sorted(rows, key=lambda row: row["y"]))
+
+
+def _complete_english_period_columns(by_period: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+    known = {
+        int(period): _item_center(item)[0]
+        for period, item in by_period.items()
+        if 1 <= int(period) <= 11
+    }
+    if len(known) >= 8:
+        return [{"period": period, "center": known[period], "synthetic": False} for period in sorted(known)]
+    if len(known) < 6 or not {1, 2, 3, 4}.issubset(known):
+        return [{"period": period, "center": known[period], "synthetic": False} for period in sorted(known)]
+
+    completed = dict(known)
+    for period in range(1, 12):
+        if period in completed:
+            continue
+        lower = max((value for value in known if value < period), default=None)
+        upper = min((value for value in known if value > period), default=None)
+        if lower is not None and upper is not None:
+            span = upper - lower
+            completed[period] = known[lower] + (known[upper] - known[lower]) * ((period - lower) / span)
+
+    return [
+        {"period": period, "center": completed[period], "synthetic": period not in known}
+        for period in sorted(completed)
+    ]
+
+
+def _align_english_header_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(rows) < 2:
+        return rows
+    templates = [
+        row
+        for row in rows
+        if sum(1 for column in row["columns"] if not column.get("synthetic")) >= 8
+    ]
+    if not templates:
+        return rows
+    template = max(templates, key=lambda row: row.get("direct_count", 0))
+    template_centers = {int(column["period"]): float(column["center"]) for column in template["columns"]}
+    aligned: list[dict[str, Any]] = []
+    for row in rows:
+        columns = []
+        for column in row["columns"]:
+            period = int(column["period"])
+            if column.get("synthetic") and period in template_centers:
+                columns.append({**column, "center": template_centers[period]})
+            else:
+                columns.append(column)
+        aligned.append({**row, "columns": columns})
+    return aligned
+
+
+def _extract_english_period_header_numbers(token: str) -> list[int]:
+    text = str(token or "").strip()
+    if not text:
+        return []
+    compact = re.sub(r"\s+", "", text)
+    time_periods = _extract_english_period_time_header_numbers(compact)
+    if time_periods:
+        return time_periods
+    if compact == "A":
+        return [1]
+    if re.fullmatch(r"[.。]*([1-9]|10|11)[.。]*", compact):
+        return [int(re.sub(r"\D", "", compact))]
+    numbers = [int(value) for value in re.findall(r"(?<!\d)(?:[1-9]|10|11)(?!\d)", compact)]
+    if 2 <= len(numbers) <= 4:
+        ordered = []
+        for number in numbers:
+            if 1 <= number <= 11 and number not in ordered:
+                ordered.append(number)
+        if len(ordered) < 2:
+            return []
+        if ordered == list(range(min(ordered), max(ordered) + 1)):
+            return ordered
+    return []
+
+
+def _extract_english_period_time_header_numbers(token: str) -> list[int]:
+    compact = re.sub(r"\s+", "", str(token or ""))
+    if not compact or re.search(r"[A-Za-z\u4e00-\u9fff]", compact):
+        return []
+    digits = re.sub(r"\D", "", compact)
+    if len(digits) < 3:
+        return []
+
+    if re.match(r"8[:：]?[01]\d", compact) or digits.startswith(("9810", "98105", "98195", "810")):
+        return [1]
+    if re.match(r"9[%:：]?[04]\d", compact) or digits.startswith(("9045", "09045", "085045", "0945", "045")):
+        return [2]
+    if re.match(r"10[:：]?\d", compact):
+        return [3]
+    if re.match(r"11[:：]?\d", compact):
+        return [4]
+    if re.match(r"14[:：]?\d", compact) or digits.startswith(("1430", "145", "153")):
+        return [5]
+    if re.match(r"15[:：]?20", compact) or digits.startswith(("1520", "15205")):
+        return [6]
+    if re.match(r"16[:：;]?\d", compact):
+        return [7]
+    if re.match(r"17[:：]?\d", compact) or digits.startswith(("178", "1715")):
+        return [8]
+    if re.match(r"19[%:：]?\d", compact) or digits.startswith(("1910", "1")) and "15" in digits:
+        return [9]
+    if re.match(r"20[:：]?[04]\d", compact) or digits.startswith(("2000", "20645", "2045")):
+        return [10]
+    if re.match(r"20[:：]?5\d", compact) or digits.startswith(("2050", "20155", "201505")):
+        return [11]
+    return []
 
 
 def _find_english_day_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1619,7 +2433,7 @@ def _find_english_day_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     date_items = [
         item
         for item in items
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", item["text"]) and item["x0"] < 105
+        if _is_english_date_token(item["text"]) and item["x0"] < 105
     ]
     for weekday in weekday_items:
         candidates = [
@@ -1641,12 +2455,14 @@ def _find_english_day_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "y": min(_item_center(weekday)[1], _item_center(date_item)[1]),
             }
         )
+    date_pattern = r"(?:20\d{2}[-/]?\d{2}[-/]?\d{2}|20\d{4}-\d{2}|\d{2}/\d{2})"
+    weekday_pattern = r"Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday"
     for item in items:
         if item["x0"] >= 115:
             continue
-        match = re.search(r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday).*?(\d{4}-\d{2}-\d{2})", item["text"])
+        match = re.search(rf"({weekday_pattern}).*?({date_pattern})", item["text"])
         if not match:
-            match = re.search(r"(\d{4}-\d{2}-\d{2}).*?(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)", item["text"])
+            match = re.search(rf"({date_pattern}).*?({weekday_pattern})", item["text"])
         if not match:
             continue
         date_text = match.group(2) if match.group(1) in ENGLISH_WEEKDAY_MAP else match.group(1)
@@ -1769,7 +2585,13 @@ def _is_english_grid_noise_token(token: str) -> bool:
         return True
     if re.search(r"第\d{1,2}周", token):
         return True
+    if _extract_english_period_header_numbers(token):
+        return True
     if re.fullmatch(r"\d{1,4}", token) or re.fullmatch(r"\d{1,2}:\d{2}", token):
+        return True
+    if re.search(r"\d{1,2}[:.]\d{2}", token) and not re.search(r"[A-Za-z\u4e00-\u9fff]", token):
+        return True
+    if re.search(r"\d", token) and not re.search(r"[A-Za-z\u4e00-\u9fff]", token):
         return True
     if re.fullmatch(r"\d{1,2}月?", token):
         return True
@@ -1859,13 +2681,19 @@ def _extract_chinese_name(text: str, file_name: str) -> str:
     filename_name = _extract_name_from_filename(file_name)
     if filename_name:
         return filename_name
-    match = re.search(r"姓名\s*([\u4e00-\u9fff]{2,4})", text)
-    if match:
-        candidate = match.group(1)
-        if candidate not in NAME_STOPWORDS:
-            return candidate
+    candidate = _extract_chinese_name_from_text(text)
+    if candidate:
+        return candidate
     stem = Path(file_name).stem
     return stem
+
+
+def _extract_chinese_name_from_text(text: str) -> str:
+    match = re.search(r"姓名\s*[:：]?\s*([\u4e00-\u9fff]{2,4})", text)
+    if not match:
+        return ""
+    candidate = match.group(1)
+    return "" if candidate in NAME_STOPWORDS else candidate
 
 
 def _parse_week_start(text: str) -> date | None:
@@ -1879,10 +2707,21 @@ def _parse_date(text: str) -> date:
     text = text.strip()
     if re.match(r"\d{4}-\d{2}-\d{2}", text):
         return datetime.strptime(text[:10], "%Y-%m-%d").date()
+    digits = re.sub(r"\D", "", text)
+    if len(digits) >= 8 and digits.startswith("20"):
+        return datetime.strptime(digits[:8], "%Y%m%d").date()
     if re.match(r"\d{2}/\d{2}", text):
         month, day = map(int, text[:5].split("/"))
         return date(2026, month, day)
     return date.fromisoformat(text[:10])
+
+
+def _is_english_date_token(text: str) -> bool:
+    try:
+        day = _parse_date(str(text))
+    except Exception:
+        return False
+    return 2020 <= day.year <= 2035
 
 
 def _week_from_date(day: date) -> int:
@@ -1935,8 +2774,42 @@ def _teaching_weeks() -> int:
 
 
 def _is_empty_or_non_class(token: str) -> bool:
-    compact = re.sub(r"[\s:：;；,，。|｜/\\]+", "", token.strip())
-    return token.strip() in NON_CLASS_KEYWORDS or compact in {"", "午", "无", "空", "不排课", "暂无", "None", "N/A"}
+    text = str(token or "").strip()
+    compact = re.sub(r"[\s:：;；,，。|｜/\\]+", "", text)
+    if text in NON_CLASS_KEYWORDS or compact in {"", "午", "无", "空", "不排课", "暂无", "None", "N/A", "-", "校外", "教研"}:
+        return True
+    if any(
+        keyword in compact
+        for keyword in (
+            "校外",
+            "教研",
+            "教妍",
+            "微研",
+            "教好",
+            "不排课",
+            "不排误",
+            "不持课",
+            "不排深",
+            "清明节",
+            "请明节",
+            "劳动节",
+            "劳功节",
+            "劳助节",
+            "端午节",
+            "烯午节",
+            "运动会",
+            "运动食",
+            "期末周",
+            "考试周",
+            "全国英语四六级",
+        )
+    ):
+        return True
+    if text.startswith("-"):
+        return True
+    if re.search(r"https?://|www\.", text, re.IGNORECASE):
+        return True
+    return False
 
 
 def _looks_like_room(token: str) -> bool:
@@ -1945,7 +2818,7 @@ def _looks_like_room(token: str) -> bool:
 
 
 def _is_english_course_token(token: str) -> bool:
-    if token in NON_CLASS_KEYWORDS or re.match(r"\d{4}-\d{2}-\d{2}", token):
+    if _is_empty_or_non_class(token) or re.match(r"\d{4}-\d{2}-\d{2}", token):
         return False
     if token in ENGLISH_WEEKDAY_MAP or re.fullmatch(r"(?:[1-9]|10|11)", token):
         return False
