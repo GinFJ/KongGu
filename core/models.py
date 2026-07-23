@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+import hashlib
+import json
+from typing import Any, Literal
 
 from .errors import ProcessError
 
@@ -13,6 +15,8 @@ TextSourceType = Literal["内嵌文本", "OCR", "缓存", "未知"]
 ProcessingStatus = Literal["待处理", "识别中", "已识别", "解析失败", "处理完成"]
 MemberFileStatus = Literal["未导入", "已导入", "待处理", "解析失败"]
 CompletenessStatus = Literal["待处理", "完整", "缺中方", "缺英方", "解析失败"]
+QualityState = Literal["accepted", "needs_review", "blocked"]
+IssueSeverity = Literal["info", "warning", "error"]
 FileStatus = Literal[
     "待处理",
     "识别中",
@@ -25,6 +29,96 @@ FileStatus = Literal[
     "解析失败",
     "处理完成",
 ]
+
+
+@dataclass(slots=True, frozen=True)
+class MemberIdentity:
+    """Stable local identity used when names alone are not unique."""
+
+    name: str
+    department: str | None = None
+    role: str | None = None
+    display_suffix: str | None = None
+
+    @property
+    def member_key(self) -> str:
+        parts = [self.name.strip(), (self.department or "").strip(), (self.role or "").strip()]
+        key = "｜".join(parts)
+        if self.display_suffix:
+            key = f"{key}｜{self.display_suffix.strip()}"
+        return key
+
+    @property
+    def confirmation_required(self) -> bool:
+        return not bool(self.name.strip() and (self.department or "").strip() and (self.role or "").strip())
+
+    @property
+    def display_name(self) -> str:
+        details = " · ".join(item for item in (self.department, self.role, self.display_suffix) if item)
+        return f"{self.name}（{details}）" if details else self.name
+
+
+@dataclass(slots=True)
+class OcrToken:
+    """One normalized OCR token with enough geometry for PDF review overlays."""
+
+    page: int
+    text: str
+    bbox: tuple[float, float, float, float]
+    confidence: float | None = None
+    polygon: list[tuple[float, float]] = field(default_factory=list)
+    engine: str = "paddle_v4"
+    model_version: str = "PP-OCRv4-mobile"
+    page_width: float = 0
+    page_height: float = 0
+    elapsed_ms: int = 0
+
+
+@dataclass(slots=True)
+class ParseIssue:
+    """A user-visible parsing or quality issue."""
+
+    code: str
+    message: str
+    severity: IssueSeverity = "warning"
+    field: str | None = None
+    source_hash: str | None = None
+    source_file: str | None = None
+    block_id: str | None = None
+    suggestion: str = ""
+    blocks_export: bool = False
+    confirmed: bool = False
+    issue_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.issue_id:
+            raw = "|".join(
+                [
+                    self.code,
+                    self.source_hash or "",
+                    self.source_file or "",
+                    self.block_id or "",
+                    self.field or "",
+                    self.message,
+                ]
+            )
+            self.issue_id = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+@dataclass(slots=True)
+class CorrectionRecord:
+    """A durable human correction tied to a source and parser signature."""
+
+    source_hash: str
+    block_id: str
+    field: str
+    original_value: Any
+    new_value: Any
+    reason: str
+    parser_signature: str
+    operator_id: str = "本机用户"
+    created_at: str = ""
+    stale: bool = False
 
 
 @dataclass(slots=True)
@@ -53,6 +147,35 @@ class CourseBlock:
     course: str | None = None
     source_file: str | None = None
     text_source: TextSourceType = "未知"
+    block_id: str = ""
+    member_key: str = ""
+    department: str | None = None
+    role: str | None = None
+    source_hash: str | None = None
+    page: int | None = None
+    bbox: tuple[float, float, float, float] | None = None
+    confidence: float | None = None
+    provenance: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.member_key:
+            identity = MemberIdentity(self.name, self.department, self.role)
+            self.member_key = self.name if identity.confirmation_required else identity.member_key
+        if not self.block_id:
+            stable = {
+                "member_key": self.member_key,
+                "week": self.week,
+                "weekday": self.weekday,
+                "periods": sorted(int(period) for period in self.periods),
+                "course": self.course or "",
+                "source_hash": self.source_hash or "",
+                "source_file": self.source_file or "",
+                "page": self.page,
+                "bbox": self.bbox,
+            }
+            self.block_id = hashlib.sha256(
+                json.dumps(stable, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()[:24]
 
 
 @dataclass(slots=True)
@@ -66,11 +189,22 @@ class MemberSchedule:
     chinese_status: MemberFileStatus = "未导入"
     english_status: MemberFileStatus = "未导入"
     role: str | None = None
+    department: str | None = None
+    member_key: str = ""
+    display_suffix: str | None = None
     remark: str = ""
     blocks: list[CourseBlock] = field(default_factory=list)
     errors: list[ProcessError] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        if not self.member_key:
+            identity = MemberIdentity(
+                self.name,
+                self.department,
+                self.role,
+                self.display_suffix,
+            )
+            self.member_key = self.name if identity.confirmation_required else identity.member_key
         if self.has_chinese and self.chinese_status == "未导入":
             self.chinese_status = "已导入"
         if self.has_english and self.english_status == "未导入":
@@ -148,6 +282,11 @@ class FileProcessRecord:
     block_count: int = 0
     result_message: str = ""
     error: ProcessError | None = None
+    source_hash: str | None = None
+    layout_profile: str | None = None
+    quality_state: QualityState = "accepted"
+    issues: list[ParseIssue] = field(default_factory=list)
+    duration_ms: int = 0
 
     @property
     def display_kind(self) -> ScheduleSourceType:
@@ -190,3 +329,8 @@ class ProcessResult:
     logs: list[str] = field(default_factory=list)
     calendar_rows: list[dict] = field(default_factory=list)
     summary: ProcessSummary = field(default_factory=ProcessSummary)
+    quality_state: QualityState = "accepted"
+    issues: list[ParseIssue] = field(default_factory=list)
+    corrections: list[CorrectionRecord] = field(default_factory=list)
+    parser_signature: str = ""
+    job_id: str = ""

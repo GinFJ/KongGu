@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "default_engine": "paddle_v4",
+  "runtime_downloads_allowed": false,
+  "engines": [
+    {"id":"paddle_v4","status":"stable","model_version":"PP-OCRv4-mobile","bundled_in_production":true},
+    {"id":"paddle_v6_small","status":"experimental","model_version":"PP-OCRv6-small","bundled_in_production":false},
+    {"id":"rapidocr_v6_onnx","status":"experimental","model_version":"PP-OCRv6-mobile-onnx","runtime":"onnxruntime","bundled_in_production":false,"dependency_version":"not-installed-until-benchmark"}
+  ],
+  "replacement_rule": {
+    "minimum_slot_f1_delta": 0.0,
+    "minimum_speed_or_package_improvement": 0.15
+  }
+}
