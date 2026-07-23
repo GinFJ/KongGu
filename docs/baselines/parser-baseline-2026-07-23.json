@@ -1,0 +1,13 @@
+{
+  "captured_at": "2026-07-23",
+  "reference_pdf_count": 76,
+  "status_counts": {
+    "auto_accepted": 73,
+    "needs_review_placeholder_filename": 1,
+    "needs_review_duplicate_name_mismatch": 2
+  },
+  "test_count": 83,
+  "parse_audit_sha256": "7dea28ce7274614439e35e975c7a91e79850725dcf3d308d863aacab43fc26e2",
+  "source": "outputs/training_audit/parse_audit.csv",
+  "notes": "The generated CSV and raw PDFs remain outside version control. This snapshot records the acceptance baseline only."
+}

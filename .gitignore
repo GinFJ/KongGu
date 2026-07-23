@@ -17,6 +17,10 @@ downloads/
 tools/nsis/
 cache/
 .runtime/
+/outputs/
+/tmp/
+/work/
+/.codex-install-*
 
 export/*.csv
 export/*.json

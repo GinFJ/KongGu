@@ -1,0 +1,74 @@
+{
+  "profiles": [
+    {
+      "id": "cdut_undergrad_full_term_cn",
+      "kind": "中方",
+      "description": "成都理工大学本科学生整学期横向大表，标题为本科学生课表，左侧按第1-21周列出日期，顶部按星期一到星期日、1-2/3-4/午/5-6/7-8/9-11分组。",
+      "triggers": [
+        "成都理工大学本科学生课表",
+        "周/节 or 周节",
+        "星期一..星期日",
+        "1-2/3-4/午/5-6/7-8/9-11",
+        "底部课程图例"
+      ],
+      "anchors": {
+        "row_axis": "左侧第N周和MM/DD-MM/DD日期区间",
+        "column_axis": "顶部星期和节次分组",
+        "course_legend": "页面底部带括号短名、课程名、课程编号、学分、教师、教室的图例"
+      },
+      "special_rules": [
+        "先按表格线和锚点切格子，再识别格子内容；不要整页OCR后按文本顺序猜。",
+        "当OCR课程文本低置信时，回退到视觉表格占用解析：按21周行轴、7天列轴和格子内文字像素判断占用，课程名记为视觉表格占用。",
+        "午列不计入占用。",
+        "校外、教研、期末周、考试周、节假日、运动会、不排课不计入占用。",
+        "格子内短码如 高L31、大R418、写L26、国L44、E2B101、TT05 不能直接当乱码；应结合底部课程图例和格子位置判断。",
+        "若OCR只能产生碎片但版式锚点完整，应进入cdut_undergrad_full_term_cn专用格线解析，不应由通用低置信规则直接决定最终结果。"
+      ],
+      "confidence": {
+        "auto_accept": "周次行>=18, 星期/节次列完整, 非空格子文本命中课程短名/底部图例，或视觉表格占用覆盖足够周次，且节假日/不排课过滤后没有异常周次。",
+        "review": "表格线或周次轴缺失，格子文本无法与课程图例/短码模式对应，候选占用过少，或解析结果只覆盖少量离散周次。"
+      }
+    },
+    {
+      "id": "cdut_sino_british_english_web",
+      "kind": "英方",
+      "description": "CDUT Sino-British Collaborative Education Student Website网页截图式英方课表，日期集中在2026-05-06到2026-05-29附近，按每周Monday-Friday分块，列为1-11节。",
+      "triggers": [
+        "CDUT Sino-British Collaborative Education - Student Website",
+        "Timetable for <name>",
+        "Start/End date",
+        "Monday-Friday + yyyy-mm-dd",
+        "1..11 period columns"
+      ],
+      "anchors": {
+        "row_axis": "每个weekday/date行块",
+        "column_axis": "1-11节表头；表头可被OCR识别为A、.4、3...4、.5..6等脏token",
+        "date_source": "单元左侧日期，优先于周次推断"
+      },
+      "special_rules": [
+        "从脏表头token中提取节次，例如A=>1、.4=>4、3...4=>3/4、.5..6=>5/6。",
+        "若页面上部表头残缺，用页面下部更完整表头的列中心校准。",
+        "按真实日期反推教学周，禁止直接把五月英方课写入第1周。",
+        "Teacher/Room/Group/Home/Start/End和纯时间token不计入课程。"
+      ],
+      "confidence": {
+        "auto_accept": "日期行>=5, 可解析节次列>=8, 识别占用>=8。",
+        "review": "识别占用<8或仅有页尾残片。"
+      }
+    },
+    {
+      "id": "cdut_sino_british_english_week_grid",
+      "kind": "英方",
+      "description": "带中文第N周/周一到周日结构的英方周视图。",
+      "triggers": [
+        "第N周",
+        "周一..周日",
+        "英方课程短名"
+      ],
+      "special_rules": [
+        "优先用日期网格解析；只有没有日期网格时才回退到第N周网格。",
+        "仍需经过非课程文本过滤。"
+      ]
+    }
+  ]
+}

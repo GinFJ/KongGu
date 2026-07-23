@@ -42,7 +42,7 @@ def add_pdf_sources(
     result = PdfSourceAddResult()
     existing = {(item.source_path, item.kind) for item in existing_sources}
     existing_hashes = {
-        (item.content_hash, item.kind)
+        (item.content_hash, item.kind): item
         for item in existing_sources
         if item.content_hash
     }
@@ -61,6 +61,14 @@ def add_pdf_sources(
                 )
             )
             continue
+        if _looks_like_placeholder_file_name(pdf_path.name):
+            result.errors.append(
+                (
+                    pdf_path,
+                    ValueError("文件名包含测试或占位姓名“路人甲”，请使用真实成员课表文件。"),
+                )
+            )
+            continue
         key = (str(pdf_path.resolve()), kind)
         if key in existing:
             result.skipped.append(str(pdf_path))
@@ -74,13 +82,27 @@ def add_pdf_sources(
 
         hash_key = (source.content_hash, source.kind)
         if source.content_hash and hash_key in existing_hashes:
-            result.skipped.append(str(pdf_path))
+            existing_source = existing_hashes[hash_key]
+            existing_name = _extract_member_name(schedule_core, existing_source.file_name)
+            new_name = _extract_member_name(schedule_core, source.file_name)
+            if existing_name and new_name and existing_name != new_name:
+                result.errors.append(
+                    (
+                        pdf_path,
+                        ValueError(
+                            f"同一份{source.kind}课表内容重复，但文件名成员不一致："
+                            f"{existing_name} / {new_name}。请确认是否传错课表。"
+                        ),
+                    )
+                )
+            else:
+                result.skipped.append(str(pdf_path))
             continue
 
         result.added.append(source)
         existing.add(key)
         if source.content_hash:
-            existing_hashes.add(hash_key)
+            existing_hashes[hash_key] = source
     return result
 
 
@@ -89,6 +111,17 @@ def _infer_pdf_kind(schedule_core: Any, pdf_path: Path) -> str:
     if inferred in VALID_KINDS:
         return inferred
     return inferred
+
+
+def _looks_like_placeholder_file_name(file_name: str) -> bool:
+    return "路人甲" in file_name
+
+
+def _extract_member_name(schedule_core: Any, file_name: str) -> str:
+    extractor = getattr(schedule_core, "_extract_name_from_filename", None)
+    if callable(extractor):
+        return str(extractor(file_name) or "").strip()
+    return Path(file_name).stem
 
 
 def load_reference_library_summary(reference_library_path: str) -> ReferenceLibrarySummary:

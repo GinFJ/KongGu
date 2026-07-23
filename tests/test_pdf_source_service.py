@@ -14,6 +14,16 @@ class FakeKindCore:
             return "中方"
         return ""
 
+    def _extract_name_from_filename(self, file_name):
+        stem = Path(file_name).stem
+        for token in ("办公室", "外联部", "宣传部", "活动部", "部长", "干事", "中方课表", "英方课表", "课表", "副本"):
+            stem = stem.replace(token, "")
+        for separator in ("-", "_", " "):
+            parts = [part for part in stem.split(separator) if part]
+            if len(parts) == 1:
+                stem = parts[0]
+        return stem.strip("-_ ")
+
 
 def test_add_pdf_sources_infers_kind_and_skips_duplicates(tmp_path: Path):
     chinese = tmp_path / "办公室-张三-中方课表.pdf"
@@ -52,6 +62,44 @@ def test_add_pdf_sources_skips_same_content_duplicate_files(tmp_path: Path):
     assert [source.file_name for source in result.added] == [first.name]
     assert result.skipped == [str(duplicate)]
     assert result.errors == []
+
+
+def test_add_pdf_sources_reports_same_content_with_different_member_names(tmp_path: Path):
+    first = tmp_path / "活动部-王婧琪-干事-中方课表.pdf"
+    duplicate = tmp_path / "活动部-苏筱羽-干事-中方课表.pdf"
+    first.write_bytes(b"same-pdf-content")
+    duplicate.write_bytes(b"same-pdf-content")
+
+    result = add_pdf_sources(
+        paths=[str(first), str(duplicate)],
+        explicit_kind=None,
+        existing_sources=[],
+        schedule_core=FakeKindCore(),
+    )
+
+    assert [source.file_name for source in result.added] == [first.name]
+    assert result.skipped == []
+    assert len(result.errors) == 1
+    assert "成员不一致" in str(result.errors[0][1])
+    assert "王婧琪" in str(result.errors[0][1])
+    assert "苏筱羽" in str(result.errors[0][1])
+
+
+def test_add_pdf_sources_rejects_placeholder_member_file_name(tmp_path: Path):
+    placeholder = tmp_path / "路人甲_外联部 袁铭泽 干事 中方课表.pdf"
+    placeholder.write_bytes(b"placeholder")
+
+    result = add_pdf_sources(
+        paths=[str(placeholder)],
+        explicit_kind=None,
+        existing_sources=[],
+        schedule_core=FakeKindCore(),
+    )
+
+    assert result.added == []
+    assert result.skipped == []
+    assert len(result.errors) == 1
+    assert "路人甲" in str(result.errors[0][1])
 
 
 def test_add_pdf_sources_uses_explicit_kind_and_rejects_unknown_kind(tmp_path: Path):
