@@ -41,6 +41,8 @@ Konggu（中文名：空谷）是青禾计划系列项目之一，服务中英�
 - [Architecture](#architecture)
 - [Offline Resources](#offline-resources)
 - [Testing](#testing)
+- [Project Chronicle](#project-chronicle)
+- [项目治理与协作](#项目治理与协作)
 - [Roadmap](#roadmap)
 
 ## Why Konggu?
@@ -263,10 +265,10 @@ By default, PaddleOCR model download is disabled. Missing models should be repai
 
 ## Testing
 
-Current local verification:
+Current local verification (2026-08-08, commit `1fc6e4e`):
 
 ```text
-49 passed, 4 warnings
+91 passed, 2 warnings
 ```
 
 Primary command:
@@ -276,6 +278,14 @@ python -m pytest -q
 ```
 
 The exception matrix lives in [`docs/exception-test-matrix.md`](./docs/exception-test-matrix.md). Real member PDFs should stay outside the repository and be tested through a sanitized sample library.
+
+## Project Chronicle
+
+项目从 V0.1、FastAPI 本地 Web、Web-only 收缩，到离线 Tauri 桌面端、0.3.0 和解析审计基线的完整沿革，记录在 [`《空谷项目志》`](./docs/PROJECT_CHRONICLE.md)。
+
+## 项目治理与协作
+
+本项目长期工作规则见 [`AGENTS.md`](./AGENTS.md)，动态记忆（事实、决策、待办）见 [`MEMORY/`](./MEMORY/MEMORY.md)，参考资料库见 [`resources/reference/`](./resources/reference/README.md)，项目说明与质量门禁见 [`docs/项目说明.md`](./docs/项目说明.md) 与 [`docs/状态与质量门禁.md`](./docs/状态与质量门禁.md)，测试分层见 [`tests/README.md`](./tests/README.md)。
 
 ## Roadmap
 
@@ -306,9 +316,9 @@ The exception matrix lives in [`docs/exception-test-matrix.md`](./docs/exception
 
 ## Name
 
-“空谷”取“空课汇聚成谷”之意。
+空谷是青禾计划孵化的课表协作产品。
 
-- “空”对应从大量中方、英方课表中找出真正可用的空闲时间。
-- “谷”象征青禾计划中成员时间与协作需求汇聚成形的空间。
+- “空”指空课表。
+- “谷”承接青禾从禾苗生长为谷物的意象。
 
 Konggu aims to turn scattered schedule PDFs into a clear, trustworthy, reusable group availability view.
