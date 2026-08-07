@@ -1,61 +1,64 @@
-# Konggu 空谷
+# 空谷 Konggu
 
 <p align="center">
-  <img src="./assets/konggu-wordmark.png" alt="Konggu" width="220" />
+  <img src="./assets/konggu-wordmark.png" alt="空谷" width="220" />
 </p>
 
 <p align="center">
   面向中英合办学生组织的离线空课生成工具。
   <br />
-  批量解析中方、英方课表 PDF，自动合并课程占用时间，生成可直接用于排班的集体空课表。
+  批量解析中方、英方课表 PDF，合并课程占用时间，生成可直接用于排班的集体空课表。
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.3.0-116c54" />
+  <img alt="Version" src="https://img.shields.io/badge/version-0.3.1-116c54" />
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-2563eb" />
   <img alt="Desktop" src="https://img.shields.io/badge/desktop-Tauri-24c8db" />
   <img alt="Python" src="https://img.shields.io/badge/python-3.12-3776ab" />
-  <img alt="Tests" src="https://img.shields.io/badge/tests-49%20passed-2f855a" />
 </p>
 
-![Konggu README Hero](./assets/konggu-readme-hero.png)
+![空谷 README 首图](./assets/konggu-readme-hero.png)
 
-## What Is Konggu?
+## 简介
 
-Konggu（中文名：空谷）是青禾计划系列项目之一，服务中英合办和中外合作办学场景中的课表收集、成员排班、志愿服务和值班协作。
+空谷（Konggu）是青禾计划孵化的课表协作产品，服务中英合办和中外合作办学场景里的课表收集、成员排班、志愿服务和值班协作。
 
-它解决的不是“做一张漂亮课表”，而是把负责人从收课表、看课表、比对节次、统计空闲人员这类重复性高、耗时长、价值低的人力劳动中释放出来。
+它解决的是收课表、看课表、比对节次、统计空闲这堆重复劳动。负责人不用再逐个成员、逐周、逐节核对两套课表。
 
-**核心判断只有一句话：同一成员只有中方课表和英方课表都没有课，才算真正空闲。**
+核心判断只有一句话：同一成员只有中方课表和英方课表都没有课，才算真正空闲。
 
-## Table Of Contents
+## 目录
 
-- [Why Konggu](#why-konggu)
-- [Features](#features)
-- [How It Works](#how-it-works)
-- [Input Contract](#input-contract)
-- [Output](#output)
-- [Core Rules](#core-rules)
-- [Quick Start](#quick-start)
-- [Development](#development)
-- [Architecture](#architecture)
-- [Offline Resources](#offline-resources)
-- [Testing](#testing)
-- [Project Chronicle](#project-chronicle)
+- [简介](#简介)
+- [为什么需要空谷](#为什么需要空谷)
+- [功能](#功能)
+- [工作流程](#工作流程)
+- [界面一览](#界面一览)
+- [输入契约](#输入契约)
+- [输出](#输出)
+- [核心规则](#核心规则)
+- [快速开始](#快速开始)
+- [开发](#开发)
+- [技术栈](#技术栈)
+- [架构](#架构)
+- [离线资源](#离线资源)
+- [测试](#测试)
+- [项目志](#项目志)
 - [项目治理与协作](#项目治理与协作)
-- [Roadmap](#roadmap)
+- [路线图](#路线图)
+- [名称由来](#名称由来)
 
-## Why Konggu?
+## 为什么需要空谷
 
-中英合办学生通常同时拥有中方课表和英方课表。人工排班时，负责人必须逐个成员、逐个周次、逐个节次核对两套课表。只看一张课表会产生误判，中方没课不代表英方没课。
+中英合办学生通常同时持有中方课表和英方课表。人工排班时，负责人要逐个成员、逐周、逐节比对两套课表。只看一张课表容易误判：中方没课不代表英方没课。
 
-Konggu 把这条工作链路自动化：
+空谷把这条链路自动化：
 
 ```text
-收集课表 PDF -> 识别成员和课表类型 -> 解析课程占用 -> 合并中英双课表 -> 反推空闲时间 -> 导出 Excel
+收集课表 PDF → 识别成员和课表类型 → 解析课程占用 → 合并中英双课表 → 反推空闲时间 → 导出 Excel
 ```
 
-| Pain | Konggu |
+| 痛点 | 空谷的做法 |
 | --- | --- |
 | 人工整理耗时高 | 批量解析多名成员课表 |
 | 重复劳动价值低 | 自动完成节次比对和名单统计 |
@@ -63,54 +66,88 @@ Konggu 把这条工作链路自动化：
 | 人工统计容易出错 | 缺失、冲突、解析失败都会显性提示 |
 | 课表包含个人信息 | 离线 Windows 桌面软件，本地处理 |
 
-## Features
+## 功能
 
-- **Batch PDF import**: 一次选择多名成员的课表 PDF。
-- **Schedule type detection**: 根据文件名识别中方、英方课表；无法识别时拒绝解析，避免静默误判。
-- **Local PDF parsing**: 优先读取 PDF 文本层，文本质量不足时回退 OCR。
-- **Dual schedule merge**: 同一成员的中方、英方课表合并为完整课程占用表。
-- **Availability preview**: 按周次、日期、星期、节次展示空闲人数和空闲成员。
-- **Member check**: 标记缺中方、缺英方、解析失败、课程冲突等风险。
-- **Excel export**: 导出 classic 空课表，用于排班、值班和志愿服务安排。
-- **Offline resources**: 内置配置和 PP-OCRv4 mobile OCR 模型，默认不允许在线下载模型。
+| 功能 | 说明 |
+| --- | --- |
+| 批量导入 PDF | 一次选择多名成员的课表 PDF |
+| 课表类型识别 | 按文件名识别中方、英方；识别不了就拒绝解析，不静默猜测 |
+| 本地 PDF 解析 | 优先读取文本层，文本不足时回退本地 OCR |
+| 双课表合并 | 同一成员的中方、英方课表合并为完整课程占用表 |
+| 空课预览 | 按周次、日期、星期、节次展示空闲人数和空闲成员 |
+| 成员检查 | 标记缺中方、缺英方、解析失败、课程冲突等风险 |
+| Excel 导出 | 导出经典空课表，用于排班、值班和志愿服务安排 |
+| 离线资源 | 内置配置和 PP-OCRv4 mobile OCR 模型，默认不允许在线下载模型 |
 
-## How It Works
+## 工作流程
 
 ```text
 成员课表 PDF
-  -> 文件导入与类型识别
-  -> PDF 文本提取 / OCR 识别
-  -> 中方、英方课表结构化解析
-  -> 成员课程占用时间合并
-  -> 空闲时间反推
-  -> 成员完整性与异常检查
-  -> 空课预览
-  -> Excel 导出
-  -> 排班 / 活动 / 志愿服务使用
+  → 文件导入与类型识别
+  → PDF 文本提取 / OCR 识别
+  → 中方、英方课表结构化解析
+  → 成员课程占用时间合并
+  → 空闲时间反推
+  → 成员完整性与异常检查
+  → 空课预览
+  → Excel 导出
+  → 排班 / 活动 / 志愿服务使用
 ```
 
-数据会从不可直接使用的 PDF 逐步变成可决策的空课结果：
-
-| Stage | Data |
+| 阶段 | 数据 |
 | --- | --- |
-| Raw input | 成员提交的中方课表 PDF、英方课表 PDF |
-| Recognition | 成员姓名、课表类型、PDF 文本或 OCR 文本 |
-| Structured blocks | 成员、周次、星期、节次、课程占用 |
-| Merged occupancy | 同一成员的中英双课表占用合集 |
-| Availability | 每个时段的空闲人数、空闲成员、有课成员 |
-| Export | 可直接用于排班的 Excel 空课表 |
+| 原始输入 | 成员提交的中方课表 PDF、英方课表 PDF |
+| 识别 | 成员姓名、课表类型、PDF 文本或 OCR 文本 |
+| 结构化 | 成员、周次、星期、节次、课程占用 |
+| 合并占用 | 同一成员的中英双课表占用合集 |
+| 空闲结果 | 每个时段的空闲人数、空闲成员、有课成员 |
+| 导出 | 可直接用于排班的 Excel 空课表 |
 
-## Input Contract
+## 界面一览
 
-Konggu 优先保证结果可信，所以输入规则是产品契约，不是建议。
+主窗口分三块：左侧操作区，中间结果区，底部审计轨迹。
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ 空谷 · 排班复核工作台            从“识别出来”到“确认可信”      │
+│ 操作：导入课表 PDF  开始解析与质检  取消/重试  导出可信 Excel  │
+│ 学期边界：第 1 周周一 / 教学周数     离线资源：完整 / 需修复   │
+├─────────────────────────────────────────────────────────────┤
+│ 本次来源：张三-中方课表.pdf  张三-英方课表.pdf …               │
+├──────────────┬──────────────────────────────────────────────┤
+│ 多人空闲      │ 周次 日期 星期 节次 空闲人数 空闲成员 有课人员│
+│ 成员身份      │                                              │
+│ 文件处理      │                                              │
+│ 问题门禁      │                                              │
+│ PDF 复核      │                                              │
+│ 交互周课表    │                                              │
+├──────────────┴──────────────────────────────────────────────┤
+│ 审计轨迹：解析完成，质量门禁已通过 …                          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+六个视图各管一件事：
+
+| 视图 | 核心定位 |
+| --- | --- |
+| 多人空闲 | 看每个时段谁有空、谁有课，判断能不能排 |
+| 成员身份 | 核对每个成员中英课表是否齐全、识别是否冲突 |
+| 文件处理 | 看每个 PDF 识别成谁、哪类课表、多少课程块 |
+| 问题门禁 | 存在阻断错误时禁止导出，先处理问题 |
+| PDF 复核 | 对照 PDF 原页修正课程块，修正必须填原因 |
+| 交互周课表 | 拖拽课程块改周次和时间，改动进入复核记录 |
+
+## 输入契约
+
+空谷优先保证结果可信，输入规则是产品契约，不是建议。
 
 1. 文件必须是 PDF。
 2. 文件名必须能看出成员姓名和课表类型。
-3. 文件名必须包含 `中方` 或 `英方`。
+3. 文件名必须包含“中方”或“英方”。
 4. 同一成员应同时提供中方课表和英方课表。
 5. 文件名无法识别课表类型时，系统暂停解析，不默认猜测。
 
-Recommended file names:
+推荐文件名：
 
 ```text
 张三-中方课表.pdf
@@ -119,7 +156,7 @@ Recommended file names:
 办公室-李四-英方课表.pdf
 ```
 
-Not accepted:
+不接受：
 
 ```text
 张三.pdf
@@ -128,11 +165,11 @@ schedule.pdf
 办公室成员课表.pdf
 ```
 
-## Output
+## 输出
 
 解析完成后先看三个结果区，再导出 Excel。
 
-| View | What To Check |
+| 视图 | 看什么 |
 | --- | --- |
 | 空课预览 | 哪些周次、日期、星期、节次有多少人空闲，具体是谁 |
 | 成员检查 | 每个成员是否同时导入中方和英方课表，是否存在缺失或冲突 |
@@ -140,26 +177,26 @@ schedule.pdf
 
 导出的 Excel 用于实际排班。导出前建议先处理成员检查中的异常，否则空课表只能作为参考。
 
-## Core Rules
+## 核心规则
 
-Konggu 把复杂异常压缩成四条底层规则：
+空谷把复杂异常压缩成四条规则：
 
-| Rule | Decision |
+| 规则 | 判定 |
 | --- | --- |
-| Identity | 一个 PDF 必须能关联到成员，并识别为中方或英方课表 |
-| Occupancy | 每个课程块只表达一件事：某人在某周、某天、某节被课程占用 |
-| Completeness | 同一成员需要同时具备中方、英方课表；缺失任一类都必须提示 |
-| Availability | 某个时段没有课程占用的成员进入空闲名单；存在缺失、冲突或解析失败时显性标记风险 |
+| 身份 | 一个 PDF 必须能关联到成员，并识别为中方或英方课表 |
+| 占用 | 每个课程块只表达一件事：某人在某周、某天、某节被课程占用 |
+| 完整 | 同一成员需要同时具备中方、英方课表；缺失任一类都必须提示 |
+| 空闲 | 某个时段没有课程占用的成员进入空闲名单；存在缺失、冲突或解析失败时显性标记风险 |
 
-这套规则让不同背景的使用者在点击按钮前形成同一理解：Konggu 不替负责人猜，它只整理可证明的空闲时间，并指出不可信的地方。
+这套规则让不同背景的使用者在点击按钮前形成同一理解：空谷不替负责人猜，它只整理可证明的空闲时间，并指出不可信的地方。
 
-## Quick Start
+## 快速开始
 
-### For Users
+### 使用
 
 1. 收集成员课表 PDF。
 2. 按输入规则整理文件名。
-3. 打开 Konggu。
+3. 打开空谷。
 4. 检查离线材料状态；如提示缺失，点击“修复离线材料”。
 5. 选择所有课表 PDF。
 6. 确认文件列表中每个文件都能识别出中方或英方。
@@ -168,7 +205,7 @@ Konggu 把复杂异常压缩成四条底层规则：
 9. 先处理“成员检查”中的异常。
 10. 导出 Excel，用于排班。
 
-### For Developers
+### 环境搭建
 
 ```powershell
 python -m venv .venv
@@ -185,64 +222,78 @@ npm.cmd run dev
 python -m app.sidecar --request-json "{\"command\":\"resources.status\"}"
 ```
 
-## Development
+## 开发
 
-Python:
+Python 测试：
 
 ```powershell
 python -m pytest -q
 ```
 
-Frontend:
+前端构建：
 
 ```powershell
 npm.cmd run build:frontend
 ```
 
-Prepare offline resources in a networked environment:
+联网环境准备离线资源：
 
 ```powershell
 npm.cmd run prepare:offline
 ```
 
-If OCR models are temporarily unavailable during development:
+开发阶段 OCR 模型暂时缺失时：
 
 ```powershell
 npm.cmd run prepare:offline:dev
 ```
 
-Build Windows installer:
+构建 Windows 安装包：
 
 ```powershell
 npm.cmd run build
 ```
 
-The build packages the Python sidecar first, then copies it to the binary name required by Tauri.
+构建会先打包 Python sidecar，再按 Tauri 需要的二进制名复制。
 
-## Architecture
+## 技术栈
+
+| 层 | 选型 | 用途 |
+| --- | --- | --- |
+| 桌面壳 | Tauri 2 | Windows 桌面窗口与命令桥 |
+| 前端 | Vite + TypeScript | 界面与状态管理 |
+| 课表日历 | FullCalendar 6 | 交互周课表预览与拖拽修正 |
+| PDF 渲染 | pdfjs-dist | 复核页原页渲染与课程块定位 |
+| 解析引擎 | Python 3.12（PyInstaller 打包） | 文本层、版式识别、课程结构化、合并与导出 |
+| PDF 文本 | PyMuPDF | 读取 PDF 文本层 |
+| OCR | PaddleOCR（PP-OCRv4 mobile，CPU） | 文本层不足时的本地识别 |
+| 表格处理 | pandas | 占用合并与统计 |
+| Excel 导出 | openpyxl | 生成经典空课表 |
+
+## 架构
 
 ```text
-Tauri + Vite/TypeScript UI
-  -> Python sidecar command bridge
-  -> app/services workflow layer
-  -> core/schedule_core.py parser and exporter
-  -> local cache / offline OCR / Excel output
+Tauri + Vite/TypeScript 界面
+  → Python sidecar 命令桥
+  → app/services 工作流层
+  → core/schedule_core.py 解析与导出
+  → 本地缓存 / 离线 OCR / Excel 输出
 ```
 
-| Path | Responsibility |
+| 路径 | 职责 |
 | --- | --- |
-| `src/` | Desktop UI, file selection, pre-parse validation, result preview |
-| `app/sidecar.py` | Command entry called by Tauri |
-| `app/services/` | Workflow orchestration, member checks, preview, export, serialization |
-| `core/` | PDF parsing, OCR fallback, course blocks, occupancy table, Excel workbook |
-| `config/` | Calendar, period time, OCR model and reference library config |
-| `resources/` | Bundled offline manifest and OCR model directories |
-| `src-tauri/` | Tauri Windows desktop shell |
-| `tests/` | Business rules, workflow, export and resource checks |
+| `src/` | 桌面界面、文件选择、解析前校验、结果预览 |
+| `app/sidecar.py` | Tauri 调用的命令入口 |
+| `app/services/` | 工作流编排、成员检查、预览、导出、序列化 |
+| `core/` | PDF 解析、OCR 回退、课程块、占用表、Excel 工作簿 |
+| `config/` | 日历、节次时间、OCR 模型与参考库配置 |
+| `resources/` | 内置离线清单与 OCR 模型目录 |
+| `src-tauri/` | Tauri Windows 桌面壳 |
+| `tests/` | 业务规则、工作流、导出与资源检查 |
 
-## Offline Resources
+## 离线资源
 
-Release builds should include:
+发布包应包含：
 
 ```text
 config/
@@ -252,7 +303,7 @@ resources/ocr_models/PP-OCRv4_mobile_det
 resources/ocr_models/PP-OCRv4_mobile_rec
 ```
 
-At runtime, Konggu repairs resources into the user's writable app data directory:
+运行时，空谷会把资源校验并复制到用户可写的应用数据目录：
 
 ```text
 %LOCALAPPDATA%\Konggu\resources
@@ -261,64 +312,68 @@ At runtime, Konggu repairs resources into the user's writable app data directory
 %LOCALAPPDATA%\Konggu\logs
 ```
 
-By default, PaddleOCR model download is disabled. Missing models should be repaired from bundled resources or placed under the local OCR model directory.
+默认关闭 PaddleOCR 模型下载。模型缺失时应从安装包内置资源修复，或放到本地 OCR 模型目录。
 
-## Testing
+## 测试
 
-Current local verification (2026-08-08, commit `1fc6e4e`):
+最近一次验证（2026-08-08，commit `b7b4977`）：
 
 ```text
-91 passed, 2 warnings
+91 passed, 17 warnings
 ```
 
-Primary command:
+主命令：
 
 ```powershell
 python -m pytest -q
 ```
 
-The exception matrix lives in [`docs/exception-test-matrix.md`](./docs/exception-test-matrix.md). Real member PDFs should stay outside the repository and be tested through a sanitized sample library.
+异常矩阵见 [`docs/exception-test-matrix.md`](./docs/exception-test-matrix.md)。真实成员课表应放在版本库外，通过脱敏样本库测试。最新状态以 `docs/状态与质量门禁.md` 与 `MEMORY/事实.md` 为准。
 
-## Project Chronicle
+## 项目志
 
 项目从 V0.1、FastAPI 本地 Web、Web-only 收缩，到离线 Tauri 桌面端、0.3.0 和解析审计基线的完整沿革，记录在 [`《空谷项目志》`](./docs/PROJECT_CHRONICLE.md)。
 
 ## 项目治理与协作
 
-本项目长期工作规则见 [`AGENTS.md`](./AGENTS.md)，动态记忆（事实、决策、待办）见 [`MEMORY/`](./MEMORY/MEMORY.md)，参考资料库见 [`resources/reference/`](./resources/reference/README.md)，项目说明与质量门禁见 [`docs/项目说明.md`](./docs/项目说明.md) 与 [`docs/状态与质量门禁.md`](./docs/状态与质量门禁.md)，测试分层见 [`tests/README.md`](./tests/README.md)。
+长期工作规则见 [`AGENTS.md`](./AGENTS.md)，动态记忆（事实、决策、待办）见 [`MEMORY/`](./MEMORY/MEMORY.md)，参考资料库见 [`resources/reference/`](./resources/reference/README.md)，项目说明与质量门禁见 [`docs/项目说明.md`](./docs/项目说明.md) 与 [`docs/状态与质量门禁.md`](./docs/状态与质量门禁.md)，测试分层见 [`tests/README.md`](./tests/README.md)。
 
-## Roadmap
+## 路线图
 
-### Keep
+### 保留
 
-- Batch PDF import
-- Dual schedule merge
-- Member completeness check
-- Explicit abnormal state display
-- Availability preview
-- Classic Excel export
-- Offline OCR
+- 批量 PDF 导入
+- 双课表合并
+- 成员完整性检查
+- 异常状态显性展示
+- 空课预览
+- 经典 Excel 导出
+- 离线 OCR
 
-### Freeze For Now
+### 暂缓
 
-- Visual Excel style exporter
-- Complex filtering
-- Cloud sync
-- Member database
-- Activity registration
-- Attendance statistics
+- 可视化 Excel 样式导出
+- 复杂筛选
+- 云同步
+- 成员数据库
+- 活动报名
+- 考勤统计
 
-### Reject
+### 不做
 
-- Guessing schedule type when file names are unclear
-- Exporting a result that hides parse failures
-- Treating logs as a substitute for user-facing warnings
+- 文件名不清晰时猜测课表类型
+- 导出隐藏解析失败的结果
+- 用日志代替面向用户的提示
 
-## Name
+## 名称由来
 
 空谷是青禾计划孵化的课表协作产品。
 
 - “空”指空课表。
 - “谷”承接青禾从禾苗生长为谷物的意象。
 
-Konggu aims to turn scattered schedule PDFs into a clear, trustworthy, reusable group availability view.
+空谷在本地生成空课结果，每个 PDF 的来源和人工修正过程都可以回查。
+
+---
+
+最后更新：2026-08-08

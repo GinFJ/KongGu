@@ -19,10 +19,10 @@
 
 ## 三、当前状态（2026-08-08 核验）
 
-- 分支：`kongguV0.1`；提交：`1fc6e4e`（2026-07-23）
-- 版本：0.3.0
+- 分支：`kongguV0.1`；提交：`b7b4977`（Add governance layer docs and correct Konggu naming）
+- 版本：0.3.1
 - 技术栈：Tauri 2 + Vite/TypeScript + Python sidecar（PyMuPDF、PaddleOCR、pandas、openpyxl、PyInstaller）
-- 单元测试：91 passed, 2 warnings；前端构建与 cargo check：通过（详见 `事实.md`）
+- 单元测试：91 passed, 17 warnings；前端构建与 cargo check：通过（详见 `事实.md`）
 - 真实样本回归、安装包、断网运行：未验证 / 待确认
 
 ## 四、关键文件索引
