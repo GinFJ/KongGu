@@ -1,4 +1,5 @@
 from app.sidecar import dispatch
+import fitz
 
 
 def test_sidecar_resource_status_returns_json_safe_payload(tmp_path, monkeypatch):
@@ -40,3 +41,19 @@ def test_sidecar_calendar_settings_round_trip(tmp_path, monkeypatch):
     assert saved["ok"] is True
     assert saved["settings"] == {"semester_start_date": "2026-09-07", "teaching_weeks": 20}
     assert loaded["settings"] == saved["settings"]
+
+
+def test_sidecar_pdf_inspect_returns_local_structure_report(tmp_path, monkeypatch):
+    monkeypatch.setenv("KONGGU_APP_DATA_ROOT", str(tmp_path / "appdata"))
+    pdf = tmp_path / "成员甲-中方课表.pdf"
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((72, 72), "Konggu timetable Monday Week 1 course")
+    document.save(pdf)
+    document.close()
+
+    payload = dispatch({"command": "pdf.inspect", "paths": [str(pdf)]})
+
+    assert payload["ok"] is True
+    assert payload["inspections"][0]["engine"] == "firecrawl_pdf_inspector"
+    assert payload["inspections"][0]["pdf_type"] == "text_based"

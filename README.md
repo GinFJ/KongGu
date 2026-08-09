@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.3.2-116c54" />
+  <img alt="Version" src="https://img.shields.io/badge/version-0.4.0-116c54" />
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-2563eb" />
   <img alt="Desktop" src="https://img.shields.io/badge/desktop-Tauri-24c8db" />
   <img alt="Python" src="https://img.shields.io/badge/python-3.12-3776ab" />
@@ -87,6 +87,7 @@
 | :--- | :--- |
 | 批量导入 PDF | 一次选择多名成员的课表 PDF |
 | 课表类型识别 | 按文件名识别中方、英方；识别不了就拒绝解析，不静默猜测 |
+| PDF 结构检查 | 本地判断文本型、扫描型、图片型或混合型，并给出逐页 OCR 建议和原因 |
 | 本地 PDF 解析 | 优先读取文本层，文本不足时回退本地 OCR |
 | 双课表合并 | 同一成员的中方、英方课表合并为完整课程占用表 |
 | 空课预览 | 按周次、日期、星期、节次展示空闲人数和空闲成员 |
@@ -125,7 +126,8 @@
 ```mermaid
 flowchart LR
   A["收集成员课表 PDF"] --> B["导入与类型识别"]
-  B --> C["文本层提取 / 本地 OCR"]
+  B --> BI["PDF 结构检查"]
+  BI --> C["文本层提取 / 本地 OCR"]
   C --> D["中方、英方课表结构化"]
   D --> E["成员占用合并"]
   E --> F["空闲时间反推"]
@@ -138,7 +140,7 @@ flowchart LR
 | 阶段 | 数据 |
 | :--- | :--- |
 | 原始输入 | 成员提交的中方课表 PDF、英方课表 PDF |
-| 识别 | 成员姓名、课表类型、PDF 文本或 OCR 文本 |
+| 检查与识别 | 成员姓名、课表类型、PDF 类型、逐页 OCR 建议、PDF 文本或 OCR 文本 |
 | 结构化 | 成员、周次、星期、节次、课程占用 |
 | 合并占用 | 同一成员的中英双课表占用合集 |
 | 空闲结果 | 每个时段的空闲人数、空闲成员、有课成员 |
@@ -255,23 +257,25 @@ schedule.pdf
 
 **解析结果看着不对怎么办？**
 
-到 PDF 复核视图对照原页改课程块。改完必须填原因，改动会留在审计记录里。
+到 PDF 复核视图先看“PDF 结构检查”的类型、编码状态和建议 OCR 页，再对照原页修改课程块。改完必须填原因，改动会留在审计记录里。
 
 ## 当前状态与已知限制
 
 | 项目 | 状态 | 说明 |
 | :--- | :--- | :--- |
-| 单元测试 | 已验证 | 91 passed，17 warnings（2026-08-08，commit `b7b4977`） |
+| 单元测试 | 已验证 | 97 passed，2 warnings（2026-08-09，0.4.0 工作区） |
 | 前端构建 | 已验证 | `npm.cmd run build:frontend` 通过 |
 | 桌面层检查 | 已验证 | `cargo check --manifest-path src-tauri\Cargo.toml --locked` 通过 |
-| 脱敏真实样本回归 | 未验证 | 外部样本库登记 76 份，当前未挂载 |
-| 正式安装包 | 待确认 | release/ 下有 0.3.0 portable 构建，缺大小、SHA-256 与安装验证记录 |
+| 真实样本页级诊断 | 已验证 | 仓库外 70 份、109 页；PDF Inspector 与 PyMuPDF 的无文本层页集合一致 |
+| 课程块人工真值 | 未验证 | 页级诊断一致不等于课程、周次和节次准确 |
+| 正式安装包 | 未同步 | 已核验的安装包为 0.3.0，当前 0.4.0 尚未构建完整安装包 |
 | 断网与全新用户目录运行 | 未验证 | 发布级验证项，需单独执行 |
 
 已知限制：
 
 - 版式识别以中英合办常见课表为主，没覆盖到的版式会进问题门禁，不会静默放行。
 - 当前只导出经典空课表；可视化样式、复杂筛选在暂缓清单。
+- PDF Inspector 当前只提供旁路诊断，不直接改变课程块、OCR 路由或质量门禁；已完成 70 份真实样本的页级文本层对账，仍需课程块人工真值与缓存失效回归后再决定是否启用逐页 OCR。
 - 未解决的异常会阻止正式导出，这是有意的。
 
 ## 快速开始
@@ -355,6 +359,7 @@ python -m app.sidecar --request-json "{\"command\":\"resources.status\"}"
 | PDF 渲染 | pdfjs-dist | 复核页原页渲染与课程块定位 |
 | 解析引擎 | Python 3.12（PyInstaller 打包） | 文本层、版式识别、课程结构化、合并与导出 |
 | PDF 文本 | PyMuPDF | 读取 PDF 文本层 |
+| PDF 结构诊断 | pdf-inspector 0.2.6（Firecrawl，MIT） | 本地分类、逐页 OCR 原因、编码和复杂版式提示 |
 | OCR | PaddleOCR（PP-OCRv4 mobile，CPU） | 文本层不足时的本地识别 |
 | 表格处理 | pandas | 占用合并与统计 |
 | Excel 导出 | openpyxl | 生成经典空课表 |
@@ -365,6 +370,7 @@ python -m app.sidecar --request-json "{\"command\":\"resources.status\"}"
 flowchart TB
   UI["Tauri + Vite/TypeScript 界面"] --> Bridge["Python sidecar 命令桥"]
   Bridge --> Svc["app/services 工作流层"]
+  Svc --> Inspect["core/pdf_inspection.py 旁路诊断"]
   Svc --> Core["core/schedule_core.py 解析与导出"]
   Core --> Local["本地缓存 / 离线 OCR / Excel 输出"]
 ```
@@ -431,7 +437,7 @@ python -m pytest -q
 
 ### 近期重点
 
-- 挂载脱敏样本库，执行真实样本回归（登记 76 份）
+- 为正式样本库建立课程块人工真值和可脱敏固化的回归子集
 - 构建并核验正式安装包（版本、提交、大小、SHA-256）
 - 完成隐私与发布检查（真实姓名、路径、联网行为）
 - 确认正式导出的工作表与字段

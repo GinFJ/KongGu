@@ -1,7 +1,7 @@
 import { readFile } from "@tauri-apps/plugin-fs";
 import * as pdfjs from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import type { CourseRow, ParseIssue, ReviewPayload } from "./types";
+import type { CourseRow, ParseIssue, PdfInspection, ReviewPayload } from "./types";
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -15,8 +15,11 @@ export async function mountReview(
   review: ReviewPayload,
   actions: ReviewActions
 ) {
-  const activeSource = review.sources[0];
-  let activeBlock = review.blocks[0] || null;
+  let activeSource = review.sources[0];
+  const blocksForActiveSource = () => review.blocks.filter((block) =>
+    !activeSource || block.source_file === activeSource.file_name || block.source_file === activeSource.source_path
+  );
+  let activeBlock = blocksForActiveSource()[0] || review.blocks[0] || null;
   let currentPage = Math.max(1, Number(activeBlock?.page ?? 0) + 1);
   let scale = 1.15;
   let pdf: Awaited<ReturnType<typeof pdfjs.getDocument>["promise"]> | null = null;
@@ -46,6 +49,10 @@ export async function mountReview(
           <span>${qualityLabel(review.quality_state)}</span>
           <small>${review.issues.filter((issue) => !issue.confirmed).length} 项待处理</small>
         </div>
+        <section class="pdfInspection">
+          <h3>PDF 结构检查</h3>
+          <div id="inspectionSummary"></div>
+        </section>
         <section class="issueStack">
           <h3>问题清单</h3>
           ${review.issues.length ? review.issues.map((issue) => issueCard(issue)).join("") : `<p class="emptyNote">没有待复核问题。</p>`}
@@ -54,7 +61,7 @@ export async function mountReview(
           <h3>课程块修正</h3>
           <label>课程块
             <select id="blockSelect">
-              ${review.blocks.map((block) => `<option value="${escapeHtml(block.block_id)}">${escapeHtml(blockLabel(block))}</option>`).join("")}
+              ${blocksForActiveSource().map((block) => `<option value="${escapeHtml(block.block_id)}">${escapeHtml(blockLabel(block))}</option>`).join("")}
             </select>
           </label>
           <div id="blockFields"></div>
@@ -70,6 +77,7 @@ export async function mountReview(
     const bytes = await readFile(path);
     pdf = await pdfjs.getDocument({ data: bytes }).promise;
     currentPage = Math.min(currentPage, pdf.numPages);
+    renderInspection();
     await renderPage();
   }
 
@@ -99,7 +107,7 @@ export async function mountReview(
 
   function renderOverlay(width: number, height: number, rotation: number) {
     const overlay = root.querySelector<HTMLElement>("#pdfOverlay")!;
-    const blocks = review.blocks.filter((block) => Number(block.page ?? 0) + 1 === currentPage && block.bbox);
+    const blocks = blocksForActiveSource().filter((block) => Number(block.page ?? 0) + 1 === currentPage && block.bbox);
     overlay.innerHTML = blocks.map((block) => {
       const rect = transformRect(block, width, height, rotation);
       if (!rect) return "";
@@ -114,12 +122,29 @@ export async function mountReview(
   }
 
   function selectBlock(blockId: string) {
-    activeBlock = review.blocks.find((block) => block.block_id === blockId) || null;
+    activeBlock = blocksForActiveSource().find((block) => block.block_id === blockId) || null;
     if (!activeBlock) return;
     if (blockSelect) blockSelect.value = activeBlock.block_id;
     currentPage = Number(activeBlock.page ?? 0) + 1;
     renderFields();
     void renderPage();
+  }
+
+  function renderBlockOptions() {
+    if (!blockSelect) return;
+    blockSelect.innerHTML = blocksForActiveSource()
+      .map((block) => `<option value="${escapeHtml(block.block_id)}">${escapeHtml(blockLabel(block))}</option>`)
+      .join("");
+    if (activeBlock) blockSelect.value = activeBlock.block_id;
+  }
+
+  function renderInspection() {
+    const target = root.querySelector<HTMLElement>("#inspectionSummary");
+    if (!target || !activeSource) return;
+    const inspection = review.inspections.find((item) =>
+      item.source_hash === activeSource.content_hash || item.source_file === activeSource.file_name
+    );
+    target.innerHTML = inspectionCard(inspection);
   }
 
   function renderFields() {
@@ -173,7 +198,14 @@ export async function mountReview(
   root.querySelectorAll<HTMLButtonElement>("[data-confirm-issue]").forEach((button) => {
     button.addEventListener("click", () => void actions.confirm(button.dataset.confirmIssue || ""));
   });
-  sourceSelect?.addEventListener("change", () => void loadSource(sourceSelect.value));
+  sourceSelect?.addEventListener("change", () => {
+    activeSource = review.sources.find((source) => source.source_path === sourceSelect.value) || review.sources[0];
+    activeBlock = blocksForActiveSource()[0] || null;
+    currentPage = Math.max(1, Number(activeBlock?.page ?? 0) + 1);
+    renderBlockOptions();
+    renderFields();
+    void loadSource(sourceSelect.value);
+  });
   blockSelect?.addEventListener("change", () => selectBlock(blockSelect.value));
   root.querySelector("#prevPage")?.addEventListener("click", () => {
     if (currentPage > 1) { currentPage -= 1; void renderPage(); }
@@ -189,7 +221,59 @@ export async function mountReview(
   });
 
   renderFields();
+  renderInspection();
   if (activeSource) await loadSource(activeSource.source_path);
+}
+
+function inspectionCard(inspection?: PdfInspection) {
+  if (!inspection) return `<p class="emptyNote">本次任务没有可用的 PDF 结构检查记录。</p>`;
+  if (inspection.status !== "ready") {
+    return `<article class="inspectionCard unavailable"><b>检查未完成</b><p>${escapeHtml(inspection.error || "未取得诊断结果")}</p></article>`;
+  }
+  const ocrPages = inspection.pages_needing_ocr.length ? inspection.pages_needing_ocr.join("、") : "无";
+  const reasons = inspection.ocr_reasons_by_page.map((item) =>
+    `第 ${item.page} 页：${item.reasons.map(reasonLabel).join("、")}`
+  );
+  return `<article class="inspectionCard ${escapeHtml(inspection.pdf_type)}">
+    <div class="inspectionGrid">
+      <span>类型<b>${escapeHtml(pdfTypeLabel(inspection.pdf_type))}</b></span>
+      <span>页数<b>${inspection.page_count}</b></span>
+      <span>建议 OCR 页<b>${escapeHtml(ocrPages)}</b></span>
+      <span>文本编码<b>${inspection.has_encoding_issues ? "需检查" : "未发现异常"}</b></span>
+    </div>
+    ${reasons.length ? `<ul>${reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>` : `<p>当前未发现需要 OCR 的页面。</p>`}
+    <small>${escapeHtml(engineLabel(inspection.engine))} ${escapeHtml(inspection.engine_version)} · 分类置信度 ${(inspection.confidence * 100).toFixed(0)}%</small>
+    ${inspection.warning ? `<p class="inspectionWarning">${escapeHtml(inspection.warning)}</p>` : ""}
+  </article>`;
+}
+
+function pdfTypeLabel(value: string) {
+  const labels: Record<string, string> = {
+    text_based: "原生文本型",
+    scanned: "扫描型",
+    image_based: "图片型",
+    mixed: "混合型",
+    unknown: "未确定"
+  };
+  return labels[value] || value;
+}
+
+function reasonLabel(value: string) {
+  const labels: Record<string, string> = {
+    scanned: "扫描页",
+    no_text: "无可靠文本层",
+    vector_text: "矢量轮廓文字",
+    suspected_garbled_text: "疑似乱码文本",
+    sparse_text: "文本过少",
+    full_page_image: "整页图片"
+  };
+  return labels[value] || value;
+}
+
+function engineLabel(value: string) {
+  if (value === "firecrawl_pdf_inspector") return "PDF Inspector";
+  if (value === "pymupdf_fallback") return "PyMuPDF 回退检查";
+  return value || "检查引擎未知";
 }
 
 function transformRect(block: CourseRow, width: number, height: number, rotation: number) {

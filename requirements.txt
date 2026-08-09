@@ -1,6 +1,7 @@
 pandas
 openpyxl
 PyMuPDF
+pdf-inspector==0.2.6
 numpy
 paddlepaddle
 paddleocr

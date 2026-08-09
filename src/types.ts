@@ -49,6 +49,26 @@ export type CourseRow = {
   confidence?: number;
 };
 
+export type PdfInspection = {
+  source_file: string;
+  source_hash: string;
+  status: "ready" | "skipped" | "unavailable";
+  engine: string;
+  engine_version: string;
+  pdf_type: string;
+  confidence: number;
+  page_count: number;
+  pages_needing_ocr: number[];
+  ocr_reasons_by_page: Array<{ page: number; reasons: string[] }>;
+  has_encoding_issues: boolean;
+  is_complex_layout: boolean;
+  pages_with_tables: number[];
+  pages_with_columns: number[];
+  processing_time_ms: number;
+  warning: string;
+  error: string;
+};
+
 export type ParseResult = {
   ok: boolean;
   result_ref: string;
@@ -80,6 +100,7 @@ export type ReviewPayload = {
     source_path: string;
     content_hash: string;
   }>;
+  inspections: PdfInspection[];
   blocks: CourseRow[];
   issues: ParseIssue[];
   corrections: Array<Record<string, unknown>>;

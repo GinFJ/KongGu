@@ -23,6 +23,8 @@ from app.services.desktop_workflow import (
 from app.services.job_service import JobCoordinator
 from app.services.review_service import apply_correction, confirm_issue, get_review_payload
 from app.services.state_store import StateStore
+from core.models import PdfSource
+from core.pdf_inspection import inspect_pdf_sources
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -67,6 +69,15 @@ def dispatch(
     if command == "settings.calendar.save":
         settings = save_calendar_settings(paths, dict(request.get("settings") or {}))
         return {"ok": True, "settings": settings}
+    if command == "pdf.inspect":
+        source_paths = [Path(str(item)).resolve() for item in (request.get("paths") or []) if str(item).strip()]
+        if not source_paths:
+            raise ValueError("请提供需要检查的 PDF 路径。")
+        invalid = [path.name for path in source_paths if path.suffix.lower() != ".pdf" or not path.is_file()]
+        if invalid:
+            raise ValueError("PDF 路径无效：" + "、".join(invalid))
+        sources = [PdfSource(path.name, "中方", str(path)) for path in source_paths]
+        return {"ok": True, "inspections": inspect_pdf_sources(sources)}
 
     apply_calendar_settings(load_calendar_settings(paths))
     ephemeral = coordinator is None

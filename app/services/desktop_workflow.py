@@ -22,6 +22,7 @@ from core.quality import assert_export_allowed, evaluate_quality
 from core.signature import build_parser_signature
 from core.runtime_control import cancellation_scope
 from core.models import ProcessResult
+from core.pdf_inspection import inspect_pdf_sources
 
 
 WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -75,6 +76,10 @@ def parse_pdf_paths(
         raise ValueError("PDF 文件读取失败，请检查文件是否可访问。")
 
     if progress:
+        progress("pdf_inspection", 0, len(add_result.added), "正在检查 PDF 类型、文本层和逐页 OCR 建议")
+    pdf_inspections = inspect_pdf_sources(add_result.added)
+
+    if progress:
         progress("course_parse", 0, len(add_result.added), "正在解析课程占用槽")
     with cancellation_scope(cancelled):
         generation = generate_availability(
@@ -82,6 +87,7 @@ def parse_pdf_paths(
             selected_sources=add_result.added,
             root_dir="",
             weekdays=WEEKDAYS,
+            pdf_inspections=pdf_inspections,
         )
     if cancelled and cancelled():
         raise InterruptedError("任务已取消。")
@@ -104,6 +110,7 @@ def parse_pdf_paths(
         calendar_df=generation.calendar_df,
     )
     warnings = _collect_result_warnings(process_result, [*warnings, *generation.errors])
+    warnings.extend(_inspection_warnings(generation.pdf_inspections))
     errors.extend(generation.errors or [])
     signature = build_parser_signature()
     quality_state, issues = evaluate_quality(
@@ -275,6 +282,32 @@ def serialize_workflow_result(workflow_result: DesktopWorkflowResult, result_ref
     payload["detected_weeks"] = detected_weeks
     payload["detected_week_count"] = len(detected_weeks)
     payload["detected_max_week"] = max(detected_weeks) if detected_weeks else 0
+    inspection_by_hash = {
+        str(item.get("source_hash") or ""): item
+        for item in workflow_result.generation_result.pdf_inspections
+        if item.get("source_hash")
+    }
+    inspection_by_name = {
+        str(item.get("source_file") or ""): item
+        for item in workflow_result.generation_result.pdf_inspections
+        if item.get("source_file")
+    }
+    for detail in payload.get("details", []):
+        inspection = inspection_by_hash.get(str(detail.get("source_hash") or "")) or inspection_by_name.get(
+            str(detail.get("filename") or "")
+        )
+        if not inspection:
+            continue
+        detail.update(
+            {
+                "pdf_type": inspection.get("pdf_type", "unknown"),
+                "page_count": inspection.get("page_count", 0),
+                "ocr_pages": ", ".join(str(page) for page in inspection.get("pages_needing_ocr", [])) or "无需",
+                "encoding_issues": "是" if inspection.get("has_encoding_issues") else "否",
+                "inspection_engine": inspection.get("engine", ""),
+                "inspection_status": inspection.get("status", "unavailable"),
+            }
+        )
     return payload
 
 
@@ -294,6 +327,20 @@ def _collect_result_warnings(result: ProcessResult, generation_errors: list[str]
             message = record.display_result or "未识别到有效课程块"
             warnings.append(f"{record.source.file_name}: {message}")
     return [str(warning) for warning in warnings if warning]
+
+
+def _inspection_warnings(inspections: list[dict[str, Any]]) -> list[str]:
+    warnings: list[str] = []
+    for inspection in inspections:
+        source_file = str(inspection.get("source_file") or "PDF")
+        if inspection.get("has_encoding_issues"):
+            warnings.append(f"{source_file}: PDF 文本层存在编码异常，已保留逐页 OCR 建议供复核。")
+        if inspection.get("status") != "ready":
+            message = str(inspection.get("error") or "未能完成结构检查")
+            warnings.append(f"{source_file}: {message}")
+        elif inspection.get("warning"):
+            warnings.append(f"{source_file}: {inspection['warning']}")
+    return warnings
 
 
 def _detected_weeks(blocks: list[dict[str, Any]]) -> list[int]:

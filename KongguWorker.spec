@@ -11,6 +11,7 @@ datas = [
 ]
 datas += collect_data_files("paddlex", includes=["configs/**/*.yaml", "configs/**/*.yml"])
 datas += collect_data_files("paddleocr", includes=["**/*.yaml", "**/*.yml"])
+datas += copy_metadata("pdf-inspector")
 for metadata_package in [
     "paddlex",
     "paddleocr",
@@ -24,6 +25,7 @@ for metadata_package in [
     datas += copy_metadata(metadata_package)
 
 binaries = collect_dynamic_libs("paddle")
+binaries += collect_dynamic_libs("pdf_inspector")
 
 a = Analysis(
     ["app/sidecar.py"],
@@ -35,6 +37,7 @@ a = Analysis(
         "paddle",
         "cv2",
         "fitz",
+        "pdf_inspector",
         "openpyxl",
     ],
     hookspath=[],

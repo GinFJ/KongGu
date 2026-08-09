@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Konggu",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "identifier": "cn.konggu.desktop",
   "build": {
     "beforeDevCommand": "npm.cmd run dev:frontend",
