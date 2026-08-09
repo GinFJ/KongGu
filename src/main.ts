@@ -408,7 +408,7 @@ function renderTabShell() {
     return table(result.members, ["member", "department", "role", "member_key", "chinese_schedule", "english_schedule", "course_block_count", "status"]);
   }
   if (state.activeTab === "files") {
-    return table(result.details, ["filename", "member", "source_type", "layout_profile", "course_block_count", "quality_state", "status", "warning"]);
+    return table(result.details, ["filename", "member", "source_type", "pdf_type", "page_count", "ocr_pages", "encoding_issues", "layout_profile", "course_block_count", "quality_state", "status", "warning"]);
   }
   if (state.activeTab === "issues") {
     if (!result.issues.length) return `<div class="emptyPanel"><b>没有质量问题</b><span>当前结果可以进入正式导出。</span></div>`;
@@ -449,6 +449,7 @@ function inferKind(path: string) {
 function stageLabel(stage: string) {
   const labels: Record<string, string> = {
     boot: "启动", ready: "就绪", queued: "排队", waiting: "等待", text_layer: "读取文本层",
+    pdf_inspection: "PDF 结构检查",
     profile: "识别版式", ocr: "离线 OCR", course_parse: "课程解析", review: "人工复核",
     completed: "完成", failed: "失败", cancelling: "正在取消", cancelled: "已取消", interrupted: "已中断"
   };

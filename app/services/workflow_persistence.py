@@ -50,6 +50,7 @@ def snapshot_workflow(workflow_result: Any) -> dict[str, Any]:
                 "weeks": generation.weeks,
                 "errors": generation.errors,
                 "elapsed_seconds": generation.elapsed_seconds,
+                "pdf_inspections": generation.pdf_inspections,
             },
             "quality_state": process.quality_state,
             "issues": [asdict(issue) for issue in process.issues],
@@ -116,6 +117,7 @@ def restore_workflow(snapshot: dict[str, Any], schedule_core: Any) -> Any:
         member_schedules=members,
         file_records=file_records,
         elapsed_seconds=float(data.get("elapsed_seconds") or 0),
+        pdf_inspections=[dict(item) for item in data.get("pdf_inspections", [])],
     )
     process = build_gui_process_result(
         course_blocks=course_blocks,

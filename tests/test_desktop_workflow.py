@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 
 from app.services.desktop_workflow import export_excel, parse_pdf_paths, serialize_workflow_result
+from app.services.workflow_persistence import snapshot_workflow
 
 
 class FakeDesktopCore:
@@ -66,6 +67,7 @@ def test_desktop_workflow_parse_serializes_and_exports(tmp_path: Path):
 
     result = parse_pdf_paths(schedule_core=core, paths=[str(pdf)])
     payload = serialize_workflow_result(result, "result.pkl")
+    snapshot = snapshot_workflow(result)
     exported = export_excel(
         schedule_core=core,
         workflow_result=result,
@@ -79,6 +81,9 @@ def test_desktop_workflow_parse_serializes_and_exports(tmp_path: Path):
     assert payload["detected_max_week"] == 3
     assert payload["members"][0]["member"] == "张三"
     assert payload["availability_preview"][0]["周次"] == 3
+    assert payload["details"][0]["inspection_status"] == "unavailable"
+    assert payload["details"][0]["pdf_type"] == "unknown"
+    assert snapshot["generation"]["pdf_inspections"][0]["status"] == "unavailable"
     assert exported.name == "空课结果.xlsx"
     assert exported.read_bytes() == b"xlsx"
 

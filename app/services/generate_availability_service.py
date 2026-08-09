@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import pandas as pd
@@ -15,6 +15,7 @@ from core.legacy_adapter import (
     model_sources_to_legacy,
 )
 from core.models import CourseBlock, FileProcessRecord, MemberSchedule, PdfSource
+from core.pdf_inspection import inspect_pdf_sources
 
 
 @dataclass(slots=True)
@@ -35,6 +36,7 @@ class AvailabilityGenerationResult:
     member_schedules: list[MemberSchedule]
     file_records: list[FileProcessRecord]
     elapsed_seconds: float
+    pdf_inspections: list[dict[str, Any]] = field(default_factory=list)
 
 
 def generate_availability(
@@ -43,6 +45,7 @@ def generate_availability(
     selected_sources: list[PdfSource],
     root_dir: str,
     weekdays: list[str],
+    pdf_inspections: list[dict[str, Any]] | None = None,
 ) -> AvailabilityGenerationResult:
     """Parse selected or directory-discovered PDFs and build availability tables."""
 
@@ -55,6 +58,8 @@ def generate_availability(
 
     if not model_sources:
         raise ValueError("请先添加课表 PDF，或选择一个包含课表 PDF 的本地目录。")
+
+    inspections = list(pdf_inspections) if pdf_inspections is not None else inspect_pdf_sources(model_sources)
 
     legacy_sources = model_sources_to_legacy(model_sources)
     blocks, calendar_df, errors, preview_df = schedule_core.parse_actual_pdf_sources(
@@ -125,6 +130,7 @@ def generate_availability(
         member_schedules=member_schedules,
         file_records=file_records,
         elapsed_seconds=elapsed,
+        pdf_inspections=inspections,
     )
 
 

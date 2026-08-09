@@ -48,6 +48,7 @@ def get_review_payload(store: StateStore, job_id: str) -> dict[str, Any]:
         "quality_state": job.get("quality_state"),
         "parser_signature": signature,
         "sources": generation.get("sources", []),
+        "inspections": generation.get("pdf_inspections", []),
         "blocks": generation.get("blocks", []),
         "issues": issues,
         "corrections": corrections,
