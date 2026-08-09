@@ -17,13 +17,14 @@
 - 出现错误时修复解析器、预检、配置、质量规则或回归体系，不手工修补单个输出文件。
 - 正式结果必须通过质量门禁。
 
-## 三、当前状态（2026-08-08 核验）
+## 三、当前状态（2026-08-09 核验）
 
-- 分支：`kongguV0.1`；提交：`b7b4977`（Add governance layer docs and correct Konggu naming）
-- 版本：0.3.2
-- 技术栈：Tauri 2 + Vite/TypeScript + Python sidecar（PyMuPDF、PaddleOCR、pandas、openpyxl、PyInstaller）
-- 单元测试：91 passed, 17 warnings；前端构建与 cargo check：通过（详见 `事实.md`）
-- 真实样本回归、安装包、断网运行：未验证 / 待确认
+- 分支：`kongguV0.1`；0.4.0 功能提交：`e7ab4ef`（feat: add local PDF structure diagnostics）
+- 源码版本：0.4.0（PDF Inspector 旁路诊断已提交并验证，未建立标签、未发布）
+- 技术栈：Tauri 2 + Vite/TypeScript + Python sidecar（PyMuPDF、pdf-inspector、PaddleOCR、pandas、openpyxl、PyInstaller）
+- Python 全量测试 97 passed、2 warnings；前端构建、cargo check 与 PyInstaller sidecar 冻结通过（详见 `事实.md`）
+- 真实样本库：已在仓库外整理；70 份 PDF 组成 35 组完整中英课表，8 份来源或配对异常文件已阻断；人工真值基线仍未建立
+- 安装包版本同步、断网运行：未验证 / 待确认
 
 ## 四、关键文件索引
 
@@ -36,6 +37,6 @@
 
 ## 五、最近一次维护
 
-- 日期：2026-08-08
-- 内容：按「空谷优化包」落地治理层：合并版 AGENTS.md、MEMORY 四文件、参考库与配套文档，并完成基线验证。
-- 证据状态：文件已生成；测试与构建结果见 `事实.md`。
+- 日期：2026-08-09
+- 内容：在保留仓库外真实样本库整理结果的基础上，研究并接入 Firecrawl PDF Inspector 0.2.6 旁路诊断，新增逐页 OCR 建议、编码异常和复杂版式检查、复核侧栏展示及 PyMuPDF 回退；源码版本升至 0.4.0。
+- 证据状态：全量测试、前端、cargo、sidecar 冻结与 70 份真实样本页级旁路对账通过；人工课程块真值准确率仍未核验。
