@@ -1,0 +1,58 @@
+{
+  "_description": "De-identified sample ID to external file path mapping. All member names have been replaced with synthetic identifiers to protect privacy. Updated 2026-08-10: removed 3 incomplete members, demoted 2 duplicate-name Chinese PDFs to single-side only.",
+  "_version": "1.1",
+  "_created": "2026-08-10",
+  "_updated": "2026-08-10",
+  "_privacy_note": "All names in this file are synthetic identifiers. The original names exist only in the external reference library (not in the repository).",
+  "accepted": {
+    "S-CN-01": {"chinese": "办公室/部长/中方课表/办公室-成员01-部长-中方课表.pdf", "english": "办公室/部长/英方课表/办公室-成员01-部长-英方课表.pdf", "department": "办公室", "role": "部长"},
+    "S-CN-02": {"chinese": "办公室/部长/中方课表/办公室-成员02-部长-中方课表.pdf", "english": "办公室/部长/英方课表/办公室-成员02-部长-英方课表.pdf", "department": "办公室", "role": "部长"},
+    "S-CN-03": {"chinese": "办公室/干事/中方课表/办公室-成员03-干事-中方课表.pdf", "english": "办公室/干事/英方课表/办公室-成员03-干事-英方课表.pdf", "department": "办公室", "role": "干事"},
+    "S-CN-04": {"chinese": "办公室/干事/中方课表/办公室-成员04-干事-中方课表.pdf", "english": "办公室/干事/英方课表/办公室-成员04-干事-英方课表.pdf", "department": "办公室", "role": "干事"},
+    "S-CN-05": {"chinese": "办公室/干事/中方课表/办公室-成员05-干事-中方课表.pdf", "english": "办公室/干事/英方课表/办公室-成员05-干事-英方课表.pdf", "department": "办公室", "role": "干事"},
+    "S-CN-06": {"chinese": "办公室/干事/中方课表/办公室-成员06-干事-中方课表.pdf", "english": "办公室/干事/英方课表/办公室-成员06-干事-英方课表.pdf", "department": "办公室", "role": "干事"},
+    "S-CN-07": {"chinese": "活动部/部长/中方课表/活动部-成员07-部长-中方课表.pdf", "english": "活动部/部长/英方课表/活动部-成员07-部长-英方课表.pdf", "department": "活动部", "role": "部长"},
+    "S-CN-08": {"chinese": "活动部/部长/中方课表/活动部-成员08-部长-中方课表.pdf", "english": "活动部/部长/英方课表/活动部-成员08-部长-英方课表.pdf", "department": "活动部", "role": "部长"},
+    "S-CN-09": {"chinese": "活动部/干事/中方课表/活动部-成员09-干事-中方课表.pdf", "english": "活动部/干事/英方课表/活动部-成员09-干事-英方课表.pdf", "department": "活动部", "role": "干事"},
+    "S-CN-10": {"chinese": "活动部/干事/中方课表/活动部-成员10-干事-中方课表.pdf", "english": "活动部/干事/英方课表/活动部-成员10-干事-英方课表.pdf", "department": "活动部", "role": "干事"},
+    "S-CN-11": {"chinese": "活动部/干事/中方课表/活动部-成员11-干事-中方课表.pdf", "english": "活动部/干事/英方课表/活动部-成员11-干事-英方课表.pdf", "department": "活动部", "role": "干事"},
+    "S-CN-12": {"chinese": "活动部/干事/中方课表/活动部-成员12-干事-中方课表.pdf", "english": "活动部/干事/英方课表/活动部-成员12-干事-英方课表.pdf", "department": "活动部", "role": "干事"},
+    "S-CN-13": {"chinese": "活动部/干事/中方课表/活动部-成员13-干事-中方课表.pdf", "english": "活动部/干事/英方课表/活动部-成员13-干事-英方课表.pdf", "department": "活动部", "role": "干事"},
+    "S-CN-14": {"chinese": "活动部/干事/中方课表/活动部-成员14-干事-中方课表.pdf", "english": "活动部/干事/英方课表/活动部-成员14-干事-英方课表.pdf", "department": "活动部", "role": "干事"},
+    "S-CN-15": {"chinese": "活动部/干事/中方课表/活动部-成员15-干事-中方课表.pdf", "english": "活动部/干事/英方课表/活动部-成员15-干事-英方课表.pdf", "department": "活动部", "role": "干事"},
+    "S-CN-16": {"chinese": "活动部/干事/中方课表/活动部-成员16-干事-中方课表.pdf", "english": "活动部/干事/英方课表/活动部-成员16-干事-英方课表.pdf", "department": "活动部", "role": "干事"},
+    "S-CN-17": {"chinese": "活动部/干事/中方课表/活动部-成员17-干事-中方课表.pdf", "english": "活动部/干事/英方课表/活动部-成员17-干事-英方课表.pdf", "department": "活动部", "role": "干事"},
+    "S-CN-18": {"chinese": "外联部/部长/中方课表/外联部-成员18-部长-中方课表.pdf", "english": "外联部/部长/英方课表/外联部-成员18-部长-英方课表.pdf", "department": "外联部", "role": "部长"},
+    "S-CN-19": {"chinese": "外联部/部长/中方课表/外联部-成员19-部长-中方课表.pdf", "english": "外联部/部长/英方课表/外联部-成员19-部长-英方课表.pdf", "department": "外联部", "role": "部长"},
+    "S-CN-20": {"chinese": "外联部/干事/中方课表/外联部-成员20-干事-中方课表.pdf", "english": "外联部/干事/英方课表/外联部-成员20-干事-英方课表.pdf", "department": "外联部", "role": "干事"},
+    "S-CN-21": {"chinese": "外联部/干事/中方课表/外联部-成员21-干事-中方课表.pdf", "english": "外联部/干事/英方课表/外联部-成员21-干事-英方课表.pdf", "department": "外联部", "role": "干事"},
+    "S-CN-22": {"chinese": "外联部/干事/中方课表/外联部-成员22-干事-中方课表.pdf", "english": "外联部/干事/英方课表/外联部-成员22-干事-英方课表.pdf", "department": "外联部", "role": "干事"},
+    "S-CN-23": {"chinese": "外联部/干事/中方课表/外联部-成员23-干事-中方课表.pdf", "english": "外联部/干事/英方课表/外联部-成员23-干事-英方课表.pdf", "department": "外联部", "role": "干事"},
+    "S-CN-24": {"chinese": "外联部/干事/中方课表/外联部-成员24-干事-中方课表.pdf", "english": "外联部/干事/英方课表/外联部-成员24-干事-英方课表.pdf", "department": "外联部", "role": "干事"},
+    "S-CN-25": {"chinese": "外联部/干事/中方课表/外联部-成员25-干事-中方课表.pdf", "english": "外联部/干事/英方课表/外联部-成员25-干事-英方课表.pdf", "department": "外联部", "role": "干事"},
+    "S-CN-26": {"chinese": "外联部/干事/中方课表/外联部-成员26-干事-中方课表.pdf", "english": "外联部/干事/英方课表/外联部-成员26-干事-英方课表.pdf", "department": "外联部", "role": "干事"},
+    "S-CN-27": {"chinese": "外联部/干事/中方课表/外联部-成员27-干事-中方课表.pdf", "english": "外联部/干事/英方课表/外联部-成员27-干事-英方课表.pdf", "department": "外联部", "role": "干事"},
+    "S-CN-28": {"chinese": "外联部/干事/中方课表/外联部-成员28-干事-中方课表.pdf", "english": "外联部/干事/英方课表/外联部-成员28-干事-英方课表.pdf", "department": "外联部", "role": "干事"},
+    "S-CN-29": {"chinese": "宣传部/部长/中方课表/宣传部-成员29-部长-中方课表.pdf", "english": "宣传部/部长/英方课表/宣传部-成员29-部长-英方课表.pdf", "department": "宣传部", "role": "部长"},
+    "S-CN-30": {"chinese": "宣传部/部长/中方课表/宣传部-成员30-部长-中方课表.pdf", "english": "宣传部/部长/英方课表/宣传部-成员30-部长-英方课表.pdf", "department": "宣传部", "role": "部长"},
+    "S-CN-31": {"chinese": "宣传部/干事/中方课表/宣传部-成员31-干事-中方课表.pdf", "english": "宣传部/干事/英方课表/宣传部-成员31-干事-英方课表.pdf", "department": "宣传部", "role": "干事"},
+    "S-CN-32": {"chinese": "宣传部/干事/中方课表/宣传部-成员32-干事-中方课表.pdf", "english": "宣传部/干事/英方课表/宣传部-成员32-干事-英方课表.pdf", "department": "宣传部", "role": "干事"},
+    "S-CN-33": {"chinese": "宣传部/干事/中方课表/宣传部-成员33-干事-中方课表.pdf", "english": "宣传部/干事/英方课表/宣传部-成员33-干事-英方课表.pdf", "department": "宣传部", "role": "干事"},
+    "S-CN-34": {"chinese": "宣传部/干事/中方课表/宣传部-成员34-干事-中方课表.pdf", "english": "宣传部/干事/英方课表/宣传部-成员34-干事-英方课表.pdf", "department": "宣传部", "role": "干事"},
+    "S-CN-35": {"chinese": "宣传部/干事/中方课表/宣传部-成员35-干事-中方课表.pdf", "english": "宣传部/干事/英方课表/宣传部-成员35-干事-英方课表.pdf", "department": "宣传部", "role": "干事"}
+  },
+  "single_side_only": {
+    "S-ONLY-01": {"file": "活动部/干事/英方课表/活动部-成员A-干事-英方课表.pdf", "sha256": "fdbe72884829cfe2deb5511703c8d619ca6861ef5f0115acf071c05498e77826", "reason": "英方仅单方，中方因同内容异姓名争议降级", "department": "活动部", "role": "干事"},
+    "S-ONLY-02": {"file": "活动部/干事/英方课表/活动部-成员B-干事-英方课表.pdf", "sha256": "2b0d7b32d72709ba465190d658aabb2ab8c0ef92167ca3ebde4069b03294d6b4", "reason": "英方仅单方，中方因同内容异姓名争议降级", "department": "活动部", "role": "干事"}
+  },
+  "blocked": {
+    "S-BLK-01": {"file": "活动部/干事/中方课表/活动部-成员A-干事-中方课表.pdf", "sha256": "6fc671c5161565380e6fd67d71004be296f98191bb6687a52c14a9560b98a6b1", "reason": "同内容异姓名，与S-BLK-02完全相同", "department": "活动部", "role": "干事"},
+    "S-BLK-02": {"file": "活动部/干事/中方课表/活动部-成员B-干事-中方课表.pdf", "sha256": "6fc671c5161565380e6fd67d71004be296f98191bb6687a52c14a9560b98a6b1", "reason": "同内容异姓名，与S-BLK-01完全相同", "department": "活动部", "role": "干事"},
+    "S-BLK-03": {"file": "外联部/干事/中方课表/路人甲_2026-03-19_外联部-成员26-干事-中方课表.pdf", "sha256": "61620b21c78b6fc59e6949f65cc3eb249fb4e0ed1c9101f8f2b92546bff70142", "reason": "占位文件名", "department": "外联部", "role": "干事"}
+  },
+  "removed": {
+    "办公室-成员X-干事": {"file": "办公室/干事/英方课表/办公室-成员X-干事-英方课表.pdf", "sha256": "3a3f45f5f6cb5cf29f5d3ee805910a6e67356a7643811205e41afa687bae7601", "reason": "不完整成员-缺中方，2026-08-10移除"},
+    "办公室-成员Y-干事": {"file": "办公室/干事/中方课表/办公室-成员Y-干事-中方课表.pdf", "sha256": "06d275bb4e6a9b621a50f67db20eab258d32e88a61e4a6f57fd9739b25f65997", "reason": "不完整成员-缺英方，2026-08-10移除"},
+    "宣传部-成员Z-干事": {"file": "宣传部/干事/英方课表/宣传部-成员Z-干事-英方课表.pdf", "sha256": "f74617c646265794fa74cfc12cef74848692a274ed473baab4fb5b2ca65340e2", "reason": "不完整成员-缺中方，2026-08-10移除"}
+  }
+}

@@ -67,14 +67,14 @@ def test_file_records_match_by_inferred_member_name_when_source_file_missing():
     blocks = course_blocks_from_legacy(
         [
             {
-                "name": "刘金富",
+                "name": "张三",
                 "source_type": "中方",
                 "week": 3,
                 "weekday": "周一",
                 "periods": [1],
             },
             {
-                "name": "张三",
+                "name": "李四",
                 "source_type": "中方",
                 "week": 3,
                 "weekday": "周二",
@@ -83,13 +83,13 @@ def test_file_records_match_by_inferred_member_name_when_source_file_missing():
         ]
     )
     records = build_file_records(
-        [PdfSource("办公室-刘金富-部长-中方课表.pdf", "中方", "D:/fake.pdf")],
+        [PdfSource("办公室-张三-部长-中方课表.pdf", "中方", "D:/fake.pdf")],
         blocks,
         [],
     )
 
-    assert infer_member_name_from_filename("办公室-刘金富-部长-中方课表.pdf") == "刘金富"
-    assert records[0].member_name == "刘金富"
+    assert infer_member_name_from_filename("办公室-张三-部长-中方课表.pdf") == "张三"
+    assert records[0].member_name == "张三"
     assert records[0].block_count == 1
 
 
