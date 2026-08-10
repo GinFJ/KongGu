@@ -2,7 +2,7 @@
   "name": "Konggu reference library",
   "root_path": "reference_library",
   "description": "Local schedule PDF reference library. Keep real source PDFs outside the repository and configure this path locally before precaching.",
-  "expected_pdf_count": 76,
-  "expected_chinese_pdf_count": 38,
-  "expected_english_pdf_count": 38
+  "expected_pdf_count": 70,
+  "expected_chinese_pdf_count": 35,
+  "expected_english_pdf_count": 35
 }

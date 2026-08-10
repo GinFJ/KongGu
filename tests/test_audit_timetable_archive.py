@@ -15,9 +15,9 @@ def _load_audit_module():
 
 def test_inventory_marks_same_content_different_names(tmp_path: Path):
     audit = _load_audit_module()
-    first = tmp_path / "活动部-王婧琪-干事-中方课表.pdf"
-    second = tmp_path / "活动部-苏筱羽-干事-中方课表.pdf"
-    third = tmp_path / "活动部-唐洋-部长-英方课表.pdf"
+    first = tmp_path / "活动部-张三-干事-中方课表.pdf"
+    second = tmp_path / "活动部-李四-干事-中方课表.pdf"
+    third = tmp_path / "活动部-王五-部长-英方课表.pdf"
     first.write_bytes(b"same-pdf-bytes")
     second.write_bytes(b"same-pdf-bytes")
     third.write_bytes(b"different-pdf-bytes")
@@ -26,7 +26,7 @@ def test_inventory_marks_same_content_different_names(tmp_path: Path):
     duplicates = [row for row in rows if "duplicate_content" in str(row["suspicious"])]
 
     assert len(duplicates) == 2
-    assert {row["name"] for row in duplicates} == {"王婧琪", "苏筱羽"}
+    assert {row["name"] for row in duplicates} == {"张三", "李四"}
     assert all("duplicate_name_mismatch" in str(row["suspicious"]) for row in duplicates)
     assert len({row["duplicate_group"] for row in duplicates}) == 1
     assert audit.inventory_summary(rows)["duplicate_name_mismatch"] == 2
@@ -67,10 +67,10 @@ def test_parse_inventory_preflight_rejects_duplicate_name_mismatch(monkeypatch):
     monkeypatch.setattr(audit.schedule_core, "parse_actual_pdf_sources", fail_if_parser_runs)
     rows = [
         {
-            "path": "活动部-王婧琪-干事-中方课表.pdf",
-            "relative_path": "活动部/干事/中方课表/活动部-王婧琪-干事-中方课表.pdf",
+            "path": "活动部-张三-干事-中方课表.pdf",
+            "relative_path": "活动部/干事/中方课表/活动部-张三-干事-中方课表.pdf",
             "inferred_kind": "中方",
-            "name": "王婧琪",
+            "name": "张三",
             "suspicious": "duplicate_content;duplicate_name_mismatch",
         }
     ]

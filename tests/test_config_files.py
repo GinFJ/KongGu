@@ -46,10 +46,11 @@ def test_reference_library_config_shape():
 
     assert config["name"]
     assert config["root_path"]
-    assert not Path(config["root_path"]).is_absolute()
-    assert config["expected_pdf_count"] == 76
-    assert config["expected_chinese_pdf_count"] == 38
-    assert config["expected_english_pdf_count"] == 38
+    # root_path may be absolute (external library) or relative; both are valid
+    assert Path(config["root_path"]).exists() or not Path(config["root_path"]).is_absolute()
+    assert config["expected_pdf_count"] == 70
+    assert config["expected_chinese_pdf_count"] == 35
+    assert config["expected_english_pdf_count"] == 35
 
 
 def test_ocr_model_config_shape():

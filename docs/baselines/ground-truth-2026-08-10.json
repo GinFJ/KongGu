@@ -1,0 +1,282 @@
+{
+  "_description": "Human-annotated ground truth baseline for Konggu schedule parser evaluation. Each sample records the manually verified occupied time slots. annotation_status must be 'verified' before the sample contributes to accuracy metrics.",
+  "_version": "1.0",
+  "_created": "2026-08-10",
+  "_governance": {
+    "auto_accepted_is_not_accuracy": "auto_accepted means parser + source pairing gates passed; it does NOT mean course blocks are correct.",
+    "verification_method": "Each sample requires a human to compare the parsed occupied_slots against the original PDF, checking week, weekday, period, and course name.",
+    "reviewer": "待指定",
+    "review_date": null
+  },
+  "samples": [
+    {
+      "sample_id": "S-CN-01",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-02",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-03",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-04",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "图片型课表，OCR解析",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-05",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-06",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-07",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "图片型课表，OCR解析",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-08",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-09",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-10",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "图片型课表，OCR解析",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-11",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-12",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-13",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "图片型课表，OCR解析",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-14",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-15",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-16",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-17",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "图片型课表，OCR解析",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-18",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "部分OCR（英方图片型）",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-19",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "图片型课表，OCR解析",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-20",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-21",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-22",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-23",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-24",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-25",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-26",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-27",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-28",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-29",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "部分OCR（英方图片型）",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-30",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "部分OCR（英方图片型）",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-31",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "部分OCR（中方图片型）",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-32",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-33",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-34",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "图片型课表，OCR解析",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-CN-35",
+      "annotation_status": "pending",
+      "profile": "grid",
+      "notes": "部分OCR（中方图片型）",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-BLK-05",
+      "annotation_status": "pending",
+      "profile": "unknown",
+      "expected_quality_state": "blocked",
+      "notes": "同内容异姓名，需人工确认真实归属后决定是否可以解封",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-BLK-06",
+      "annotation_status": "pending",
+      "profile": "unknown",
+      "expected_quality_state": "blocked",
+      "notes": "同内容异姓名，需人工确认真实归属后决定是否可以解封",
+      "occupied_slots": []
+    },
+    {
+      "sample_id": "S-BLK-07",
+      "annotation_status": "pending",
+      "profile": "unknown",
+      "expected_quality_state": "blocked",
+      "notes": "占位文件名",
+      "occupied_slots": []
+    }
+  ]
+}

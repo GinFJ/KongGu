@@ -45,7 +45,7 @@ def test_detects_specialized_chinese_full_term_profile_with_compatibility_ideogr
     text = "\n".join(
         [
             "成都理⼯⼤学本科学⽣课表(2025-2026学年第⼆学期)",
-            "学号:202522020210 姓名李傲苒 ⽣成⽇期:2026-03-14",
+            "学号:202500010001 姓名张三 ⽣成⽇期:2026-03-14",
             "周/节",
             "星期⼀",
             "星期⼆",
@@ -341,7 +341,7 @@ def test_english_period_header_parser_uses_noisy_time_tokens():
         _item("TE", 690, 109, w=20),
     ]
 
-    blocks = schedule_core._parse_english_grid_page_items_from_pdf_words(items, "唐洋")
+    blocks = schedule_core._parse_english_grid_page_items_from_pdf_words(items, "张三")
 
     occupied = {(block["date"], block["period"], block["course"]) for block in blocks}
     assert ("2026-05-06", 5, "EIBM") in occupied
@@ -561,15 +561,15 @@ def test_chinese_ocr_candidate_picker_prefers_clean_table_parse():
 
 
 def test_extract_chinese_name_from_text_reads_ocr_header():
-    text = "成都理工大学本科学生课表\n学号：202522040120\n姓名：王婧琪\n班级：2025220401"
+    text = "成都理工大学本科学生课表\n学号：202500010002\n姓名：张三\n班级：2025000101"
 
-    assert schedule_core._extract_chinese_name_from_text(text) == "王婧琪"
+    assert schedule_core._extract_chinese_name_from_text(text) == "张三"
 
 
 def test_low_confidence_english_ocr_result_flags_sparse_image_parse():
     blocks = [
         schedule_core._block(
-            "唐洋",
+            "张三",
             "英方",
             11,
             schedule_core._parse_date("2026-05-11"),

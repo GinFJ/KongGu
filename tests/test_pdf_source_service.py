@@ -65,8 +65,8 @@ def test_add_pdf_sources_skips_same_content_duplicate_files(tmp_path: Path):
 
 
 def test_add_pdf_sources_reports_same_content_with_different_member_names(tmp_path: Path):
-    first = tmp_path / "活动部-王婧琪-干事-中方课表.pdf"
-    duplicate = tmp_path / "活动部-苏筱羽-干事-中方课表.pdf"
+    first = tmp_path / "活动部-张三-干事-中方课表.pdf"
+    duplicate = tmp_path / "活动部-李四-干事-中方课表.pdf"
     first.write_bytes(b"same-pdf-content")
     duplicate.write_bytes(b"same-pdf-content")
 
@@ -81,12 +81,12 @@ def test_add_pdf_sources_reports_same_content_with_different_member_names(tmp_pa
     assert result.skipped == []
     assert len(result.errors) == 1
     assert "成员不一致" in str(result.errors[0][1])
-    assert "王婧琪" in str(result.errors[0][1])
-    assert "苏筱羽" in str(result.errors[0][1])
+    assert "张三" in str(result.errors[0][1])
+    assert "李四" in str(result.errors[0][1])
 
 
 def test_add_pdf_sources_rejects_placeholder_member_file_name(tmp_path: Path):
-    placeholder = tmp_path / "路人甲_外联部 袁铭泽 干事 中方课表.pdf"
+    placeholder = tmp_path / "路人甲_外联部 张三 干事 中方课表.pdf"
     placeholder.write_bytes(b"placeholder")
 
     result = add_pdf_sources(
