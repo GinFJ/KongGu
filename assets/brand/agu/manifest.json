@@ -1,0 +1,123 @@
+{
+  "character": "阿谷",
+  "project": "空谷 Konggu",
+  "brand_version": "1.0",
+  "build_date": "2026-08-11",
+  "core_message": "青心如禾，向阳而生",
+  "sources": [
+    {
+      "file": "agu-standard-v1.png",
+      "width": 1254,
+      "height": 1254,
+      "mode": "RGBA",
+      "sha256": "71EB192EA1E7DAF98A82DFCC8A5C84A0FBFC5BB8CF53DDD3969D1265CDB19993"
+    },
+    {
+      "file": "agu-dynamic-v1.png",
+      "width": 1254,
+      "height": 1254,
+      "mode": "RGBA",
+      "sha256": "8BF9A76CE5D5300D9CB53B5CF670AF0B67539FE766C52F110335D3875D7D4BF4"
+    },
+    {
+      "file": "agu-complete-v1.png",
+      "width": 1254,
+      "height": 1254,
+      "mode": "RGBA",
+      "sha256": "3ACB37F710034DD7A2FB31D10273E58294748D1FBF0F4C361F93B7D3CB15537C"
+    },
+    {
+      "file": "agu-theme-from-schedule-v1.png",
+      "width": 1024,
+      "height": 1536,
+      "mode": "RGBA",
+      "sha256": "B29747F1CE458D4BDE9D8644F13602D58AFB0B904679E8F56FE2E59151E6E888"
+    }
+  ],
+  "outputs": [
+    {
+      "file": "agu-app-icon-1024.png",
+      "width": 1024,
+      "height": 1024,
+      "mode": "RGBA",
+      "sha256": "74CFEA3A4FA499619CE7786602D84FC1C6BAA045F5CE824326401C24A9938886"
+    },
+    {
+      "file": "agu-avatar-1024.png",
+      "width": 1024,
+      "height": 1024,
+      "mode": "RGBA",
+      "sha256": "4A66E815B077623B2B4B8A94434F769DAC19BFF57AC178BB84F30F46B586E639"
+    },
+    {
+      "file": "agu-complete-v1.png",
+      "width": 1254,
+      "height": 1254,
+      "mode": "RGBA",
+      "sha256": "3ACB37F710034DD7A2FB31D10273E58294748D1FBF0F4C361F93B7D3CB15537C"
+    },
+    {
+      "file": "agu-complete-v1.webp",
+      "width": 720,
+      "height": 720,
+      "mode": "RGBA",
+      "sha256": "88BA08C799788AC1F6528531903D4F683FDCC9C60C209E645475B52510769A60"
+    },
+    {
+      "file": "agu-dynamic-v1.png",
+      "width": 1254,
+      "height": 1254,
+      "mode": "RGBA",
+      "sha256": "8BF9A76CE5D5300D9CB53B5CF670AF0B67539FE766C52F110335D3875D7D4BF4"
+    },
+    {
+      "file": "agu-dynamic-v1.webp",
+      "width": 720,
+      "height": 720,
+      "mode": "RGBA",
+      "sha256": "80086DE027C7E7435301A5108EB092F3A6DA4E1608BBC50D1B7BA8BD9B72627C"
+    },
+    {
+      "file": "agu-promo-card-1600x900.png",
+      "width": 1600,
+      "height": 900,
+      "mode": "RGBA",
+      "sha256": "7363B63CC17DFB921E019B3DACB9AD46513B773855ADE8B98D3BCADBFC855D16"
+    },
+    {
+      "file": "agu-splash-scene-1280x720.webp",
+      "width": 1280,
+      "height": 720,
+      "mode": "RGBA",
+      "sha256": "6A4253210C316F5483080AC5B5ABAB7D4A9E7206A8FF27051F32A16138485004"
+    },
+    {
+      "file": "agu-splash-scene-1600x900.png",
+      "width": 1600,
+      "height": 900,
+      "mode": "RGBA",
+      "sha256": "98FA199111252FF3C0BCFDA2E70C27F7C6E15249C513CECEA818CD918975571E"
+    },
+    {
+      "file": "agu-standard-v1.png",
+      "width": 1254,
+      "height": 1254,
+      "mode": "RGBA",
+      "sha256": "71EB192EA1E7DAF98A82DFCC8A5C84A0FBFC5BB8CF53DDD3969D1265CDB19993"
+    },
+    {
+      "file": "agu-standard-v1.webp",
+      "width": 720,
+      "height": 720,
+      "mode": "RGBA",
+      "sha256": "88071DF4865165D7BB96B6CD79F46254128281A1224692F79C4C36D261C5FB51"
+    },
+    {
+      "file": "agu-theme-from-schedule-v1.png",
+      "width": 1024,
+      "height": 1536,
+      "mode": "RGBA",
+      "sha256": "B29747F1CE458D4BDE9D8644F13602D58AFB0B904679E8F56FE2E59151E6E888"
+    }
+  ]
+}

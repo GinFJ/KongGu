@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.4.1-116c54" />
+  <img alt="Version" src="https://img.shields.io/badge/version-0.4.2-116c54" />
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-2563eb" />
   <img alt="Desktop" src="https://img.shields.io/badge/desktop-Tauri-24c8db" />
   <img alt="Python" src="https://img.shields.io/badge/python-3.12-3776ab" />
@@ -263,12 +263,12 @@ schedule.pdf
 
 | 项目 | 状态 | 说明 |
 | :--- | :--- | :--- |
-| 单元测试 | 已验证 | 121 passed，2 warnings（2026-08-10，0.4.1 工作区） |
+| 单元测试 | 已验证 | 121 passed，2 warnings（2026-08-11，0.4.2 工作区） |
 | 前端构建 | 已验证 | `npm.cmd run build:frontend` 通过 |
 | 桌面层检查 | 已验证 | `cargo check --manifest-path src-tauri\Cargo.toml --locked` 通过 |
 | 真实样本页级诊断 | 已验证 | 仓库外 70 份、109 页；PDF Inspector 与 PyMuPDF 的无文本层页集合一致 |
 | 课程块人工真值 | 未验证 | 页级诊断一致不等于课程、周次和节次准确 |
-| 正式安装包 | 未同步 | 已核验安装包为 0.4.0；当前 0.4.1 未构建安装包 |
+| 正式安装包 | 未同步 | 已核验安装包为 0.4.0；当前 0.4.2 未构建安装包 |
 | 断网与全新用户目录运行 | 未验证 | 发布级验证项，需单独执行 |
 
 已知限制：
@@ -476,6 +476,18 @@ python -m pytest -q
 
 空谷在本地生成空课结果，每个 PDF 的来源和人工修正过程都可以回查。
 
+## 认识阿谷
+
+<p align="center">
+  <img src="./assets/brand/agu/agu-standard-v1.webp" alt="空谷虚拟形象阿谷" width="300" />
+</p>
+
+阿谷是空谷的非人虚拟形象，一只从共同空课时间里出发、向着阳光生长的谷物精灵。双叶冠承接青禾，腹部透明种仁代表“青心”，圆润谷粒身体对应青禾最终生长为谷物的意象。
+
+> 青心如禾，向阳而生。
+
+角色母版、头像、应用图标、启动页和宣传材料的使用边界见 [`《阿谷角色与视觉使用规范》`](./docs/品牌/阿谷角色与视觉使用规范.md)。
+
 ---
 
-最后更新：2026-08-08
+最后更新：2026-08-11
