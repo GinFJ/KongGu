@@ -1,6 +1,9 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type { Calendar } from "@fullcalendar/core";
 import wordmarkUrl from "../assets/konggu-wordmark.png";
+import aguCompleteUrl from "../assets/brand/agu/agu-complete-v1.webp";
+import aguStandardUrl from "../assets/brand/agu/agu-standard-v1.webp";
+import aguSplashUrl from "../assets/brand/agu/agu-splash-scene-1280x720.webp";
 import { mountCalendar } from "./calendarView";
 import { mountReview } from "./reviewView";
 import { SidecarClient } from "./sidecarClient";
@@ -54,6 +57,7 @@ let calendar: Calendar | null = null;
 client.onEvent((event) => {
   if (event.event === "sidecar.fatal") {
     state.statusText = `解析引擎启动失败：${event.message}`;
+    state.stage = "failed";
     state.busy = false;
     render();
     return;
@@ -69,7 +73,7 @@ client.onEvent((event) => {
 async function boot() {
   render();
   try {
-    await client.start();
+    await Promise.all([client.start(), delay(900)]);
     const [resources, settings] = await Promise.all([
       client.request<ResourceStatus>("resources.status"),
       client.request<{ ok: boolean; settings: CalendarSettings }>("settings.calendar.get")
@@ -79,6 +83,7 @@ async function boot() {
     state.statusText = resources.ready ? "离线材料已就绪，可以导入课表" : "离线材料不完整，请先修复";
     state.stage = "ready";
   } catch (error) {
+    state.stage = "failed";
     state.statusText = formatError(error);
   }
   render();
@@ -126,6 +131,7 @@ async function waitForJob(jobId: string) {
     if (job.status === "completed") {
       state.result = job.output || null;
       state.busy = false;
+      state.stage = "completed";
       if (state.result?.detected_max_week) {
         state.calendarSettings.teaching_weeks = state.result.detected_max_week;
       }
@@ -140,6 +146,7 @@ async function waitForJob(jobId: string) {
     }
     if (["failed", "cancelled", "interrupted"].includes(job.status)) {
       state.busy = false;
+      state.stage = job.status;
       state.statusText = job.error || `任务状态：${job.status}`;
       log(state.statusText);
       render();
@@ -207,6 +214,7 @@ async function exportExcel() {
       export_week_count: state.calendarSettings.teaching_weeks
     });
     state.statusText = `可信 Excel 已导出：${response.path}`;
+    state.stage = "exported";
     log(state.statusText);
   } catch (error) {
     state.statusText = `导出被阻止：${formatError(error)}`;
@@ -282,9 +290,19 @@ function render() {
   const progressPercent = state.progress.total
     ? Math.min(100, Math.round((state.progress.current / state.progress.total) * 100))
     : state.busy ? 8 : 0;
+  const showCompletionAgu = Boolean(result?.can_export && ["completed", "exported"].includes(state.stage));
 
   app.innerHTML = `
     <main class="shell">
+      ${state.stage === "boot" ? `<section class="launchScreen" aria-live="polite" aria-label="空谷正在启动">
+        <img class="launchScene" src="${aguSplashUrl}" alt="阿谷从共同空课时间出发" />
+        <div class="launchCopy">
+          <img src="${wordmarkUrl}" alt="空谷" />
+          <p>青心如禾，向阳而生</p>
+          <span>${escapeHtml(state.statusText)}</span>
+          <i aria-hidden="true"></i>
+        </div>
+      </section>` : ""}
       <aside class="rail">
         <div class="brand"><img src="${wordmarkUrl}" alt="空谷" /><span>排班复核工作台</span></div>
         <nav class="primaryActions">
@@ -323,10 +341,11 @@ function render() {
           <div class="runMeta"><b>${stageLabel(state.stage)}</b><span>${state.jobId ? `任务 ${state.jobId.slice(0, 8)}` : "未建立任务"}</span></div>
           <div class="progressTrack"><i style="width:${progressPercent}%"></i></div>
           <div class="runCounts"><strong>${result?.summary.pdf_count || state.files.length}</strong><span>文件</span><strong>${result?.summary.member_count || 0}</strong><span>成员</span><strong>${result?.issues.filter((issue) => !issue.confirmed).length || 0}</strong><span>待复核</span></div>
+          ${showCompletionAgu ? `<img class="completionAgu" src="${aguCompleteUrl}" alt="阿谷展示已完成的课表" />` : ""}
         </section>
         <section class="sourceRibbon">
           <div class="sourceHeader"><b>本次来源</b><span>${state.files.length ? `${state.files.length} 份 PDF · ${invalidCount ? `${invalidCount} 份类型不明` : "命名检查通过"}` : "尚未选择文件"}</span><button id="clearFiles" ${state.busy || !state.files.length ? "disabled" : ""}>清空</button></div>
-          <div class="sourceChips">${state.files.length ? state.files.map(fileChip).join("") : `<span class="emptySource">导入中方与英方课表后，空谷会顺序解析并建立可复核记录。</span>`}</div>
+          <div class="sourceChips">${state.files.length ? state.files.map(fileChip).join("") : `<span class="emptySource">把中方、英方课表一起交给阿谷，空谷会顺序解析并建立可复核记录。</span>`}</div>
         </section>
         <section class="contentCard">
           <div class="tabs">
@@ -403,7 +422,15 @@ async function mountActiveTab() {
 
 function renderTabShell() {
   const result = state.result;
-  if (!result) return `<div class="emptyPanel"><b>尚无结构化结果</b><span>完成解析后可在这里查看空闲槽、质量问题、PDF 坐标和交互式周课表。</span></div>`;
+  if (!result) return `<div class="emptyPanel welcomePanel">
+    <div class="welcomeCopy">
+      <span class="welcomeKicker">从共同空课时间出发</span>
+      <b>今天也和阿谷一起，找到可以发生的时间。</b>
+      <p>先导入同一批成员的中方、英方课表。解析完成后，这里会依次呈现共同空闲、成员完整性、文件状态和待复核问题。</p>
+      <div class="welcomeSteps"><span><i>1</i>导入双课表</span><span><i>2</i>解析与质检</span><span><i>3</i>复核后导出</span></div>
+    </div>
+    <img class="welcomeAgu" src="${aguStandardUrl}" alt="空谷虚拟形象阿谷挥手欢迎" />
+  </div>`;
   if (state.activeTab === "members") {
     return table(result.members, ["member", "department", "role", "member_key", "chinese_schedule", "english_schedule", "course_block_count", "status"]);
   }
@@ -451,7 +478,7 @@ function stageLabel(stage: string) {
     boot: "启动", ready: "就绪", queued: "排队", waiting: "等待", text_layer: "读取文本层",
     pdf_inspection: "PDF 结构检查",
     profile: "识别版式", ocr: "离线 OCR", course_parse: "课程解析", review: "人工复核",
-    completed: "完成", failed: "失败", cancelling: "正在取消", cancelled: "已取消", interrupted: "已中断"
+    completed: "完成", exported: "已导出", failed: "失败", cancelling: "正在取消", cancelled: "已取消", interrupted: "已中断"
   };
   return labels[stage] || stage;
 }
@@ -476,7 +503,7 @@ function log(message: string, rerender = true) {
 
 function formatError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
-  if (message.includes("__TAURI") || message.includes("invoke") || message.includes("Command")) {
+  if (message.includes("__TAURI") || message.includes("invoke") || message.includes("Command") || message.includes("transformCallback")) {
     return "桌面运行环境未连接，请在 Konggu 桌面端中使用该功能。";
   }
   return message.replace(/^Error:\s*/, "");
