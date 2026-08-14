@@ -46,6 +46,18 @@ def evaluate_quality(
             )
 
     for member in member_rows:
+        if enforce_identity and member.has_chinese != member.has_english:
+            missing = "英方" if member.has_chinese else "中方"
+            issues.append(
+                ParseIssue(
+                    code="MEMBER_SCHEDULE_INCOMPLETE",
+                    message=f"{member.name} 缺少{missing}课表，不能可靠计算空闲时间",
+                    severity="error",
+                    field="schedule_pair",
+                    suggestion=f"补充该成员的{missing}课表后重新生成空课表。",
+                    blocks_export=True,
+                )
+            )
         if enforce_identity and (not member.department or not member.role):
             issues.append(
                 ParseIssue(

@@ -30,7 +30,9 @@ def snapshot_workflow(workflow_result: Any) -> dict[str, Any]:
                     {
                         "file_name": source.file_name,
                         "kind": source.kind,
-                        "source_path": source.source_path,
+                        # Absolute paths are session-only and must not enter the
+                        # persisted result snapshot.
+                        "source_path": "",
                         "content_hash": source.content_hash,
                     }
                     for source in generation.model_sources

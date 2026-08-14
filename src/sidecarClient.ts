@@ -7,6 +7,12 @@ type PendingRequest = {
   timer: number;
 };
 
+const ALLOWED_COMMANDS = new Set([
+  "resources.status", "resources.repair", "data.clear", "settings.calendar.get", "settings.calendar.save",
+  "pdf.inspect", "job.start", "job.get", "job.cancel", "job.retry_failed", "review.get", "review.apply",
+  "review.confirm", "exports.excel"
+]);
+
 export class SidecarClient {
   private child: Child | null = null;
   private command: Command<string> | null = null;
@@ -34,13 +40,14 @@ export class SidecarClient {
   }
 
   async request<T>(command: string, payload: Record<string, unknown> = {}): Promise<T> {
+    if (!ALLOWED_COMMANDS.has(command)) throw new Error("不支持的本地操作。");
     await this.start();
-    if (!this.child) throw new Error("常驻 sidecar 未启动。");
+    if (!this.child) throw new Error("本地识别功能尚未启动。");
     const id = crypto.randomUUID();
     const promise = new Promise<T>((resolve, reject) => {
       const timer = window.setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`sidecar 请求超时：${command}`));
+        reject(new Error("处理等待超时，请重试。"));
       }, 10 * 60 * 1000);
       this.pending.set(id, {
         resolve: resolve as (value: unknown) => void,
@@ -66,7 +73,7 @@ export class SidecarClient {
 
   private async spawn() {
     this.intentionalStop = false;
-    const command = Command.sidecar("binaries/konggu-worker", ["--serve"]);
+    const command = Command.sidecar("binaries/konggu-worker", ["--serve"], { encoding: "utf-8" });
     this.command = command;
     command.stdout.on("data", (chunk) => this.consume(chunk));
     command.stderr.on("data", (chunk) => {
@@ -94,7 +101,7 @@ export class SidecarClient {
         window.clearTimeout(pending.timer);
         this.pending.delete(String(message.id));
         if (message.ok) pending.resolve(message.data);
-        else pending.reject(new Error(message.error || "sidecar 执行失败。"));
+        else pending.reject(new Error(message.error || "本地识别功能执行失败。"));
       } catch (error) {
         console.warn("无法解析 sidecar 输出", line, error);
       }
@@ -104,7 +111,7 @@ export class SidecarClient {
   private onClosed() {
     this.child = null;
     this.command = null;
-    this.rejectAll(new Error("sidecar 已退出，运行中的任务已标记为中断。"));
+    this.rejectAll(new Error("本地识别功能意外停止，正在处理的课表已中断。"));
     if (!this.intentionalStop && this.restartCount < 1) {
       this.restartCount += 1;
       void this.start();

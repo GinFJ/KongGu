@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -46,6 +46,7 @@ def generate_availability(
     root_dir: str,
     weekdays: list[str],
     pdf_inspections: list[dict[str, Any]] | None = None,
+    progress: Callable[[str, int, int, str], None] | None = None,
 ) -> AvailabilityGenerationResult:
     """Parse selected or directory-discovered PDFs and build availability tables."""
 
@@ -62,9 +63,15 @@ def generate_availability(
     inspections = list(pdf_inspections) if pdf_inspections is not None else inspect_pdf_sources(model_sources)
 
     legacy_sources = model_sources_to_legacy(model_sources)
+
+    def report_parse_progress(current: int, total: int, message: str) -> None:
+        if progress:
+            progress("course_parse", current, total, message)
+
     blocks, calendar_df, errors, preview_df = schedule_core.parse_actual_pdf_sources(
         legacy_sources,
         uploaded_calendar_df=None,
+        progress=report_parse_progress,
     )
 
     if calendar_df is None or calendar_df.empty:

@@ -42,12 +42,16 @@ def get_review_payload(store: StateStore, job_id: str) -> dict[str, Any]:
         store.mark_other_signatures_stale(source_hash, signature)
         corrections.extend(store.corrections_for_source(source_hash, signature))
     issues = job.get("issues", [])
+    sources = [dict(item) for item in generation.get("sources", [])]
+    session_paths = store.source_path_map_for_job(job_id)
+    for source in sources:
+        source["source_path"] = session_paths.get(str(source.get("file_name") or ""), "")
     return {
         "ok": True,
         "job_id": job_id,
         "quality_state": job.get("quality_state"),
         "parser_signature": signature,
-        "sources": generation.get("sources", []),
+        "sources": sources,
         "inspections": generation.get("pdf_inspections", []),
         "blocks": generation.get("blocks", []),
         "issues": issues,

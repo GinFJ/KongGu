@@ -2,9 +2,7 @@ export type QualityState = "accepted" | "needs_review" | "blocked";
 
 export type ResourceStatus = {
   ready: boolean;
-  app_data_root: string;
-  resources_root: string;
-  ocr_models_root: string;
+  storage: string;
   missing: Array<{ target: string; kind: string; issue: string }>;
   invalid: Array<{ target: string; kind: string; issue: string }>;
   ocr: { ready: boolean; models: Array<{ name: string; path: string; exists: boolean; valid: boolean }> };

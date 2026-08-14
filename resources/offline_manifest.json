@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated_at": "2026-07-08T02:48:14Z",
+  "generated_at": "2026-08-11T09:36:55Z",
   "entries": [
     {
       "source": "resources/ocr_models/PP-OCRv4_mobile_det/inference.json",
@@ -45,6 +45,97 @@
       "kind": "ocr_model"
     },
     {
+      "source": "assets/brand/agu/agu-app-icon-1024.png",
+      "target": "resources/assets/brand/agu/agu-app-icon-1024.png",
+      "sha256": "74cfea3a4fa499619ce7786602d84fc1c6baa045f5ce824326401c24a9938886",
+      "size": 787822,
+      "kind": "asset"
+    },
+    {
+      "source": "assets/brand/agu/agu-avatar-1024.png",
+      "target": "resources/assets/brand/agu/agu-avatar-1024.png",
+      "sha256": "4a66e815b077623b2b4b8a94434f769dac19bff57ac178bb84f30f46b586e639",
+      "size": 714568,
+      "kind": "asset"
+    },
+    {
+      "source": "assets/brand/agu/agu-complete-v1.png",
+      "target": "resources/assets/brand/agu/agu-complete-v1.png",
+      "sha256": "3acb37f710034dd7a2fb31d10273e58294748d1fbf0f4c361f93b7d3cb15537c",
+      "size": 1531938,
+      "kind": "asset"
+    },
+    {
+      "source": "assets/brand/agu/agu-complete-v1.webp",
+      "target": "resources/assets/brand/agu/agu-complete-v1.webp",
+      "sha256": "88ba08c799788ac1f6528531903d4f683fdcc9c60c209e645475b52510769a60",
+      "size": 115546,
+      "kind": "asset"
+    },
+    {
+      "source": "assets/brand/agu/agu-dynamic-v1.png",
+      "target": "resources/assets/brand/agu/agu-dynamic-v1.png",
+      "sha256": "8bf9a76ce5d5300d9cb53b5cf670af0b67539fe766c52f110335d3875d7d4bf4",
+      "size": 1321418,
+      "kind": "asset"
+    },
+    {
+      "source": "assets/brand/agu/agu-dynamic-v1.webp",
+      "target": "resources/assets/brand/agu/agu-dynamic-v1.webp",
+      "sha256": "80086de027c7e7435301a5108eb092f3a6da4e1608bbc50d1b7ba8bd9b72627c",
+      "size": 100324,
+      "kind": "asset"
+    },
+    {
+      "source": "assets/brand/agu/agu-promo-card-1600x900.png",
+      "target": "resources/assets/brand/agu/agu-promo-card-1600x900.png",
+      "sha256": "7363b63cc17dfb921e019b3dacb9ad46513b773855ade8b98d3bcadbfc855d16",
+      "size": 762855,
+      "kind": "asset"
+    },
+    {
+      "source": "assets/brand/agu/agu-splash-scene-1280x720.webp",
+      "target": "resources/assets/brand/agu/agu-splash-scene-1280x720.webp",
+      "sha256": "6a4253210c316f5483080ac5b5abab7d4a9e7206a8ff27051f32a16138485004",
+      "size": 106096,
+      "kind": "asset"
+    },
+    {
+      "source": "assets/brand/agu/agu-splash-scene-1600x900.png",
+      "target": "resources/assets/brand/agu/agu-splash-scene-1600x900.png",
+      "sha256": "98fa199111252ff3c0bcfda2e70c27f7c6e15249c513cecea818cd918975571e",
+      "size": 709240,
+      "kind": "asset"
+    },
+    {
+      "source": "assets/brand/agu/agu-standard-v1.png",
+      "target": "resources/assets/brand/agu/agu-standard-v1.png",
+      "sha256": "71eb192ea1e7daf98a82dfcc8a5c84a0fbfc5bb8cf53ddd3969d1265cdb19993",
+      "size": 1422424,
+      "kind": "asset"
+    },
+    {
+      "source": "assets/brand/agu/agu-standard-v1.webp",
+      "target": "resources/assets/brand/agu/agu-standard-v1.webp",
+      "sha256": "88071df4865165d7bb96b6cd79f46254128281a1224692f79c4c36d261c5fb51",
+      "size": 109866,
+      "kind": "asset"
+    },
+    {
+      "source": "assets/brand/agu/agu-theme-from-schedule-v1.png",
+      "target": "resources/assets/brand/agu/agu-theme-from-schedule-v1.png",
+      "sha256": "b29747f1ce458d4bde9d8644f13602d58afb0b904679e8f56fe2e59151e6e888",
+      "size": 2197956,
+      "kind": "asset"
+    },
+    {
+      "source": "assets/brand/agu/manifest.json",
+      "target": "resources/assets/brand/agu/manifest.json",
+      "sha256": "bfdafa648efca2a7d561bb0c053df8be54626c6ceb1d83b158e50897d8617e39",
+      "size": 3536,
+      "kind": "asset"
+    },
+    {
       "source": "assets/konggu-readme-hero.png",
       "target": "resources/assets/konggu-readme-hero.png",
       "sha256": "1790329107dceee743c036d5b7d6da72078f038bfb68c5eb4f3f3edf99705753",
@@ -57,6 +148,13 @@
       "sha256": "13f1ad50f50fc35a375abcba1aaf30e0942607e3f8b5866cecdffa1e48b54397",
       "size": 296703,
       "kind": "asset"
+    },
+    {
+      "source": "config/ocr_engines.json",
+      "target": "resources/config/ocr_engines.json",
+      "sha256": "c5f88238121004c48a30a3daca62c71b945008db8ccaa4e376c3a19ef4f4eaa4",
+      "size": 644,
+      "kind": "config"
     },
     {
       "source": "config/ocr_models.json",
@@ -75,8 +173,15 @@
     {
       "source": "config/reference_library.json",
       "target": "resources/config/reference_library.json",
-      "sha256": "91fd7f424c352dcc28db94fbf5497a4c7d2329e899db83d7fa1f18f11a5273d0",
+      "sha256": "f1539300fc5b279821b72b5f9c4c50929b64b54d03629c3172889d86d35dc639",
       "size": 331,
+      "kind": "config"
+    },
+    {
+      "source": "config/reference_library_samples.json",
+      "target": "resources/config/reference_library_samples.json",
+      "sha256": "27f619f417e5b3f4c790f50c63921c339911b9a166c1327566a3f0ae65772651",
+      "size": 11045,
       "kind": "config"
     },
     {
@@ -84,6 +189,13 @@
       "target": "resources/config/school_calendar.json",
       "sha256": "166a1aecd33de7e036db8c2e35aa2c37eb394139d76367b858a0d5511219a8f8",
       "size": 286,
+      "kind": "config"
+    },
+    {
+      "source": "config/timetable_layout_profiles.json",
+      "target": "resources/config/timetable_layout_profiles.json",
+      "sha256": "6be2612e34c1a1ceeca9d16eb9f570dcc4d323c63ea957d154c99e994f631508",
+      "size": 3764,
       "kind": "config"
     }
   ]

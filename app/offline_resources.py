@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 import os
 from pathlib import Path
+from pathlib import PurePosixPath, PureWindowsPath
 import shutil
 import sys
 from typing import Any
+
+from app.privacy import safe_error_message
 
 
 APP_NAME = "Konggu"
@@ -48,6 +51,7 @@ def configure_offline_environment() -> ResourcePaths:
     paths = resolve_resource_paths()
     for path in (paths.user_resources_root, paths.ocr_models_root, paths.cache_root, paths.logs_root):
         path.mkdir(parents=True, exist_ok=True)
+    _purge_expired_processing_cache(paths)
     os.environ.setdefault("KONGGU_RESOURCE_ROOT", str(paths.user_resources_root))
     os.environ.setdefault("KONGGU_OCR_MODEL_DIR", str(paths.ocr_models_root))
     os.environ.setdefault("KONGGU_OCR_TEXT_CACHE", str(paths.cache_root / "pdf_text"))
@@ -71,7 +75,11 @@ def resource_status(*, check_runtime: bool = False) -> dict[str, Any]:
     invalid: list[dict[str, Any]] = []
     entries = manifest.get("entries", [])
     for entry in entries:
-        target = _target_path(paths, entry)
+        try:
+            target = _target_path(paths, entry)
+        except ValueError:
+            invalid.append(_entry_status(entry, None, "invalid-manifest-path"))
+            continue
         issue = _validate_entry(target, entry)
         if issue == "missing":
             missing.append(_entry_status(entry, target, issue))
@@ -88,12 +96,7 @@ def resource_status(*, check_runtime: bool = False) -> dict[str, Any]:
     return {
         "ok": True,
         "ready": ready,
-        "bundled_root": str(paths.bundled_root),
-        "app_data_root": str(paths.app_data_root),
-        "resources_root": str(paths.user_resources_root),
-        "ocr_models_root": str(paths.ocr_models_root),
-        "cache_root": str(paths.cache_root),
-        "logs_root": str(paths.logs_root),
+        "storage": "本机应用数据目录（路径已隐藏）",
         "manifest_version": manifest.get("version", 1),
         "entry_count": len(entries),
         "missing": missing,
@@ -113,19 +116,64 @@ def repair_resources() -> dict[str, Any]:
     copied: list[str] = []
     failed: list[dict[str, str]] = []
     for entry in manifest.get("entries", []):
-        target = _target_path(paths, entry)
+        try:
+            target = _target_path(paths, entry)
+            source = _safe_child(paths.bundled_root, entry.get("source"), "source")
+        except ValueError as exc:
+            failed.append(
+                {
+                    "source": safe_error_message(entry.get("source"), "未知资源"),
+                    "target": safe_error_message(entry.get("target"), "未知目标"),
+                    "error": type(exc).__name__,
+                }
+            )
+            continue
         issue = _validate_entry(target, entry)
         if not issue:
             continue
-        source = paths.bundled_root / str(entry["source"])
         try:
             _copy_entry(source, target)
-            copied.append(str(target))
+            copied.append(str(entry.get("target") or ""))
         except Exception as exc:
-            failed.append({"source": str(source), "target": str(target), "error": str(exc)})
+            failed.append(
+                {
+                    "source": str(entry.get("source") or ""),
+                    "target": str(entry.get("target") or ""),
+                    "error": type(exc).__name__,
+                }
+            )
 
     status = resource_status(check_runtime=True)
     return {"ok": not failed, "copied": copied, "failed": failed, "status": status}
+
+
+def clear_processing_cache(paths: ResourcePaths | None = None) -> list[str]:
+    """Remove only Konggu-generated processing caches under the app data root."""
+
+    resolved = paths or resolve_resource_paths()
+    cleared: list[str] = []
+    for name in ("pdf_text", "pdf_layout", "parsed_blocks"):
+        target = _safe_child(resolved.cache_root, name, "cache")
+        if target.exists():
+            shutil.rmtree(target)
+            cleared.append(name)
+    return cleared
+
+
+def _purge_expired_processing_cache(paths: ResourcePaths, retention_days: int = 30) -> None:
+    cutoff = datetime.now(UTC).timestamp() - timedelta(days=max(1, retention_days)).total_seconds()
+    for name in ("pdf_text", "pdf_layout", "parsed_blocks"):
+        root = _safe_child(paths.cache_root, name, "cache")
+        if not root.exists():
+            continue
+        for item in sorted(root.rglob("*"), key=lambda path: len(path.parts), reverse=True):
+            try:
+                if item.is_file() and item.stat().st_mtime < cutoff:
+                    item.unlink()
+                elif item.is_dir() and not any(item.iterdir()):
+                    item.rmdir()
+            except OSError:
+                continue
 
 
 def load_manifest(bundled_root: Path | None = None) -> dict[str, Any]:
@@ -211,12 +259,38 @@ def _configure_paddle_dll_paths() -> None:
 
 
 def _target_path(paths: ResourcePaths, entry: dict[str, Any]) -> Path:
-    target = str(entry["target"]).replace("\\", "/")
-    if target.startswith("ocr_models/"):
-        return paths.ocr_models_root / target.removeprefix("ocr_models/")
-    if target.startswith("resources/"):
-        return paths.user_resources_root / target.removeprefix("resources/")
-    return paths.user_resources_root / target
+    target = _manifest_relative_path(entry.get("target"), "target")
+    normalized = target.as_posix()
+    if normalized.startswith("ocr_models/"):
+        return _safe_child(paths.ocr_models_root, target.relative_to("ocr_models"), "target")
+    if normalized.startswith("resources/"):
+        return _safe_child(paths.user_resources_root, target.relative_to("resources"), "target")
+    return _safe_child(paths.user_resources_root, target, "target")
+
+
+def _manifest_relative_path(value: Any, label: str) -> Path:
+    """Parse a manifest path without allowing absolute or parent traversal."""
+
+    text = str(value or "").replace("\\", "/")
+    windows = PureWindowsPath(text)
+    posix = PurePosixPath(text)
+    if not text or posix.is_absolute() or windows.is_absolute() or windows.drive:
+        raise ValueError(f"资源清单 {label} 路径必须是相对路径。")
+    parts = tuple(part for part in posix.parts if part not in ("", "."))
+    if not parts or ".." in parts:
+        raise ValueError(f"资源清单 {label} 路径包含非法父级跳转。")
+    return Path(*parts)
+
+
+def _safe_child(root: Path, relative: Any, label: str) -> Path:
+    relative_path = _manifest_relative_path(relative, label)
+    root_resolved = root.resolve()
+    target = (root_resolved / relative_path).resolve()
+    try:
+        target.relative_to(root_resolved)
+    except ValueError as exc:
+        raise ValueError(f"资源清单 {label} 路径超出允许目录。") from exc
+    return target
 
 
 def _validate_entry(target: Path, entry: dict[str, Any]) -> str:
@@ -233,8 +307,13 @@ def _validate_entry(target: Path, entry: dict[str, Any]) -> str:
     return ""
 
 
-def _entry_status(entry: dict[str, Any], target: Path, issue: str) -> dict[str, Any]:
-    return {"target": str(target), "source": entry.get("source", ""), "kind": entry.get("kind", ""), "issue": issue}
+def _entry_status(entry: dict[str, Any], target: Path | None, issue: str) -> dict[str, Any]:
+    return {
+        "target": safe_error_message(entry.get("target") or (target.name if target else "")),
+        "source": safe_error_message(entry.get("source") or ""),
+        "kind": entry.get("kind", ""),
+        "issue": issue,
+    }
 
 
 def _ocr_status(root: Path) -> dict[str, Any]:
@@ -242,7 +321,7 @@ def _ocr_status(root: Path) -> dict[str, Any]:
     for name in REQUIRED_OCR_MODELS:
         path = root / name
         valid = _is_valid_paddle_model_dir(path)
-        models.append({"name": name, "path": str(path), "exists": path.exists(), "valid": valid})
+        models.append({"name": name, "path": name, "exists": path.exists(), "valid": valid})
     return {"ready": all(item["valid"] for item in models), "models": models}
 
 
@@ -252,7 +331,7 @@ def _ocr_runtime_status() -> dict[str, Any]:
 
         return schedule_core.check_ocr_runtime(run_probe=True)
     except Exception as exc:
-        return {"ready": False, "stage": "status-check", "error": str(exc)}
+        return {"ready": False, "stage": "status-check", "error": safe_error_message(exc)}
 
 
 def _copy_entry(source: Path, target: Path) -> None:
