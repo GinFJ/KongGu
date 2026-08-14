@@ -22,9 +22,9 @@
 - 分支：`kongguV0.1`；当前提交：本轮 0.5.2 提交（以 Git 当前核验为准）；0.4.2 功能提交：`84bebd7`
 - 源码版本：0.5.2（安全与隐私加固、任务问题持久化隔离和发布门禁修复已完成源码验证；本轮提交已完成，推送状态以 GitHub 远端核验为准）
 - 技术栈：Tauri 2 + Vite/TypeScript + Python sidecar（PyMuPDF、pdf-inspector、PaddleOCR、pandas、openpyxl、PyInstaller）
-- Python 全量测试 156 passed、2 warnings；TypeScript、前端构建、cargo check、取消处理回归、任务问题持久化隔离和安全隐私专项回归通过（2026-08-14，详见 `事实.md`）；阿谷处理中与完成动作、原文核对和 Windows 辅助功能仍需真实桌面逐态验收
+- Python 全量测试 163 passed、3 warnings；TypeScript、前端构建、cargo check、取消处理回归、任务问题持久化隔离、识别链路和安全隐私专项回归通过（2026-08-14，详见 `事实.md`）；阿谷处理中与完成动作、原文核对和 Windows 辅助功能仍需真实桌面逐态验收
 - 真实样本库：已在仓库外整理；70 份 PDF 组成 35 组完整中英课表；仓库内建立脱敏索引和待人工填写的真值模板，不把自动接受率表述为准确率
-- 安装包：当前 0.5.2 候选 `Konggu_0.5.2_x64-setup.exe`，316,389,652 字节，SHA-256 `2444E9FDC97CF580132AF2D414FA10CF36D42D7FF23427A0BF30AA1A37CC704F`；已完成构建、静态发布检查、全新用户目录资源修复冒烟和当前 release 可执行文件启动冒烟，尚未在另一台电脑完成安装、断网、卸载、WebView2 和用户数据库迁移复核
+- 安装包：当前 0.5.2 候选 `Konggu_0.5.2_x64-setup.exe`，316,375,143 字节，SHA-256 `09DCDBDF0329D472A074467C7AACF45324743B4764E07D56FF513FFC55C18727`；已完成构建、静态发布检查、全新用户目录资源修复冒烟和当前 release 可执行文件启动冒烟，尚未在另一台电脑完成安装、断网、卸载、WebView2 和用户数据库迁移复核
 
 ## 四、关键文件索引
 
@@ -39,4 +39,4 @@
 
 - 日期：2026-08-14
 - 内容：完成 0.5.2 安全与隐私加固、任务问题持久化隔离、发布校验脚本收口和 Windows 候选安装包构建。
-- 证据状态：本轮 0.5.2 提交已生成；Python 全量 156 passed、2 warnings；TypeScript、Vite、Cargo locked check、发布包静态校验、全新用户目录资源修复和当前 release 启动冒烟均已验证。安装包未签名，另一台电脑安装、断网、卸载、WebView2 和用户数据库迁移仍待实机验收。
+- 证据状态：本轮 0.5.2 提交已生成；Python 全量 163 passed、3 warnings；TypeScript、Vite、Cargo locked check、发布包静态校验、全新用户目录资源修复和当前 release 启动冒烟均已验证。安装包未签名，另一台电脑安装、断网、卸载、WebView2 和用户数据库迁移仍待实机验收。

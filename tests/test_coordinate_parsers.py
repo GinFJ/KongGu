@@ -61,6 +61,30 @@ def test_detects_specialized_chinese_full_term_profile_with_compatibility_ideogr
     assert profile == "cdut_undergrad_full_term_cn"
 
 
+def test_detect_profile_uses_ocr_items_for_long_unusable_text(monkeypatch):
+    source = {"source_path": "D:/fake.pdf", "file_name": "成员-中方课表.pdf", "kind": "中方"}
+    ocr_items = [
+        _item("成都理工大学本科学生课表", 100, 20, w=220),
+        _item("周/节", 20, 90, w=30),
+        _item("星期一", 100, 90, w=30),
+        _item("1周", 20, 140, w=20),
+    ]
+    calls = []
+
+    monkeypatch.setattr(schedule_core, "_extract_pdf_text", lambda _source: "x" * 2000)
+
+    def fake_ocr_items(_source):
+        calls.append(True)
+        return ocr_items
+
+    monkeypatch.setattr(schedule_core, "_extract_pdf_ocr_items", fake_ocr_items)
+
+    profile = schedule_core.detect_schedule_layout_profile(source, "中方")
+
+    assert profile == "cdut_undergrad_full_term_cn"
+    assert calls == [True]
+
+
 def test_chinese_full_term_week_rows_accept_noisy_week_suffix():
     items = [
         _item("6同", 55, 220, w=20),
