@@ -1,6 +1,6 @@
 [package]
 name = "konggu"
-version = "0.4.2"
+version = "0.5.2"
 description = "Konggu offline desktop app"
 authors = ["Konggu"]
 edition = "2021"
@@ -12,5 +12,4 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
-tauri-plugin-persisted-scope = "2"
 tauri-plugin-shell = "2"

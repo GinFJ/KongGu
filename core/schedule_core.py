@@ -11,7 +11,7 @@ import unicodedata
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 from openpyxl import Workbook
@@ -23,6 +23,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 from core.ocr_engines import PaddleV4Engine
 from core.runtime_control import raise_if_cancelled
 from core.signature import cache_signature
+from core.pdf_inspection import MAX_PDF_BYTES, MAX_PDF_PAGES
 
 
 WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -103,8 +104,7 @@ class OCRConfigurationError(RuntimeError):
 
 
 def _ocr_error_message(exc: BaseException) -> str:
-    message = str(exc).strip() or exc.__class__.__name__
-    return f"OCR 配置异常：{message}"
+    return f"OCR 配置异常：本地识别组件启动失败（{exc.__class__.__name__}）"
 
 
 def _source_name(source: dict[str, Any]) -> str:
@@ -352,13 +352,22 @@ def _pick_x_band(bands: list[dict[str, Any]], x_center: float) -> dict[str, Any]
 def parse_actual_pdf_sources(
     sources: list[dict[str, Any]],
     uploaded_calendar_df: pd.DataFrame | None = None,
+    progress: Callable[[int, int, str], None] | None = None,
 ) -> tuple[list[dict[str, Any]], pd.DataFrame, list[str], pd.DataFrame]:
     blocks: list[dict[str, Any]] = []
     errors: list[str] = []
+    completed = 0
 
     for source in sources:
         raise_if_cancelled()
         file_name = _source_name(source)
+        limit_error = _source_limit_error(source)
+        if limit_error:
+            errors.append(f"{file_name}：{limit_error}")
+            completed += 1
+            if progress:
+                progress(completed, len(sources), f"{file_name} 已阻止处理")
+            continue
         kind = _source_kind(source)
         image_only_pdf = False
         used_ocr = False
@@ -530,10 +539,42 @@ def parse_actual_pdf_sources(
             errors.append(f"{file_name}：{context}{exc}")
         except Exception as exc:
             errors.append(f"{file_name}：{exc}")
+        finally:
+            completed += 1
+            if progress:
+                progress(completed, len(sources), f"已完成 {completed}/{len(sources)} 份课表")
 
     calendar_df = uploaded_calendar_df if uploaded_calendar_df is not None else synthesize_calendar_from_blocks(blocks)
     preview_df = blocks_to_dataframe(blocks).head(20)
     return blocks, calendar_df, errors, preview_df
+
+
+def _source_limit_error(source: dict[str, Any]) -> str:
+    """Enforce PDF limits again inside the parser, independent of the UI gate."""
+
+    content = _source_bytes(source)
+    path = _source_path(source)
+    try:
+        size = len(content) if content else Path(path).stat().st_size
+    except FileNotFoundError:
+        # Some direct parser adapters provide in-memory/test sources without a
+        # backing path.  The document open path below remains the final guard.
+        return ""
+    except OSError:
+        return "PDF 文件不可访问。"
+    if size > MAX_PDF_BYTES:
+        return f"PDF 超过单文件大小上限（{MAX_PDF_BYTES // 1024 // 1024} MB）。"
+    document = _open_pdf_document(source)
+    if document is None:
+        return "PDF 无法打开。"
+    try:
+        if document.needs_pass:
+            return "PDF 已加密，无法在未提供密码时处理。"
+        if int(document.page_count) > MAX_PDF_PAGES:
+            return f"PDF 超过页数上限（{MAX_PDF_PAGES} 页）。"
+    finally:
+        document.close()
+    return ""
 
 
 def synthesize_calendar_from_blocks(blocks: list[dict[str, Any]]) -> pd.DataFrame:
@@ -785,8 +826,18 @@ def build_empty_schedule_excel_bytes(
     instructions_df: pd.DataFrame | None = None,
 ) -> bytes:
     timetable, _ = validate_timetable(timetable_df)
+    export_students = _export_member_names(students)
+    export_occupancy = _export_occupancy(occupancy)
     if all_slot_df is None or all_slot_df.empty:
-        all_slot_df = build_slot_table(occupancy, students, weeks, WEEKDAYS, list(timetable["period"]))
+        all_slot_df = build_slot_table(
+            export_occupancy,
+            export_students,
+            weeks,
+            WEEKDAYS,
+            list(timetable["period"]),
+        )
+    else:
+        all_slot_df = _export_slot_dataframe(all_slot_df)
 
     export_df = all_slot_df.copy()
     if threshold:
@@ -809,12 +860,12 @@ def build_empty_schedule_excel_bytes(
     )
 
     member_rows = []
-    for name in students:
+    for name in export_students:
         member_rows.append({"成员姓名": name, "状态": "已参与统计"})
     member_df = pd.DataFrame(member_rows)
     logs_df = pd.DataFrame(
         [
-            {"项目": "成员数量", "值": len(students)},
+            {"项目": "成员数量", "值": len(export_students)},
             {"项目": "时间格数量", "值": len(all_slot_df)},
             {"项目": "周次工作表数量", "值": len(weeks)},
             {"项目": "生成时间", "值": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
@@ -831,8 +882,8 @@ def build_empty_schedule_excel_bytes(
             _populate_weekly_availability_sheet(
                 sheet=sheet,
                 week=week,
-                students=students,
-                occupancy=occupancy,
+                students=export_students,
+                occupancy=export_occupancy,
                 threshold=threshold,
             )
     else:
@@ -844,7 +895,7 @@ def build_empty_schedule_excel_bytes(
     _append_dataframe_sheet(workbook, "成员完整性检查", member_df)
     if blocks_df is None:
         blocks_df = pd.DataFrame()
-    _append_dataframe_sheet(workbook, "课程占用明细", blocks_df)
+    _append_dataframe_sheet(workbook, "课程占用明细", _export_member_dataframe(blocks_df))
     _append_dataframe_sheet(workbook, "处理日志摘要", logs_df)
     _append_dataframe_sheet(
         workbook,
@@ -854,7 +905,7 @@ def build_empty_schedule_excel_bytes(
     _append_dataframe_sheet(
         workbook,
         "成员课程明细",
-        member_course_df if member_course_df is not None else blocks_df,
+        _export_member_dataframe(member_course_df if member_course_df is not None else blocks_df),
     )
     _append_dataframe_sheet(
         workbook,
@@ -864,7 +915,7 @@ def build_empty_schedule_excel_bytes(
     _append_dataframe_sheet(
         workbook,
         "文件处理记录",
-        file_df if file_df is not None else pd.DataFrame(),
+        _export_member_dataframe(file_df if file_df is not None else pd.DataFrame()),
     )
     _append_dataframe_sheet(
         workbook,
@@ -879,6 +930,82 @@ def build_empty_schedule_excel_bytes(
 
     workbook.save(output)
     return output.getvalue()
+
+
+def _export_member_name(value: Any) -> str:
+    """Return the public export label while keeping composite identity internal."""
+
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return re.split(r"\s*[｜|]\s*", text, maxsplit=1)[0].strip()
+
+
+def _export_member_names(values: list[str]) -> list[str]:
+    names: list[str] = []
+    for value in values:
+        name = _export_member_name(value)
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _export_occupancy(occupancy: dict[tuple[int, str, int], set[str]]) -> dict[tuple[int, str, int], set[str]]:
+    return {
+        slot: {_export_member_name(member) for member in members if _export_member_name(member)}
+        for slot, members in occupancy.items()
+    }
+
+
+def _export_slot_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
+    result = frame.copy()
+    member_columns = {"free_members", "occupied_members", "空闲人员", "有课人员"}
+    for column in result.columns:
+        if column in member_columns:
+            result[column] = result[column].map(
+                lambda value: "、".join(
+                    dict.fromkeys(
+                        _export_member_name(item)
+                        for item in str(value or "").split("、")
+                        if _export_member_name(item)
+                    )
+                )
+            )
+    for source_column, count_column in (
+        ("free_members", "free_count"),
+        ("occupied_members", "occupied_count"),
+        ("空闲人员", "空闲人数"),
+        ("有课人员", "有课人数"),
+    ):
+        if source_column in result.columns and count_column in result.columns:
+            result[count_column] = result[source_column].map(
+                lambda value: len([item for item in str(value or "").split("、") if item])
+            )
+    return result
+
+
+def _export_member_dataframe(frame: pd.DataFrame | None) -> pd.DataFrame:
+    if frame is None or frame.empty:
+        return frame.copy() if frame is not None else pd.DataFrame()
+    result = frame.copy()
+    direct_columns = {
+        "name", "member_key", "member", "成员", "成员姓名", "姓名", "成员名称", "成员名"
+    }
+    list_columns = {"free_members", "occupied_members", "空闲人员", "有课人员"}
+    for column in result.columns:
+        if column in direct_columns:
+            result[column] = result[column].map(_export_member_name)
+        elif column in list_columns:
+            result[column] = result[column].map(
+                lambda value: "、".join(
+                    dict.fromkeys(
+                        _export_member_name(item)
+                        for item in str(value or "").split("、")
+                        if _export_member_name(item)
+                    )
+                )
+            )
+    return result
 
 
 def _populate_weekly_availability_sheet(
@@ -922,7 +1049,7 @@ def _populate_weekly_availability_sheet(
             )
             value = "，".join(free_members) if not threshold or len(free_members) >= threshold else ""
             cell = sheet.cell(row=start_row, column=start_column)
-            cell.value = value
+            cell.value = _excel_safe_cell(value)
             cell.font = Font(name="宋体", size=11)
 
 
@@ -972,7 +1099,7 @@ def _free_members_for_period_block(
 def _append_dataframe_sheet(workbook: Workbook, title: str, dataframe: pd.DataFrame) -> None:
     sheet = workbook.create_sheet(title=title)
     for row in dataframe_to_rows(dataframe, index=False, header=True):
-        sheet.append(row)
+        sheet.append([_excel_safe_cell(value) for value in row])
     sheet.freeze_panes = "A2"
     header_font = Font(name="宋体", size=11, bold=True)
     body_font = Font(name="宋体", size=11)
@@ -985,6 +1112,25 @@ def _append_dataframe_sheet(workbook: Workbook, title: str, dataframe: pd.DataFr
         values = [str(cell.value or "") for cell in column_cells]
         width = min(max(len(value) for value in values) + 2, 42)
         sheet.column_dimensions[column_cells[0].column_letter].width = max(width, 10)
+
+
+_EXCEL_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def _excel_safe_cell(value: Any) -> Any:
+    """Keep imported text from being interpreted as an Excel formula.
+
+    Course names, member names, filenames and review messages are all external
+    input.  They must remain text at the workbook boundary even when they start
+    with a formula-triggering character or whitespace followed by one.
+    """
+
+    if not isinstance(value, str):
+        return value
+    text = value.replace("\x00", "")
+    if text.lstrip(" \t\r\n").startswith(_EXCEL_FORMULA_PREFIXES):
+        return "'" + text
+    return text
 
 
 def _ordered_weeks_from_calendar(calendar_df: pd.DataFrame) -> list[int]:

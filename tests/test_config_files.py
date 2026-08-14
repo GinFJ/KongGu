@@ -1,4 +1,5 @@
 import json
+import hashlib
 from pathlib import Path
 
 
@@ -64,3 +65,15 @@ def test_ocr_model_config_shape():
         assert len(model["archive_sha256"]) == 64
         assert model["archive_size"] > 0
         assert model["target_dir"].startswith("ocr_models/")
+
+
+def test_offline_manifest_matches_current_bundled_sources():
+    manifest = json.loads((ROOT / "resources" / "offline_manifest.json").read_text(encoding="utf-8"))
+    entries = manifest["entries"]
+
+    assert entries
+    for entry in entries:
+        source = ROOT / entry["source"]
+        assert source.is_file(), entry["source"]
+        assert source.stat().st_size == entry["size"], entry["source"]
+        assert hashlib.sha256(source.read_bytes()).hexdigest() == entry["sha256"], entry["source"]

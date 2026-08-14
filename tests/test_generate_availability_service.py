@@ -19,7 +19,7 @@ class FakeScheduleCore:
             }
         ]
 
-    def parse_actual_pdf_sources(self, sources, uploaded_calendar_df=None):
+    def parse_actual_pdf_sources(self, sources, uploaded_calendar_df=None, progress=None):
         assert uploaded_calendar_df is None
         blocks = [
             {

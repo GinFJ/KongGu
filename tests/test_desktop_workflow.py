@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import fitz
 import pandas as pd
 
 from app.services.desktop_workflow import export_excel, parse_pdf_paths, serialize_workflow_result
@@ -17,7 +18,7 @@ class FakeDesktopCore:
             return "中方"
         return ""
 
-    def parse_actual_pdf_sources(self, sources, uploaded_calendar_df=None):
+    def parse_actual_pdf_sources(self, sources, uploaded_calendar_df=None, progress=None):
         blocks = [
             {
                 "name": "张三",
@@ -60,9 +61,18 @@ class FakeDesktopCore:
         return b"xlsx"
 
 
+def _minimal_pdf_bytes() -> bytes:
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((72, 72), "Konggu timetable Monday Week 1")
+    data = document.tobytes()
+    document.close()
+    return data
+
+
 def test_desktop_workflow_parse_serializes_and_exports(tmp_path: Path):
     pdf = tmp_path / "张三-中方课表.pdf"
-    pdf.write_bytes(b"%PDF-1.4\n%%EOF")
+    pdf.write_bytes(_minimal_pdf_bytes())
     core = FakeDesktopCore()
 
     result = parse_pdf_paths(schedule_core=core, paths=[str(pdf)])
@@ -81,16 +91,15 @@ def test_desktop_workflow_parse_serializes_and_exports(tmp_path: Path):
     assert payload["detected_max_week"] == 3
     assert payload["members"][0]["member"] == "张三"
     assert payload["availability_preview"][0]["周次"] == 3
-    assert payload["details"][0]["inspection_status"] == "unavailable"
-    assert payload["details"][0]["pdf_type"] == "unknown"
-    assert snapshot["generation"]["pdf_inspections"][0]["status"] == "unavailable"
+    assert payload["details"][0]["inspection_status"] == "ready"
+    assert snapshot["generation"]["pdf_inspections"][0]["status"] == "ready"
     assert exported.name == "空课结果.xlsx"
     assert exported.read_bytes() == b"xlsx"
 
 
 def test_desktop_workflow_export_can_override_week_count(tmp_path: Path):
     pdf = tmp_path / "张三-中方课表.pdf"
-    pdf.write_bytes(b"%PDF-1.4\n%%EOF")
+    pdf.write_bytes(_minimal_pdf_bytes())
     core = FakeDesktopCore()
     result = parse_pdf_paths(schedule_core=core, paths=[str(pdf)])
 
@@ -116,6 +125,22 @@ def test_desktop_workflow_rejects_non_pdf(tmp_path: Path):
         raise AssertionError("Expected non-PDF input to be rejected.")
 
 
+def test_desktop_workflow_honors_cancellation_after_input_preflight(tmp_path: Path):
+    pdf = tmp_path / "张三-中方课表.pdf"
+    pdf.write_bytes(_minimal_pdf_bytes())
+
+    try:
+        parse_pdf_paths(
+            schedule_core=FakeDesktopCore(),
+            paths=[str(pdf)],
+            cancelled=lambda: True,
+        )
+    except InterruptedError as exc:
+        assert str(exc) == "处理已取消。"
+    else:
+        raise AssertionError("Cancellation should stop before PDF inspection and parsing.")
+
+
 def test_desktop_workflow_rejects_unknown_schedule_kind(tmp_path: Path):
     pdf = tmp_path / "张三.pdf"
     pdf.write_bytes(b"%PDF-1.4\n%%EOF")
@@ -130,9 +155,68 @@ def test_desktop_workflow_rejects_unknown_schedule_kind(tmp_path: Path):
         raise AssertionError("Expected unknown schedule kind to be rejected.")
 
 
+def test_desktop_workflow_blocks_invalid_pdf_before_generation(tmp_path: Path):
+    pdf = tmp_path / "张三-中方课表.pdf"
+    pdf.write_bytes(b"not-a-pdf")
+    core = FakeDesktopCore()
+
+    try:
+        parse_pdf_paths(schedule_core=core, paths=[str(pdf)])
+    except ValueError as exc:
+        assert "安全检查" in str(exc)
+    else:
+        raise AssertionError("Invalid PDF must be blocked before generation.")
+
+
+def test_desktop_workflow_rejects_too_many_input_files(tmp_path: Path):
+    paths = []
+    content = _minimal_pdf_bytes()
+    for index in range(33):
+        path = tmp_path / f"成员{index}-中方课表.pdf"
+        path.write_bytes(content)
+        paths.append(str(path))
+
+    try:
+        parse_pdf_paths(schedule_core=FakeDesktopCore(), paths=paths)
+    except ValueError as exc:
+        assert "最多处理 32 份" in str(exc)
+    else:
+        raise AssertionError("The batch file limit must be enforced.")
+
+
+def test_desktop_workflow_keeps_input_identity_conflict_as_blocking_issue(tmp_path: Path):
+    first = tmp_path / "活动部-张三-干事-中方课表.pdf"
+    duplicate = tmp_path / "活动部-李四-干事-中方课表.pdf"
+    content = _minimal_pdf_bytes()
+    first.write_bytes(content)
+    duplicate.write_bytes(content)
+
+    result = parse_pdf_paths(
+        schedule_core=FakeDesktopCore(),
+        paths=[str(first), str(duplicate)],
+        enforce_quality=True,
+    )
+
+    assert result.process_result.quality_state == "blocked"
+    assert {issue.code for issue in result.process_result.issues} >= {
+        "INPUT_PREFLIGHT_FAILED",
+        "MEMBER_SCHEDULE_INCOMPLETE",
+    }
+    try:
+        export_excel(
+            schedule_core=FakeDesktopCore(),
+            workflow_result=result,
+            target_path=str(tmp_path / "must-not-export.xlsx"),
+        )
+    except ValueError as exc:
+        assert "不能生成正式多人空课表" in str(exc)
+    else:
+        raise AssertionError("Input identity conflicts must block export.")
+
+
 def test_visual_export_mode_is_reserved(tmp_path: Path):
     pdf = tmp_path / "张三-中方课表.pdf"
-    pdf.write_bytes(b"%PDF-1.4\n%%EOF")
+    pdf.write_bytes(_minimal_pdf_bytes())
     core = FakeDesktopCore()
     result = parse_pdf_paths(schedule_core=core, paths=[str(pdf)])
 

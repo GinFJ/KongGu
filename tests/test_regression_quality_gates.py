@@ -156,6 +156,19 @@ class TestBlockedScenario:
         assert state == "blocked"
         assert any(issue.code == "NO_COURSE_BLOCKS" for issue in issues)
 
+    def test_single_side_member_is_blocked_when_quality_is_enforced(self):
+        member = _make_member("赵六", "活动部", "干事")
+        member.has_english = False
+        member.english_status = "未导入"
+        records = [_make_file_record(_make_source("活动部-赵六-干事-中方课表.pdf", "中方", "zhao-cn"))]
+
+        state, issues = evaluate_quality(file_records=records, members=[member], enforce_identity=True)
+
+        assert state == "blocked"
+        assert any(issue.code == "MEMBER_SCHEDULE_INCOMPLETE" for issue in issues)
+        with pytest.raises(ValueError, match="不能生成正式多人空课表"):
+            assert_export_allowed(state, issues)
+
     def test_schedule_conflict_triggers_needs_review_and_blocks_export(self):
         """SCHEDULE_CONFLICT is warning-level, so overall state is needs_review (not blocked).
         But it still blocks_export."""

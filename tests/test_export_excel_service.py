@@ -83,3 +83,72 @@ def test_schedule_core_export_builds_weekly_matrix_workbook():
     assert sheet["B19"].value == "张三，李四，王五"
     assert sheet["B33"].value == "张三，李四"
     assert sheet["R75"].value == "李四，王五"
+
+
+def test_schedule_core_export_only_shows_member_names():
+    data = schedule_core.build_empty_schedule_excel_bytes(
+        occupancy={(6, "周一", 1): {"刘金富｜办公室｜部长"}},
+        students=["刘金富｜办公室｜部长", "高怡昕｜办公室｜部长"],
+        weeks=[6],
+        calendar_df=pd.DataFrame(),
+        timetable_df=schedule_core.default_timetable(),
+        blocks_df=pd.DataFrame(
+            [{"name": "刘金富", "member_key": "刘金富｜办公室｜部长", "course": "课程A"}]
+        ),
+        all_slot_df=pd.DataFrame(
+            [{
+                "week": 6,
+                "weekday": "周一",
+                "period": 1,
+                "time": "08:10-08:55",
+                "free_count": 1,
+                "free_members": "高怡昕｜办公室｜部长",
+                "occupied_count": 1,
+                "occupied_members": "刘金富｜办公室｜部长",
+            }]
+        ),
+        file_df=pd.DataFrame([{"成员": "刘金富｜办公室｜部长"}]),
+    )
+
+    workbook = load_workbook(BytesIO(data))
+    values = [
+        str(cell.value)
+        for sheet in workbook.worksheets
+        for row in sheet.iter_rows()
+        for cell in row
+        if cell.value is not None
+    ]
+
+    assert any("刘金富" in value for value in values)
+    assert any("高怡昕" in value for value in values)
+    assert all("办公室" not in value and "部长" not in value for value in values)
+
+
+def test_schedule_core_export_neutralizes_formula_like_imported_text():
+    data = schedule_core.build_empty_schedule_excel_bytes(
+        occupancy={(6, "周一", 1): {"=HYPERLINK(\"https://example.invalid\")"}},
+        students=["=HYPERLINK(\"https://example.invalid\")", "+SUM(1,1)"],
+        weeks=[6],
+        calendar_df=pd.DataFrame(),
+        timetable_df=schedule_core.default_timetable(),
+        blocks_df=pd.DataFrame(
+            [{"name": "@user", "course": "-10", "message": "\t=NOW()"}]
+        ),
+        all_slot_df=pd.DataFrame(
+            [{"free_members": "=HYPERLINK(\"https://example.invalid\")"}]
+        ),
+    )
+
+    workbook = load_workbook(BytesIO(data), data_only=False)
+    values = [
+        cell.value
+        for sheet in workbook.worksheets
+        for row in sheet.iter_rows()
+        for cell in row
+        if isinstance(cell.value, str)
+    ]
+
+    assert values
+    assert all(cell.data_type != "f" for sheet in workbook.worksheets for row in sheet.iter_rows() for cell in row)
+    assert "'=HYPERLINK(\"https://example.invalid\")" in values
+    assert "'+SUM(1,1)" in values

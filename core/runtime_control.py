@@ -23,4 +23,4 @@ def cancellation_scope(check: Callable[[], bool] | None) -> Iterator[None]:
 def raise_if_cancelled() -> None:
     check = getattr(_STATE, "cancel_check", None)
     if check and check():
-        raise InterruptedError("任务已取消。")
+        raise InterruptedError("处理已取消。")

@@ -1,5 +1,6 @@
 from dataclasses import asdict
 import json
+import sqlite3
 
 from core.benchmark import evaluate_samples
 from core.identity import identity_from_filename
@@ -10,6 +11,151 @@ from core.runtime_control import cancellation_scope, raise_if_cancelled
 from core.signature import build_parser_signature
 from app.services.review_service import confirm_issue
 from app.services.state_store import StateStore
+
+
+def _create_v1_state_database(path):
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE schema_info (version INTEGER NOT NULL);
+        INSERT INTO schema_info(version) VALUES (1);
+        CREATE TABLE jobs (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            parser_signature TEXT NOT NULL,
+            request_json TEXT NOT NULL,
+            result_json TEXT,
+            error TEXT NOT NULL DEFAULT '',
+            quality_state TEXT NOT NULL DEFAULT 'blocked',
+            current INTEGER NOT NULL DEFAULT 0,
+            total INTEGER NOT NULL DEFAULT 0,
+            active_source_id TEXT
+        );
+        CREATE TABLE issues (
+            issue_id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            payload_json TEXT NOT NULL,
+            confirmed INTEGER NOT NULL DEFAULT 0,
+            confirmed_at TEXT
+        );
+        INSERT INTO jobs(
+            id,status,created_at,updated_at,parser_signature,request_json
+        ) VALUES ('old-job','completed','2026-08-01T00:00:00Z','2026-08-01T00:00:00Z','sig','{}');
+        INSERT INTO issues(issue_id,job_id,payload_json,confirmed,confirmed_at)
+        VALUES ('same-issue','old-job','{"issue_id":"same-issue"}',1,'2026-08-01T00:01:00Z');
+        """
+    )
+    connection.commit()
+    connection.close()
+
+
+def test_state_store_migrates_issue_key_without_losing_history(tmp_path):
+    database = tmp_path / "state.sqlite3"
+    _create_v1_state_database(database)
+
+    store = StateStore(database)
+    old_job = store.get_job("old-job")
+
+    assert old_job["issues"] == [
+        {
+            "issue_id": "same-issue",
+            "confirmed": True,
+            "confirmed_at": "2026-08-01T00:01:00Z",
+        }
+    ]
+    with store.connect() as connection:
+        assert connection.execute("SELECT version FROM schema_info").fetchone()[0] == 2
+        primary_key = {
+            row["name"]: row["pk"]
+            for row in connection.execute("PRAGMA table_info(issues)").fetchall()
+            if row["pk"]
+        }
+    assert primary_key == {"job_id": 1, "issue_id": 2}
+
+
+def test_same_issue_id_is_allowed_in_separate_jobs(tmp_path):
+    store = StateStore(tmp_path / "state.sqlite3")
+    first_job = store.create_job({}, "sig", [])
+    second_job = store.create_job({}, "sig", [])
+    issue = {"issue_id": "same-issue", "message": "需要核对"}
+
+    store.replace_issues(first_job, [issue])
+    store.replace_issues(second_job, [issue])
+
+    assert store.get_job(first_job)["issues"][0]["issue_id"] == "same-issue"
+    assert store.get_job(second_job)["issues"][0]["issue_id"] == "same-issue"
+
+
+def test_state_store_hides_source_paths_and_request_paths_by_default(tmp_path):
+    store = StateStore(tmp_path / "state.sqlite3")
+    source = "C:/Users/member/Documents/办公室-张三-中方课表.pdf"
+    job_id = store.create_job({"paths": [source], "explicit_kind": "中方"}, "sig", [source])
+
+    public = store.get_job(job_id, include_result=False)
+    internal = store.get_job(job_id, include_result=False, include_sensitive_paths=True)
+
+    assert "paths" not in public["request"]
+    assert public["request"]["file_count"] == 1
+    assert "source_path" not in public["files"][0]
+    assert internal["files"][0]["source_path"] == source
+
+    store.clear_all_data()
+    assert store.get_job(job_id) is None
+
+
+def test_state_store_maps_session_paths_by_file_name(tmp_path):
+    store = StateStore(tmp_path / "state.sqlite3")
+    first = "C:/one/张三-中方课表.pdf"
+    second = "C:/two/李四-英方课表.pdf"
+    job_id = store.create_job({}, "sig", [first, second])
+
+    assert store.source_path_map_for_job(job_id) == {
+        "张三-中方课表.pdf": first,
+        "李四-英方课表.pdf": second,
+    }
+    reopened = StateStore(tmp_path / "state.sqlite3")
+    assert reopened.source_path_map_for_job(job_id) == {}
+
+
+def test_state_store_purges_old_jobs_on_startup(tmp_path):
+    database = tmp_path / "state.sqlite3"
+    store = StateStore(database)
+    job_id = store.create_job({}, "sig", [])
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE jobs SET updated_at='2020-01-01T00:00:00Z' WHERE id=?",
+            (job_id,),
+        )
+
+    reopened = StateStore(database)
+    assert reopened.get_job(job_id) is None
+
+
+def test_save_job_result_rolls_back_job_status_when_issue_persistence_fails(tmp_path):
+    store = StateStore(tmp_path / "state.sqlite3")
+    job_id = store.create_job({}, "sig", [])
+
+    try:
+        store.save_job_result(
+            job_id,
+            result_json='{"version":1}',
+            error="",
+            quality_state="blocked",
+            current=0,
+            total=0,
+            issues=[{"issue_id": "duplicate"}, {"issue_id": "duplicate"}],
+        )
+    except sqlite3.IntegrityError:
+        pass
+    else:
+        raise AssertionError("Duplicate issue IDs in one job must fail atomically.")
+
+    job = store.get_job(job_id)
+    assert job["status"] == "queued"
+    assert job["result"] is None
+    assert job["issues"] == []
 
 
 def test_member_identity_uses_name_department_and_role():

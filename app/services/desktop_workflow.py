@@ -18,14 +18,18 @@ from app.services.pdf_source_service import add_pdf_sources
 from app.services.result_view_service import build_gui_process_result
 from app.services.state_store import StateStore
 from app.services.workflow_persistence import restore_workflow, snapshot_workflow
+from app.privacy import safe_error_message
 from core.quality import assert_export_allowed, evaluate_quality
 from core.signature import build_parser_signature
 from core.runtime_control import cancellation_scope
-from core.models import ProcessResult
-from core.pdf_inspection import inspect_pdf_sources
+from core.models import ParseIssue, ProcessResult
+from core.pdf_inspection import MAX_PDF_BYTES, inspect_pdf_sources
 
 
 WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+MAX_INPUT_FILES = 32
+MAX_TOTAL_PDF_BYTES = 200 * 1024 * 1024
+MAX_TOTAL_PDF_PAGES = 1000
 
 
 @dataclass(slots=True)
@@ -53,14 +57,23 @@ def parse_pdf_paths(
     pdf_paths = [str(Path(path)) for path in paths if str(path).strip()]
     if not pdf_paths:
         raise ValueError("请先选择课表 PDF。")
+    if len(pdf_paths) > MAX_INPUT_FILES:
+        raise ValueError(f"一次最多处理 {MAX_INPUT_FILES} 份 PDF。")
 
     non_pdf = [path for path in pdf_paths if Path(path).suffix.lower() != ".pdf"]
     if non_pdf:
         raise ValueError("仅支持 PDF 文件：" + "、".join(Path(path).name for path in non_pdf))
     if cancelled and cancelled():
-        raise InterruptedError("任务已取消。")
+        raise InterruptedError("处理已取消。")
+    existing_paths = [Path(path) for path in pdf_paths if Path(path).is_file()]
+    oversized = [path.name for path in existing_paths if path.stat().st_size > MAX_PDF_BYTES]
+    if oversized:
+        raise ValueError(f"PDF 超过单文件大小上限（{MAX_PDF_BYTES // 1024 // 1024} MB）：" + "、".join(oversized))
+    total_bytes = sum(path.stat().st_size for path in existing_paths)
+    if total_bytes > MAX_TOTAL_PDF_BYTES:
+        raise ValueError(f"本批 PDF 总大小不能超过 {MAX_TOTAL_PDF_BYTES // 1024 // 1024} MB。")
     if progress:
-        progress("text_layer", 0, len(pdf_paths), "正在读取 PDF 文本层并识别课表类型")
+        progress("text_layer", 0, len(pdf_paths), "正在读取课表文字并判断中方、英方课表")
 
     add_result = add_pdf_sources(
         paths=pdf_paths,
@@ -68,29 +81,70 @@ def parse_pdf_paths(
         existing_sources=[],
         schedule_core=schedule_core,
     )
-    errors = [f"{path.name}: {exc}" for path, exc in add_result.errors]
+    if cancelled and cancelled():
+        raise InterruptedError("处理已取消。")
+    errors = [f"{path.name}: {safe_error_message(exc)}" for path, exc in add_result.errors]
     warnings = [f"已跳过：{item}" for item in add_result.skipped]
+    preflight_issues = [
+        ParseIssue(
+            code="INPUT_PREFLIGHT_FAILED",
+            message=safe_error_message(exc),
+            severity="error",
+            source_file=path.name,
+            suggestion="核对成员身份、课表类型和文件来源后重新导入整批课表。",
+            blocks_export=True,
+        )
+        for path, exc in add_result.errors
+    ]
     if not add_result.added:
         if errors:
             raise ValueError("没有可解析的课表 PDF：" + "；".join(errors))
         raise ValueError("PDF 文件读取失败，请检查文件是否可访问。")
 
     if progress:
-        progress("pdf_inspection", 0, len(add_result.added), "正在检查 PDF 类型、文本层和逐页 OCR 建议")
+        progress("pdf_inspection", 0, len(add_result.added), "正在检查文件是否需要图片文字识别")
     pdf_inspections = inspect_pdf_sources(add_result.added)
+    if cancelled and cancelled():
+        raise InterruptedError("处理已取消。")
+
+    inspection_issues: list[ParseIssue] = []
+    ready_sources = []
+    for source, inspection in zip(add_result.added, pdf_inspections):
+        if inspection.get("status") == "ready":
+            ready_sources.append(source)
+            continue
+        source_file = source.file_name
+        message = str(inspection.get("error") or "PDF 结构检查未通过，已阻止继续解析。")
+        inspection_issues.append(
+            ParseIssue(
+                code="PDF_INSPECTION_BLOCKED",
+                message=message,
+                severity="error",
+                source_file=source_file,
+                suggestion="请重新导出可读取、未加密且未超过资源限制的 PDF。",
+                blocks_export=True,
+            )
+        )
+        errors.append(f"{source_file}：{message}")
+    total_pages = sum(int(item.get("page_count") or 0) for item in pdf_inspections)
+    if total_pages > MAX_TOTAL_PDF_PAGES:
+        raise ValueError(f"本批 PDF 总页数不能超过 {MAX_TOTAL_PDF_PAGES} 页。")
+    if not ready_sources:
+        raise ValueError("没有通过 PDF 安全检查的课表，已阻止继续解析。")
 
     if progress:
-        progress("course_parse", 0, len(add_result.added), "正在解析课程占用槽")
+        progress("course_parse", 0, len(ready_sources), "正在整理课程时间")
     with cancellation_scope(cancelled):
         generation = generate_availability(
             schedule_core=schedule_core,
-            selected_sources=add_result.added,
+            selected_sources=ready_sources,
             root_dir="",
             weekdays=WEEKDAYS,
             pdf_inspections=pdf_inspections,
+            progress=progress,
         )
     if cancelled and cancelled():
-        raise InterruptedError("任务已取消。")
+        raise InterruptedError("处理已取消。")
     preview = build_availability_preview(
         occupancy=generation.occupancy,
         students=generation.students,
@@ -116,6 +170,7 @@ def parse_pdf_paths(
     quality_state, issues = evaluate_quality(
         file_records=process_result.file_records,
         members=process_result.members,
+        inherited_issues=[*preflight_issues, *inspection_issues],
         enforce_identity=enforce_quality,
     )
     process_result.quality_state = quality_state
@@ -124,9 +179,9 @@ def parse_pdf_paths(
     if progress:
         progress(
             "review" if quality_state != "accepted" else "completed",
-            len(add_result.added),
-            len(add_result.added),
-            "解析完成，等待人工复核" if quality_state != "accepted" else "解析与质量门禁已通过",
+            len(ready_sources),
+            len(ready_sources),
+            "课表已处理，请核对标记内容" if quality_state != "accepted" else "空课表已生成，可以导出",
         )
 
     return DesktopWorkflowResult(
@@ -248,16 +303,15 @@ def save_workflow_result(
     )
     workflow_result.process_result.job_id = result_id
     snapshot = snapshot_workflow(workflow_result)
-    store.update_job(
+    store.save_job_result(
         result_id,
-        status="completed",
         result_json=json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
         error="",
         quality_state=workflow_result.process_result.quality_state,
         current=len(workflow_result.generation_result.model_sources),
         total=len(workflow_result.generation_result.model_sources),
+        issues=snapshot.get("issues", []),
     )
-    store.replace_issues(result_id, snapshot.get("issues", []))
     return result_id
 
 
@@ -324,7 +378,7 @@ def _collect_result_warnings(result: ProcessResult, generation_errors: list[str]
     warnings = list(generation_errors or [])
     for record in result.file_records:
         if file_record_has_warning(record):
-            message = record.display_result or "未识别到有效课程块"
+            message = record.display_result or "未识别到有效课程时间"
             warnings.append(f"{record.source.file_name}: {message}")
     return [str(warning) for warning in warnings if warning]
 
@@ -334,7 +388,7 @@ def _inspection_warnings(inspections: list[dict[str, Any]]) -> list[str]:
     for inspection in inspections:
         source_file = str(inspection.get("source_file") or "PDF")
         if inspection.get("has_encoding_issues"):
-            warnings.append(f"{source_file}: PDF 文本层存在编码异常，已保留逐页 OCR 建议供复核。")
+            warnings.append(f"{source_file}: 直接读取的文字可能异常，请在原文核对中检查标记页面。")
         if inspection.get("status") != "ready":
             message = str(inspection.get("error") or "未能完成结构检查")
             warnings.append(f"{source_file}: {message}")

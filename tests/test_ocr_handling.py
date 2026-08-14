@@ -41,6 +41,38 @@ def test_image_only_pdf_uses_ocr_text(monkeypatch):
     assert blocks[0]["text_source"] == "OCR"
 
 
+def test_parse_actual_pdf_sources_reports_each_completed_file(monkeypatch):
+    sources = [
+        {"file_name": "张三-中方课表.pdf", "kind": "中方", "source_path": "D:/fake-a.pdf"},
+        {"file_name": "李四-中方课表.pdf", "kind": "中方", "source_path": "D:/fake-b.pdf"},
+    ]
+    events = []
+    block = {
+        "name": "成员",
+        "source": "中方",
+        "source_type": "中方",
+        "kind": "中方",
+        "week": 3,
+        "date": "2026-03-16",
+        "weekday": "周一",
+        "period": 1,
+        "periods": [1],
+        "time": "08:10-08:55",
+        "course": "高等数学",
+    }
+
+    monkeypatch.setattr(schedule_core, "_load_parse_cache", lambda source, kind: None)
+    monkeypatch.setattr(schedule_core, "_parse_chinese_pdf_layout", lambda source, file_name: [dict(block)])
+    monkeypatch.setattr(schedule_core, "_finalize_parsed_blocks", lambda parsed, file_name, kind: parsed)
+    monkeypatch.setattr(schedule_core, "_write_parse_cache", lambda source, kind, blocks: None)
+
+    parsed, _calendar, errors, _preview = schedule_core.parse_actual_pdf_sources(sources, progress=lambda *event: events.append(event))
+
+    assert len(parsed) == 2
+    assert errors == []
+    assert [(event[0], event[1]) for event in events] == [(1, 2), (2, 2)]
+
+
 def test_image_only_pdf_reports_ocr_configuration_error(monkeypatch):
     source = {"file_name": "张三-中方课表.pdf", "kind": "中方", "source_path": "D:/fake.pdf"}
 

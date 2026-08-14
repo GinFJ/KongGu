@@ -6,7 +6,6 @@ import argparse
 import json
 import sys
 import threading
-import traceback
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +13,8 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.bootstrap import load_schedule_core
-from app.offline_resources import configure_offline_environment, repair_resources, resource_status
+from app.privacy import safe_error_message
+from app.offline_resources import clear_processing_cache, configure_offline_environment, repair_resources, resource_status
 from app.services.calendar_settings import apply_calendar_settings, load_calendar_settings, save_calendar_settings
 from app.services.desktop_workflow import (
     export_excel,
@@ -27,7 +27,22 @@ from core.models import PdfSource
 from core.pdf_inspection import inspect_pdf_sources
 
 
+def _configure_stdio() -> None:
+    """Keep sidecar protocol and diagnostics decodable by the Tauri shell plugin."""
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            # Test doubles and already-closed streams may not support reconfiguration.
+            continue
+
+
 def main(argv: list[str] | None = None) -> int:
+    _configure_stdio()
     parser = argparse.ArgumentParser(description="Konggu desktop sidecar.")
     parser.add_argument("--request", type=Path, help="Path to a JSON request file.")
     parser.add_argument("--request-json", help="Inline JSON request.")
@@ -42,8 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         response = {
             "ok": False,
-            "error": str(exc),
-            "traceback": traceback.format_exc(),
+            "error": safe_error_message(exc),
         }
     sys.stdout.write(json.dumps(response, ensure_ascii=False))
     sys.stdout.write("\n")
@@ -64,6 +78,10 @@ def dispatch(
         return resource_status(check_runtime=True)
     if command == "resources.repair":
         return repair_resources()
+    if command == "data.clear":
+        store = coordinator.store if coordinator is not None else StateStore.from_resource_paths(paths)
+        store.clear_all_data()
+        return {"ok": True, "cleared_cache": clear_processing_cache(paths)}
     if command == "settings.calendar.get":
         return {"ok": True, "settings": load_calendar_settings(paths)}
     if command == "settings.calendar.save":
@@ -156,6 +174,7 @@ def dispatch(
 def serve() -> int:
     """Serve one persistent NDJSON connection over stdin/stdout."""
 
+    _configure_stdio()
     output_lock = threading.Lock()
 
     def write_message(message: dict[str, Any]) -> None:
@@ -180,7 +199,7 @@ def serve() -> int:
                 "stage": "failed",
                 "current": 0,
                 "total": 0,
-                "message": str(exc),
+                "message": safe_error_message(exc),
             }
         )
         return 1
@@ -210,7 +229,7 @@ def serve() -> int:
                         "id": request_id,
                         "type": "response",
                         "ok": False,
-                        "error": str(result.get("error") or "sidecar 执行失败。"),
+                        "error": safe_error_message(result.get("error"), "本地识别功能执行失败。"),
                     }
                 )
         except Exception as exc:
@@ -219,7 +238,7 @@ def serve() -> int:
                     "id": request_id,
                     "type": "response",
                     "ok": False,
-                    "error": str(exc),
+                    "error": safe_error_message(exc),
                 }
             )
     return 0
@@ -234,7 +253,7 @@ def _load_request(args: argparse.Namespace) -> dict[str, Any]:
         data = sys.stdin.read()
         if data.strip():
             return json.loads(data.lstrip("\ufeff"))
-    raise ValueError("缺少 sidecar 请求。")
+    raise ValueError("没有收到可执行的处理请求。")
 
 
 if __name__ == "__main__":
