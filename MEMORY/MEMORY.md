@@ -19,8 +19,8 @@
 
 ## 三、当前状态（2026-08-14 核验）
 
-- 分支：`kongguV0.1`；当前提交：本轮 0.5.2 提交（以 Git 当前核验为准）；0.4.2 功能提交：`84bebd7`
-- 源码版本：0.5.2（安全与隐私加固、任务问题持久化隔离和发布门禁修复已完成源码验证；本轮提交已完成，推送状态以 GitHub 远端核验为准）
+- 分支：`kongguV0.1`；当前提交：`0ec0cc0`（已与 GitHub 远端核对）；0.4.2 功能提交：`84bebd7`
+- 源码版本：0.5.2（安全与隐私加固、任务问题持久化隔离、识别链路修复和发布门禁修复已完成源码验证；本轮提交已推送到 GitHub）
 - 技术栈：Tauri 2 + Vite/TypeScript + Python sidecar（PyMuPDF、pdf-inspector、PaddleOCR、pandas、openpyxl、PyInstaller）
 - Python 全量测试 163 passed、3 warnings；TypeScript、前端构建、cargo check、取消处理回归、任务问题持久化隔离、识别链路和安全隐私专项回归通过（2026-08-14，详见 `事实.md`）；阿谷处理中与完成动作、原文核对和 Windows 辅助功能仍需真实桌面逐态验收
 - 真实样本库：已在仓库外整理；70 份 PDF 组成 35 组完整中英课表；仓库内建立脱敏索引和待人工填写的真值模板，不把自动接受率表述为准确率
@@ -39,4 +39,4 @@
 
 - 日期：2026-08-14
 - 内容：完成 0.5.2 安全与隐私加固、任务问题持久化隔离、发布校验脚本收口和 Windows 候选安装包构建。
-- 证据状态：本轮 0.5.2 提交已生成；Python 全量 163 passed、3 warnings；TypeScript、Vite、Cargo locked check、发布包静态校验、全新用户目录资源修复和当前 release 启动冒烟均已验证。安装包未签名，另一台电脑安装、断网、卸载、WebView2 和用户数据库迁移仍待实机验收。
+- 证据状态：本轮 0.5.2 提交 `0ec0cc0` 已推送；Python 全量 163 passed、3 warnings；TypeScript、Vite、Cargo locked check、发布包静态校验、全新用户目录资源修复和当前 release 启动冒烟均已验证。安装包未签名，另一台电脑安装、断网、卸载、WebView2 和用户数据库迁移仍待实机验收。
