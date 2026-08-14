@@ -30,6 +30,29 @@ def test_main_flow_uses_user_task_language() -> None:
         assert internal_copy not in main
 
 
+def test_startup_repairs_local_resources_automatically() -> None:
+    main = _source("src/main.ts")
+    boot = main.split("async function boot()", 1)[1].split("async function chooseFiles", 1)[0]
+
+    assert 'client.request<{ ok: boolean; status: ResourceStatus; copied: string[] }>("resources.repair")' in boot
+    assert "const resources = resourceRepair.status;" in boot
+    assert "本地识别资源未能自动准备，请点击修复" in boot
+
+
+def test_blocking_issues_do_not_render_confirm_only_actions() -> None:
+    main = _source("src/main.ts")
+    review = _source("src/reviewView.ts")
+
+    assert "${issueAction(issue)}" in main
+    assert "function issueAction(issue: ParseResult[\"issues\"][number])" in main
+    assert "if (issue.severity === \"error\")" in main
+    assert "请先补充或修正课表，再重新生成空课表。" in main
+    assert "${issueAction(issue)}" in review
+    assert "function issueAction(issue: ParseIssue)" in review
+    assert "if (issue.severity === \"error\")" in review
+    assert "请先补充或修正课表，再重新生成空课表。" in review
+
+
 def test_welcome_copy_uses_confirmed_slogan_and_concrete_language() -> None:
     main = _source("src/main.ts")
 

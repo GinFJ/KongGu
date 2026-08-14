@@ -32,6 +32,11 @@ def test_resource_repair_copies_bundled_files_and_reports_ready_config(tmp_path:
     assert (app_data / "resources" / "config" / "period_time.json").exists()
     assert (app_data / "ocr_models" / "PP-OCRv4_mobile_det" / "inference.yml").exists()
 
+    repaired_again = repair_resources()
+    assert repaired_again["ok"] is True
+    assert repaired_again["copied"] == []
+    assert repaired_again["status"]["ready"] is True
+
 
 def test_resource_status_reports_hash_mismatch(tmp_path: Path, monkeypatch):
     bundled = tmp_path / "bundled"

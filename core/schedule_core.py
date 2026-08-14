@@ -83,7 +83,7 @@ NON_CLASS_KEYWORDS = {
 
 _OCR_ENGINE = None
 LOGGER = logging.getLogger("konggu")
-PARSE_CACHE_VERSION = 33
+PARSE_CACHE_VERSION = 34
 OCR_LAYOUT_CACHE_VERSION = 3
 NAME_STOPWORDS = {
     "办公室",
@@ -371,10 +371,28 @@ def parse_actual_pdf_sources(
         kind = _source_kind(source)
         image_only_pdf = False
         used_ocr = False
+
+        def report_ocr_progress(current_page: int, total_pages: int) -> None:
+            if progress:
+                progress(
+                    completed,
+                    len(sources),
+                    f"{file_name} 正在进行图片文字识别（第 {current_page}/{total_pages} 页）",
+                )
+
+        ocr_progress = report_ocr_progress if progress else None
+
+        def extract_ocr_text() -> str:
+            if ocr_progress is None:
+                return _extract_pdf_ocr_text(source)
+            return _extract_pdf_ocr_text(source, progress=ocr_progress)
+
         try:
             cached = _load_parse_cache(source, kind)
             if cached is not None:
                 LOGGER.info("命中解析缓存: %s blocks=%s", file_name, len(cached))
+                for item in cached:
+                    item.setdefault("text_source", "内嵌文本")
                 blocks.extend(cached)
                 continue
 
@@ -384,6 +402,8 @@ def parse_actual_pdf_sources(
                 parsed = _parse_chinese_pdf_layout(source, file_name)
                 if parsed:
                     LOGGER.info("坐标表格解析完成: %s blocks=%s", file_name, len(parsed))
+                    for item in parsed:
+                        item.setdefault("text_source", "内嵌文本")
                     parsed = _finalize_parsed_blocks(parsed, file_name, kind)
                     _write_parse_cache(source, kind, parsed)
                     blocks.extend(parsed)
@@ -391,6 +411,8 @@ def parse_actual_pdf_sources(
                 parsed = _parse_chinese_legacy_web_layout(source, file_name)
                 if parsed:
                     LOGGER.info("旧版网页课表解析完成: %s blocks=%s", file_name, len(parsed))
+                    for item in parsed:
+                        item.setdefault("text_source", "内嵌文本")
                     parsed = _finalize_parsed_blocks(parsed, file_name, kind)
                     _write_parse_cache(source, kind, parsed)
                     blocks.extend(parsed)
@@ -398,18 +420,21 @@ def parse_actual_pdf_sources(
             else:
                 parsed = _parse_english_pdf_grid_layout(source, file_name)
                 if parsed:
+                    ocr_parsed: list[dict[str, Any]] = []
                     if len(parsed) < 8:
                         try:
-                            ocr_parsed = _parse_english_ocr_week_grid(source, file_name)
+                            ocr_parsed = _parse_english_ocr_week_grid(source, file_name, progress=ocr_progress)
                         except OCRConfigurationError as exc:
                             LOGGER.warning("英方稀疏坐标解析 OCR 补扫失败: %s error=%s", file_name, exc)
                             ocr_parsed = []
-                        if len(ocr_parsed) > len(parsed):
-                            LOGGER.info("英方 OCR 补扫替换稀疏结果: %s blocks=%s -> %s", file_name, len(parsed), len(ocr_parsed))
-                            for item in ocr_parsed:
-                                item.setdefault("text_source", "OCR")
-                            parsed = ocr_parsed
+                    if len(ocr_parsed) > len(parsed):
+                        LOGGER.info("英方 OCR 补扫替换稀疏结果: %s blocks=%s -> %s", file_name, len(parsed), len(ocr_parsed))
+                        for item in ocr_parsed:
+                            item.setdefault("text_source", "OCR")
+                        parsed = ocr_parsed
                     LOGGER.info("英方坐标表格解析完成: %s blocks=%s", file_name, len(parsed))
+                    for item in parsed:
+                        item.setdefault("text_source", "内嵌文本")
                     parsed = _finalize_parsed_blocks(parsed, file_name, kind)
                     _write_parse_cache(source, kind, parsed)
                     blocks.extend(parsed)
@@ -421,7 +446,7 @@ def parse_actual_pdf_sources(
                 LOGGER.info("检测到图片型 PDF，进入 OCR: %s", file_name)
             if not _is_usable_extracted_text(text, kind):
                 LOGGER.info("内嵌文本质量不足，进入 OCR: %s", file_name)
-                text = _extract_pdf_ocr_text(source)
+                text = extract_ocr_text()
                 used_ocr = True
             if kind == "中方" and used_ocr:
                 embedded_name = _extract_chinese_name_from_text(text)
@@ -441,24 +466,24 @@ def parse_actual_pdf_sources(
             parsed = _parse_chinese_text(text, file_name) if kind == "中方" else _parse_english_text(text, file_name)
             if not parsed and not used_ocr:
                 LOGGER.info("内嵌文本解析为空，回退 OCR: %s", file_name)
-                ocr_text = _extract_pdf_ocr_text(source)
+                ocr_text = extract_ocr_text()
                 used_ocr = True
                 if ocr_text.strip():
                     parsed = _parse_chinese_text(ocr_text, file_name) if kind == "中方" else _parse_english_text(ocr_text, file_name)
             if not parsed:
                 parsed = (
-                    _parse_chinese_ocr_table_layout(source, file_name)
+                    _parse_chinese_ocr_table_layout(source, file_name, progress=ocr_progress)
                     if kind == "中方"
-                    else _parse_english_ocr_week_grid(source, file_name)
+                    else _parse_english_ocr_week_grid(source, file_name, progress=ocr_progress)
                 )
             elif kind == "中方" and used_ocr and image_only_pdf:
                 profile = detect_schedule_layout_profile(source, kind)
                 if profile == "cdut_undergrad_full_term_cn":
-                    table_parsed = _parse_chinese_ocr_table_layout(source, file_name)
+                    table_parsed = _parse_chinese_ocr_table_layout(source, file_name, progress=ocr_progress)
                     parsed = _choose_chinese_ocr_parse_candidate(parsed, table_parsed, file_name)
             if kind != "中方" and parsed and len(parsed) < 8:
                 try:
-                    ocr_parsed = _parse_english_ocr_week_grid(source, file_name)
+                    ocr_parsed = _parse_english_ocr_week_grid(source, file_name, progress=ocr_progress)
                 except OCRConfigurationError as exc:
                     LOGGER.warning("英方稀疏文本解析 OCR 补扫失败: %s error=%s", file_name, exc)
                     ocr_parsed = []
@@ -469,7 +494,7 @@ def parse_actual_pdf_sources(
                     parsed = ocr_parsed
                     used_ocr = True
             if not parsed and kind == "中方":
-                parsed = _parse_chinese_ocr_legacy_layout(source, file_name)
+                parsed = _parse_chinese_ocr_legacy_layout(source, file_name, progress=ocr_progress)
             if parsed:
                 for item in parsed:
                     item.setdefault("text_source", "OCR" if used_ocr else "内嵌文本")
@@ -1194,13 +1219,17 @@ def _is_image_only_pdf_text(text: str) -> bool:
     return len(text.strip()) == 0
 
 
-def _extract_pdf_ocr_text(source: dict[str, Any]) -> str:
+def _extract_pdf_ocr_text(
+    source: dict[str, Any],
+    *,
+    progress: Callable[[int, int], None] | None = None,
+) -> str:
     cache_path = _ocr_cache_path(source)
     if cache_path.exists():
         LOGGER.info("命中 OCR 缓存: %s", _source_name(source))
         return cache_path.read_text(encoding="utf-8", errors="ignore")
 
-    items = _extract_pdf_ocr_items(source)
+    items = _extract_pdf_ocr_items(source, progress=progress)
     pages: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for item in items:
         pages[int(item.get("page", 0))].append(item)
@@ -1216,7 +1245,11 @@ def _extract_pdf_ocr_text(source: dict[str, Any]) -> str:
     return text
 
 
-def _extract_pdf_ocr_items(source: dict[str, Any]) -> list[dict[str, Any]]:
+def _extract_pdf_ocr_items(
+    source: dict[str, Any],
+    *,
+    progress: Callable[[int, int], None] | None = None,
+) -> list[dict[str, Any]]:
     cache_path = _ocr_layout_cache_path(source)
     if cache_path.exists():
         try:
@@ -1243,6 +1276,7 @@ def _extract_pdf_ocr_items(source: dict[str, Any]) -> list[dict[str, Any]]:
     ocr = _build_ocr_engine()
     items: list[dict[str, Any]] = []
     try:
+        total_pages = max(1, int(doc.page_count))
         for page_number, page in enumerate(doc):
             pix = page.get_pixmap(dpi=120, alpha=False)
             image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
@@ -1258,6 +1292,8 @@ def _extract_pdf_ocr_items(source: dict[str, Any]) -> list[dict[str, Any]]:
                 raise OCRConfigurationError(_ocr_error_message(exc)) from exc
             items.extend(_extract_ocr_items_from_result(result, page_number, pix.width, pix.height))
             raise_if_cancelled()
+            if progress:
+                progress(page_number + 1, total_pages)
     finally:
         doc.close()
 
@@ -1350,7 +1386,7 @@ def detect_schedule_layout_profile(source: dict[str, Any], kind: str | None = No
     detected_kind = kind or _source_kind(source)
     text = _extract_pdf_text(source)
     items: list[dict[str, Any]] = []
-    if len(text.strip()) < 50:
+    if not _is_usable_extracted_text(text, detected_kind):
         try:
             items = _extract_pdf_ocr_items(source)
         except Exception:
@@ -1581,8 +1617,13 @@ def _parse_chinese_pdf_layout(source: dict[str, Any], file_name: str) -> list[di
     return all_blocks
 
 
-def _parse_chinese_ocr_table_layout(source: dict[str, Any], file_name: str) -> list[dict[str, Any]]:
-    items = _extract_pdf_ocr_items(source)
+def _parse_chinese_ocr_table_layout(
+    source: dict[str, Any],
+    file_name: str,
+    *,
+    progress: Callable[[int, int], None] | None = None,
+) -> list[dict[str, Any]]:
+    items = _extract_pdf_ocr_items(source, progress=progress)
     if not items:
         return []
     name = _extract_chinese_name("", file_name)
@@ -2170,8 +2211,13 @@ def _parse_chinese_legacy_web_layout(source: dict[str, Any], file_name: str) -> 
     return blocks
 
 
-def _parse_chinese_ocr_legacy_layout(source: dict[str, Any], file_name: str) -> list[dict[str, Any]]:
-    items = _extract_pdf_ocr_items(source)
+def _parse_chinese_ocr_legacy_layout(
+    source: dict[str, Any],
+    file_name: str,
+    *,
+    progress: Callable[[int, int], None] | None = None,
+) -> list[dict[str, Any]]:
+    items = _extract_pdf_ocr_items(source, progress=progress)
     if not items:
         return []
     text = "\n".join(str(item.get("text", "")) for item in items)
@@ -2341,8 +2387,13 @@ def _parse_chinese_text(text: str, file_name: str) -> list[dict[str, Any]]:
     return blocks
 
 
-def _parse_english_ocr_week_grid(source: dict[str, Any], file_name: str) -> list[dict[str, Any]]:
-    items = _extract_pdf_ocr_items(source)
+def _parse_english_ocr_week_grid(
+    source: dict[str, Any],
+    file_name: str,
+    *,
+    progress: Callable[[int, int], None] | None = None,
+) -> list[dict[str, Any]]:
+    items = _extract_pdf_ocr_items(source, progress=progress)
     if not items:
         return []
     name = _extract_chinese_name("", file_name)

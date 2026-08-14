@@ -64,6 +64,8 @@ let runAguMode = "";
 let completionPlayedFor = "";
 let richViewGeneration = 0;
 let cancelRequestedJobId = "";
+let completionProbeJobId = "";
+let completedJobId = "";
 const renderedHtmlCache = new WeakMap<HTMLElement, string>();
 
 const tabs: Tab[] = ["availability", "members", "files", "issues", "review", "calendar"];
@@ -83,19 +85,23 @@ client.onEvent((event) => {
   state.statusText = cancellationPending ? "正在完成当前图片页后停止" : friendlyMessage(event.message);
   log(state.statusText, false);
   render();
+  if (event.stage === "review" || event.stage === "completed") {
+    void settleCompletedJob(event.job_id);
+  }
 });
 
 async function boot() {
   render();
   try {
     await Promise.all([client.start(), delay(900)]);
-    const [resources, settings] = await Promise.all([
-      client.request<ResourceStatus>("resources.status"),
+    const [resourceRepair, settings] = await Promise.all([
+      client.request<{ ok: boolean; status: ResourceStatus; copied: string[] }>("resources.repair"),
       client.request<{ ok: boolean; settings: CalendarSettings }>("settings.calendar.get")
     ]);
+    const resources = resourceRepair.status;
     state.resourceStatus = resources;
     state.calendarSettings = settings.settings;
-    state.statusText = resources.ready ? "准备完成，可以导入课表" : "识别功能不完整，请先修复";
+    state.statusText = resources.ready ? "准备完成，可以导入课表" : "本地识别资源未能自动准备，请点击修复";
     state.stage = "ready";
   } catch (error) {
     state.stage = "failed";
@@ -122,6 +128,8 @@ async function parseSchedules() {
   state.result = null;
   state.review = null;
   cancelRequestedJobId = "";
+  completionProbeJobId = "";
+  completedJobId = "";
   state.stage = "queued";
   state.statusText = "正在准备处理课表";
   render();
@@ -139,26 +147,60 @@ async function parseSchedules() {
   }
 }
 
+async function settleCompletedJob(jobId: string) {
+  if (!state.busy || state.jobId !== jobId || completionProbeJobId === jobId || completedJobId === jobId) return;
+  completionProbeJobId = jobId;
+  try {
+    const response = await client.request<JobResponse>("job.get", { job_id: jobId });
+    if (state.jobId !== jobId || response.job.status !== "completed") return;
+    await finishCompletedJob(jobId, response.job);
+  } catch {
+    // The polling loop remains the fallback for transient sidecar errors.
+  } finally {
+    if (completionProbeJobId === jobId) completionProbeJobId = "";
+  }
+}
+
+async function finishCompletedJob(jobId: string, job: JobResponse["job"]) {
+  if (state.jobId !== jobId || completedJobId === jobId) return;
+  completedJobId = jobId;
+  cancelRequestedJobId = "";
+  state.progress = { current: job.current, total: job.total };
+  state.result = job.output || null;
+  state.busy = false;
+  state.stage = state.result?.can_export ? "completed" : "review";
+  if (state.result?.detected_max_week) {
+    state.calendarSettings.teaching_weeks = state.result.detected_max_week;
+  }
+  state.activeTab = state.result?.can_export ? "availability" : "issues";
+  state.statusText = state.result
+    ? state.result.can_export
+      ? "空课表已生成，可以导出"
+      : resultActionText(state.result.quality_state)
+    : "课表已处理，但结果暂时无法载入，请重新生成。";
+  render();
+
+  if (!state.result) {
+    log(state.statusText);
+    return;
+  }
+
+  try {
+    state.review = await client.request<ReviewPayload>("review.get", { job_id: jobId });
+  } catch (error) {
+    state.statusText = `课表已处理，但原文核对暂时无法载入：${formatError(error)}`;
+  }
+  log(state.statusText);
+  render();
+}
+
 async function waitForJob(jobId: string) {
-  while (state.jobId === jobId) {
+  while (state.jobId === jobId && completedJobId !== jobId) {
     const response = await client.request<JobResponse>("job.get", { job_id: jobId });
     const job = response.job;
     state.progress = { current: job.current, total: job.total };
     if (job.status === "completed") {
-      cancelRequestedJobId = "";
-      state.result = job.output || null;
-      state.busy = false;
-      state.stage = "completed";
-      if (state.result?.detected_max_week) {
-        state.calendarSettings.teaching_weeks = state.result.detected_max_week;
-      }
-      state.review = await client.request<ReviewPayload>("review.get", { job_id: jobId });
-      state.activeTab = state.result?.can_export ? "availability" : "issues";
-      state.statusText = state.result?.can_export
-        ? "空课表已生成，可以导出"
-        : resultActionText(state.result?.quality_state || "blocked");
-      log(state.statusText);
-      render();
+      await finishCompletedJob(jobId, job);
       return;
     }
     if (["failed", "cancelled", "interrupted"].includes(job.status)) {
@@ -208,6 +250,8 @@ async function retryFailed() {
   if (!state.jobId || state.busy) return;
   state.busy = true;
   cancelRequestedJobId = "";
+  completionProbeJobId = "";
+  completedJobId = "";
   render();
   try {
     const started = await client.request<{ ok: boolean; job_id: string }>("job.retry_failed", {
@@ -315,11 +359,15 @@ async function applyReview(blockId: string, field: string, value: unknown, reaso
 
 async function confirmIssue(issueId: string) {
   if (!state.jobId) return;
-  state.review = await client.request<ReviewPayload>("review.confirm", {
-    job_id: state.jobId,
-    issue_id: issueId
-  });
-  await refreshJobOutput();
+  try {
+    state.review = await client.request<ReviewPayload>("review.confirm", {
+      job_id: state.jobId,
+      issue_id: issueId
+    });
+    await refreshJobOutput();
+  } catch (error) {
+    setStatus(`暂时无法确认：${formatError(error)}`);
+  }
 }
 
 async function refreshJobOutput() {
@@ -762,7 +810,7 @@ function renderPanel(tab: Tab, result: ParseResult) {
     return `<div class="issueTable">${result.issues.map((issue) => `<article class="${issue.confirmed ? "confirmed" : issue.severity}">
       <div><b>${issueStateLabel(issue)}</b></div>
       <h3>${escapeHtml(friendlyMessage(issue.message))}</h3><p>${escapeHtml(friendlyMessage(issue.suggestion || "请在“原文核对”中对照课表。"))}</p>
-      ${issue.confirmed ? "" : `<button data-confirm-inline="${issue.issue_id}">确认已核对</button>`}
+      ${issueAction(issue)}
     </article>`).join("")}</div>`;
   }
   if (tab === "review") return `<div class="loadingPanel">正在载入课表原文…</div>`;
@@ -862,6 +910,12 @@ function issueStateLabel(issue: ParseResult["issues"][number]) {
   if (issue.severity === "error") return "必须处理";
   if (issue.severity === "warning") return "请核对";
   return "请留意";
+}
+
+function issueAction(issue: ParseResult["issues"][number]) {
+  if (issue.confirmed) return "";
+  if (issue.severity === "error") return `<small class="issueActionHint">请先补充或修正课表，再重新生成空课表。</small>`;
+  return `<button data-confirm-inline="${escapeHtml(issue.issue_id)}">确认已核对</button>`;
 }
 
 function friendlyMessage(message: string) {

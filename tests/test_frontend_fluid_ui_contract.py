@@ -79,3 +79,14 @@ def test_cancel_fallback_survives_late_progress_events() -> None:
 
     assert "cancelRequestedJobId" in main
     assert "cancelRequestedJobId === jobId" in main
+
+
+def test_terminal_progress_event_settles_review_state_without_waiting_for_stop() -> None:
+    main = _source("src/main.ts")
+
+    assert 'event.stage === "review" || event.stage === "completed"' in main
+    assert "void settleCompletedJob(event.job_id);" in main
+    assert "async function settleCompletedJob(jobId: string)" in main
+    assert "state.busy = false;" in main
+    assert 'state.activeTab = state.result?.can_export ? "availability" : "issues";' in main
+    assert 'client.request<ReviewPayload>("review.get", { job_id: jobId })' in main

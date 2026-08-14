@@ -507,8 +507,14 @@ function issueCard(issue: ParseIssue) {
     <div><b>${issue.confirmed ? "已核对" : issue.severity === "error" ? "必须处理" : "请核对"}</b></div>
     <p>${escapeHtml(friendlyMessage(issue.message))}</p>
     ${issue.suggestion ? `<small>${escapeHtml(friendlyMessage(issue.suggestion))}</small>` : ""}
-    ${issue.confirmed ? "" : `<button data-confirm-issue="${escapeHtml(issue.issue_id)}">确认已核对</button>`}
+    ${issueAction(issue)}
   </article>`;
+}
+
+function issueAction(issue: ParseIssue) {
+  if (issue.confirmed) return "";
+  if (issue.severity === "error") return `<small class="issueActionHint">请先补充或修正课表，再重新生成空课表。</small>`;
+  return `<button data-confirm-issue="${escapeHtml(issue.issue_id)}">确认已核对</button>`;
 }
 
 function blockLabel(block: CourseRow) {

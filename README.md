@@ -243,7 +243,7 @@ schedule.pdf
 
 **提示离线材料不完整怎么办？**
 
-点击“修复识别功能”，从安装包内置资源校验并恢复。开发环境可以先用 `npm.cmd run prepare:offline:dev` 跳过 OCR 模型。
+空谷启动时会自动从安装包内置资源校验并恢复本地识别材料，正常情况下不需要手动操作。只有自动恢复失败时，才点击“修复识别功能”重试。开发环境可以先用 `npm.cmd run prepare:offline:dev` 跳过 OCR 模型。
 
 **课表会传到网上吗？**
 
@@ -265,12 +265,12 @@ schedule.pdf
 
 | 项目 | 状态 | 说明 |
 | :--- | :--- | :--- |
-| 单元测试 | 已验证 | 156 passed，2 warnings（2026-08-14，0.5.2 当前工作区） |
+| 单元测试 | 已验证 | 163 passed，3 warnings（2026-08-14，0.5.2 当前工作区） |
 | TypeScript / 前端构建 | 已验证 | `tsc --noEmit` 与 `npm.cmd run build:frontend` 通过（46 modules） |
 | 桌面层检查 | 已验证 | `cargo check --manifest-path src-tauri\Cargo.toml --locked` 通过 |
 | 真实样本页级诊断 | 已验证 | 仓库外 70 份、109 页；PDF Inspector 与 PyMuPDF 的无文本层页集合一致 |
 | 课程块人工真值 | 未验证 | 页级诊断一致不等于课程、周次和节次准确 |
-| 正式安装包 | 已构建、已静态核验 | `Konggu_0.5.2_x64-setup.exe`，316,389,652 字节，SHA-256 `2444E9FDC97CF580132AF2D414FA10CF36D42D7FF23427A0BF30AA1A37CC704F`（2026-08-14） |
+| 正式安装包 | 已构建、已静态核验 | `Konggu_0.5.2_x64-setup.exe`，316,375,143 字节，SHA-256 `09DCDBDF0329D472A074467C7AACF45324743B4764E07D56FF513FFC55C18727`（2026-08-14，包含当前识别链路修复） |
 | 全新用户目录与桌面启动 | 已验证（当前候选包组件） | 0.5.2 worker 在全新目录修复 28 项离线资源并返回 `ready: true`；当前 release 可执行文件能启动 Tauri 窗口并拉起 worker；真实另一台电脑安装尚未完成 |
 | 断网、安装与卸载终检 | 未完成 | 尚未在另一台电脑完成 NSIS 安装、断网导入导出、卸载和 WebView2 环境复核；安装包未代码签名 |
 
@@ -410,7 +410,7 @@ resources/ocr_models/PP-OCRv4_mobile_rec
 %LOCALAPPDATA%\Konggu\logs
 ```
 
-默认关闭 PaddleOCR 模型下载。模型缺失时应从安装包内置资源修复，或放到本地 OCR 模型目录。
+默认关闭 PaddleOCR 模型下载。启动时会从安装包内置资源自动初始化本地 OCR 模型；模型校验仍失败时，使用界面中的“修复识别功能”重试，或按开发说明放到本地 OCR 模型目录。
 
 ## 测试
 
