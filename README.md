@@ -274,7 +274,7 @@ schedule.pdf
 | 0.5.3 离线安装包 | 已构建、已静态核验、未签名 | `Konggu_0.5.3_x64-setup.exe`，531,812,144 字节，SHA-256 `95C81B5B205D2106D2DC43D3C81569B04934A85DB587F48858D63BC93FAE6920`；WebView2 Standalone Runtime 随 NSIS 安装包嵌入 |
 | 0.5.4 中文用户名 OCR 修复 | 已验证（源码、回归与隔离运行） | 中文应用数据路径下自动改用 `%PROGRAMDATA%\Konggu\ocr_models`，真实 PaddleOCR 初始化返回 `ready: true`；状态面板区分路径不兼容、模型缺失和校验失败；尚未构建 0.5.4 安装包 |
 | 0.5.5 结果可信度修复 | 已验证（源码、合成及 35 组真实配对流程回归） | 缺失/同名文件阻断、节次规范化、人工修正后重算与签名构建失败码修复；35 组当前为 15 `accepted`、17 `needs_review`、3 `blocked`，不可按旧登记分类放行 |
-| 0.5.5 离线安装包 | 已构建、已静态核验、未签名 | `Konggu_0.5.5_x64-setup.exe`，532,483,538 字节，SHA-256 `A3F5987E01A3A2618C47C3DF36C2B3D343A9F97738C254DEE8790CFB9D789BA3`；当前电脑 release 主程序已验证导入、解析和待复核门禁 |
+| 0.5.5 离线安装包 | [GitHub 预发布候选](https://github.com/GinFJ/KongGu/releases/tag/v0.5.5-rc.1)、未签名 | `Konggu_0.5.5_x64-setup.exe`，532,483,538 字节，SHA-256 `A3F5987E01A3A2618C47C3DF36C2B3D343A9F97738C254DEE8790CFB9D789BA3`；当前电脑 release 主程序已验证导入、解析和待复核门禁；同页提供 OCR 诊断工具包 |
 | 代码签名 | 在研 | `build-release-signed.ps1` 已接入安装器、`konggu.exe` 和 `konggu-worker.exe`；当前机器缺少受信任发布证书，正式签名构建被安全门禁阻止 |
 | 真实安装与断网终检 | 未完成 | 尚未在另一台电脑完成 NSIS 安装、断网导入导出、卸载、WebView2 和用户数据库迁移复核 |
 
