@@ -617,11 +617,17 @@ def build_occupancy(blocks: list[dict[str, Any]]) -> dict[tuple[int, str, int], 
     for block in blocks:
         week = block.get("week")
         weekday = block.get("weekday")
-        period = block.get("period")
+        periods = block.get("periods")
+        if not periods:
+            periods = [block.get("period")]
+        elif not isinstance(periods, (list, tuple)):
+            periods = [periods]
         name = block.get("member_key") or block.get("name")
-        if week is None or not weekday or period is None or not name:
+        if week is None or not weekday or not name:
             continue
-        occupancy[(int(week), str(weekday), int(period))].add(str(name))
+        for period in periods:
+            if period is not None:
+                occupancy[(int(week), str(weekday), int(period))].add(str(name))
     return dict(occupancy)
 
 
@@ -1347,8 +1353,7 @@ def _build_ocr_engine():
         )
     elif os.environ.get("KONGGU_ALLOW_OCR_MODEL_DOWNLOAD") != "1":
         raise OCRConfigurationError(
-            "OCR 配置异常：扫描件 OCR 模型未就绪。请通过离线安装包修复材料，或将 "
-            "PP-OCRv4_mobile_det 和 PP-OCRv4_mobile_rec 放入 %LOCALAPPDATA%\\Konggu\\ocr_models。"
+            "OCR 配置异常：扫描件 OCR 模型未就绪。请点击“修复识别功能”重新准备本地资源。"
         )
     try:
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):

@@ -304,7 +304,7 @@ async function repairResources() {
   try {
     const response = await client.request<{ ok: boolean; status: ResourceStatus; copied: string[] }>("resources.repair");
     state.resourceStatus = response.status;
-    state.statusText = response.status.ready ? "识别功能已恢复" : "仍有识别组件需要修复";
+    state.statusText = response.status.ready ? "识别功能已恢复" : resourceRepairStatus(response.status);
   } catch (error) {
     state.statusText = formatError(error);
   } finally {
@@ -500,7 +500,7 @@ function updateShell() {
   const resourceTitle = getElement<HTMLElement>("#resourceTitle");
   resourceTitle.className = state.resourceStatus?.ready ? "good" : "warning";
   resourceTitle.textContent = state.resourceStatus?.ready ? "已就绪" : "需要修复";
-  setText("#resourceDetail", state.resourceStatus?.ocr.ready ? "支持识别图片课表" : "暂不能识别图片课表");
+  setText("#resourceDetail", resourceDetail(state.resourceStatus));
   setText("#statusText", state.statusText);
 
   const seal = getElement<HTMLElement>("#qualitySeal");
@@ -916,6 +916,24 @@ function issueAction(issue: ParseResult["issues"][number]) {
   if (issue.confirmed) return "";
   if (issue.severity === "error") return `<small class="issueActionHint">请先补充或修正课表，再重新生成空课表。</small>`;
   return `<button data-confirm-inline="${escapeHtml(issue.issue_id)}">确认已核对</button>`;
+}
+
+function resourceDetail(status: ResourceStatus | null) {
+  if (!status) return "正在确认图片课表识别能力";
+  if (status.ocr.ready) return "支持识别图片课表";
+  return `${resourceIssueLabel(status)}，请点击修复`;
+}
+
+function resourceRepairStatus(status: ResourceStatus) {
+  if (status.ready) return "识别功能已恢复";
+  return `${resourceIssueLabel(status)}，修复未完成`;
+}
+
+function resourceIssueLabel(status: ResourceStatus) {
+  if (status.ocr.issue === "path-incompatible") return "识别模型路径不兼容";
+  if (status.ocr.issue === "missing") return "识别模型缺失";
+  if (status.ocr.issue === "invalid") return "识别模型校验失败";
+  return "本地识别资源未就绪";
 }
 
 function friendlyMessage(message: string) {

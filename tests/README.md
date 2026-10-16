@@ -1,10 +1,10 @@
 # tests 目录说明
 
-本目录保存单元测试、集成测试、脱敏真实样本回归配置和发布验证脚本。当前包含 17 个 `test_*.py` 文件与 `conftest.py`（2026-08-09 盘点）。
+本目录保存单元测试、集成测试、脱敏真实样本回归配置和发布验证脚本。当前包含 23 个 `test_*.py` 文件与 `conftest.py`（2026-10-16 盘点）。
 
 ## 当前测试文件
 
-`test_audit_timetable_archive`、`test_availability_preview_service`、`test_calendar_settings`、`test_config_files`、`test_coordinate_parsers`、`test_desktop_workflow`、`test_export_excel_service`、`test_generate_availability_service`、`test_legacy_adapter`、`test_models`、`test_ocr_handling`、`test_offline_resources`、`test_pdf_inspection`、`test_pdf_source_service`、`test_quality_persistence_and_benchmark`、`test_result_view_service`、`test_sidecar`。
+覆盖解析、输入预检、人工修正、质量门禁、状态持久化、离线 OCR、桌面协议、前端契约和发布检查。其中 `test_review_correction_consistency.py` 检查修正后的成员、周次、节次、质量状态和同名来源对应。
 
 ## 测试分层
 

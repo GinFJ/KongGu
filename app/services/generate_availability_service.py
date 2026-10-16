@@ -82,6 +82,7 @@ def generate_availability(
 
     course_blocks = course_blocks_from_legacy(blocks)
     for legacy_block, model_block in zip(blocks, course_blocks):
+        legacy_block.setdefault("periods", list(model_block.periods))
         legacy_block.setdefault("block_id", model_block.block_id)
         legacy_block.setdefault("member_key", model_block.member_key)
         legacy_block.setdefault("department", model_block.department)

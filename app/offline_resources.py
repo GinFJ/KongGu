@@ -39,7 +39,7 @@ def resolve_resource_paths() -> ResourcePaths:
         bundled_root=bundled_root,
         app_data_root=app_data_root,
         user_resources_root=app_data_root / "resources",
-        ocr_models_root=app_data_root / "ocr_models",
+        ocr_models_root=_ocr_models_root(app_data_root),
         cache_root=app_data_root / "cache",
         logs_root=app_data_root / "logs",
     )
@@ -53,7 +53,7 @@ def configure_offline_environment() -> ResourcePaths:
         path.mkdir(parents=True, exist_ok=True)
     _purge_expired_processing_cache(paths)
     os.environ.setdefault("KONGGU_RESOURCE_ROOT", str(paths.user_resources_root))
-    os.environ.setdefault("KONGGU_OCR_MODEL_DIR", str(paths.ocr_models_root))
+    os.environ["KONGGU_OCR_MODEL_DIR"] = str(paths.ocr_models_root)
     os.environ.setdefault("KONGGU_OCR_TEXT_CACHE", str(paths.cache_root / "pdf_text"))
     os.environ.setdefault("KONGGU_OCR_LAYOUT_CACHE", str(paths.cache_root / "pdf_layout"))
     os.environ.setdefault("KONGGU_PARSE_CACHE", str(paths.cache_root / "parsed_blocks"))
@@ -91,7 +91,11 @@ def resource_status(*, check_runtime: bool = False) -> dict[str, Any]:
         ocr["runtime"] = _ocr_runtime_status()
         ocr["ready"] = bool(ocr["ready"] and ocr["runtime"].get("ready"))
     elif check_runtime:
-        ocr["runtime"] = {"ready": False, "stage": "model-check", "error": "OCR 模型文件缺失或未通过校验。"}
+        ocr["runtime"] = {
+            "ready": False,
+            "stage": "model-check",
+            "error": ocr.get("error") or "OCR 模型文件缺失或未通过校验。",
+        }
     ready = not missing and not invalid and ocr["ready"]
     return {
         "ok": True,
@@ -238,6 +242,36 @@ def _app_data_root() -> Path:
     return Path.home() / f".{APP_NAME.lower()}"
 
 
+def _ocr_models_root(app_data_root: Path) -> Path:
+    """Keep OCR model paths ASCII-compatible for Paddle on Windows."""
+
+    configured_value = str(os.environ.get("KONGGU_OCR_MODEL_DIR") or "").strip()
+    configured = Path(configured_value) if configured_value else None
+    default_root = app_data_root / "ocr_models"
+
+    if configured is not None and (not _requires_ascii_path() or _is_ascii_path(configured)):
+        return configured
+    if not _requires_ascii_path() or _is_ascii_path(default_root):
+        return default_root
+
+    for env_name in ("PROGRAMDATA", "PUBLIC"):
+        base = str(os.environ.get(env_name) or "").strip()
+        if not base:
+            continue
+        candidate = Path(base) / APP_NAME / "ocr_models"
+        if _is_ascii_path(candidate):
+            return candidate
+    return configured or default_root
+
+
+def _requires_ascii_path() -> bool:
+    return sys.platform == "win32"
+
+
+def _is_ascii_path(path: Path) -> bool:
+    return str(path).isascii()
+
+
 def _configure_paddle_dll_paths() -> None:
     candidates: list[Path] = []
     if hasattr(sys, "_MEIPASS"):
@@ -322,7 +356,26 @@ def _ocr_status(root: Path) -> dict[str, Any]:
         path = root / name
         valid = _is_valid_paddle_model_dir(path)
         models.append({"name": name, "path": name, "exists": path.exists(), "valid": valid})
-    return {"ready": all(item["valid"] for item in models), "models": models}
+
+    path_compatible = not _requires_ascii_path() or _is_ascii_path(root)
+    if not path_compatible:
+        issue = "path-incompatible"
+        error = "OCR 模型目录包含非 ASCII 字符，当前识别引擎无法读取。"
+    elif any(not item["exists"] for item in models):
+        issue = "missing"
+        error = "OCR 模型文件缺失。"
+    elif any(not item["valid"] for item in models):
+        issue = "invalid"
+        error = "OCR 模型文件未通过校验。"
+    else:
+        issue = ""
+        error = ""
+    return {
+        "ready": path_compatible and all(item["valid"] for item in models),
+        "issue": issue,
+        "error": error,
+        "models": models,
+    }
 
 
 def _ocr_runtime_status() -> dict[str, Any]:

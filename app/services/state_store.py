@@ -287,9 +287,16 @@ class StateStore:
         return list(self._session_paths.get(job_id, []))
 
     def source_path_map_for_job(self, job_id: str) -> dict[str, str]:
-        """Map display filenames to current-session paths without exposing them in job responses."""
+        """Map only unambiguous display filenames to current-session paths."""
 
-        return {Path(path).name: path for path in self._session_paths.get(job_id, [])}
+        paths_by_name: dict[str, str] = {}
+        ambiguous: set[str] = set()
+        for path in self._session_paths.get(job_id, []):
+            name = Path(path).name
+            if name in paths_by_name and paths_by_name[name] != path:
+                ambiguous.add(name)
+            paths_by_name[name] = path
+        return {name: path for name, path in paths_by_name.items() if name not in ambiguous}
 
     def get_job(
         self,

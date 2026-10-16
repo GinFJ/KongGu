@@ -129,7 +129,9 @@ def _is_member_name_candidate(text: str) -> bool:
 def course_block_from_legacy(block: dict[str, Any]) -> CourseBlock:
     """Normalize one legacy course block into CourseBlock."""
 
-    periods = block.get("periods", [])
+    periods = block.get("periods")
+    if not periods:
+        periods = [block["period"]] if block.get("period") is not None else []
     if not isinstance(periods, list):
         periods = [periods]
     source_type = block.get("source_type") or block.get("kind") or "中方"

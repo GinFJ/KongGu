@@ -154,7 +154,7 @@ class JobCoordinator:
                     (
                         item
                         for item in workflow.process_result.file_records
-                        if item.source.file_name == file_row["file_name"]
+                        if item.source.source_path == file_row["source_path"]
                     ),
                     None,
                 )

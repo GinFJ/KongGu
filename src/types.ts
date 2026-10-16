@@ -5,7 +5,13 @@ export type ResourceStatus = {
   storage: string;
   missing: Array<{ target: string; kind: string; issue: string }>;
   invalid: Array<{ target: string; kind: string; issue: string }>;
-  ocr: { ready: boolean; models: Array<{ name: string; path: string; exists: boolean; valid: boolean }> };
+  ocr: {
+    ready: boolean;
+    issue: string;
+    error: string;
+    models: Array<{ name: string; path: string; exists: boolean; valid: boolean }>;
+    runtime?: { ready: boolean; stage: string; error: string };
+  };
 };
 
 export type CalendarSettings = {

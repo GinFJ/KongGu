@@ -83,11 +83,27 @@ def main() -> int:
         / f"Konggu_{package.get('version')}_x64-setup.exe"
     )
     if args.require_installer:
+        installer_script = ROOT / "src-tauri" / "target" / "release" / "nsis" / "x64" / "installer.nsi"
+        installer_script_text = installer_script.read_text(encoding="utf-8") if installer_script.is_file() else ""
         checks.append(
             (
                 "nsis-installer",
                 expected_installer.is_file(),
                 expected_installer.name if expected_installer.is_file() else "missing",
+            )
+        )
+        checks.append(
+            (
+                "webview2:offline-mode",
+                '!define INSTALLWEBVIEW2MODE "offlineInstaller"' in installer_script_text,
+                "installer.nsi",
+            )
+        )
+        checks.append(
+            (
+                "webview2:standalone-installer",
+                '!define WEBVIEW2INSTALLERPATH "' in installer_script_text,
+                "embedded runtime path",
             )
         )
 

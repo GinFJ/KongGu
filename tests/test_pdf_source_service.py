@@ -139,7 +139,10 @@ def test_add_pdf_sources_records_missing_paths(tmp_path: Path):
     )
 
     assert result.added == []
-    assert result.skipped == [str(missing)]
+    assert result.skipped == []
+    assert len(result.errors) == 1
+    assert result.errors[0][0] == missing
+    assert "文件不存在" in str(result.errors[0][1])
 
 
 def test_load_reference_library_summary_counts_pdfs(tmp_path: Path):

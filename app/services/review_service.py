@@ -7,10 +7,12 @@ import json
 from typing import Any
 
 from app.services.state_store import StateStore, utc_now
-from app.services.availability_preview_service import build_availability_preview
+from app.services.availability_preview_service import build_availability_preview, build_date_map
+from app.services.result_view_service import build_gui_process_result
 from app.services.workflow_persistence import restore_workflow, snapshot_workflow
+from core.legacy_adapter import build_file_records, build_member_schedules, course_blocks_from_legacy
 from core.models import CorrectionRecord, ParseIssue
-from core.quality import quality_state
+from core.quality import evaluate_quality, quality_state
 
 
 EDITABLE_BLOCK_FIELDS = {
@@ -23,10 +25,17 @@ EDITABLE_BLOCK_FIELDS = {
     "department",
     "role",
 }
+DERIVED_ISSUE_CODES = {
+    "FILE_PARSE_FAILED",
+    "NO_COURSE_BLOCKS",
+    "MEMBER_SCHEDULE_INCOMPLETE",
+    "MEMBER_IDENTITY_INCOMPLETE",
+    "SCHEDULE_CONFLICT",
+}
 
 
 def get_review_payload(store: StateStore, job_id: str) -> dict[str, Any]:
-    job = store.get_job(job_id)
+    job = store.get_job(job_id, include_sensitive_paths=True)
     if not job or not job.get("result"):
         raise ValueError("未找到可复核的解析任务。")
     result = dict(job["result"])
@@ -43,9 +52,15 @@ def get_review_payload(store: StateStore, job_id: str) -> dict[str, Any]:
         corrections.extend(store.corrections_for_source(source_hash, signature))
     issues = job.get("issues", [])
     sources = [dict(item) for item in generation.get("sources", [])]
-    session_paths = store.source_path_map_for_job(job_id)
+    session_paths = {
+        (str(item.get("file_name") or ""), str(item.get("source_hash") or "")): str(item.get("source_path") or "")
+        for item in job.get("files", [])
+        if item.get("source_path")
+    }
     for source in sources:
-        source["source_path"] = session_paths.get(str(source.get("file_name") or ""), "")
+        source["source_path"] = session_paths.get(
+            (str(source.get("file_name") or ""), str(source.get("content_hash") or "")), ""
+        )
     return {
         "ok": True,
         "job_id": job_id,
@@ -115,12 +130,14 @@ def apply_correction(
     workflow = restore_workflow(snapshot, schedule_core)
     _refresh_derived(workflow, schedule_core)
     refreshed = snapshot_workflow(workflow)
-    refreshed["issues"] = snapshot.get("issues", [])
-    refreshed["quality_state"] = snapshot.get("quality_state", "needs_review")
-    store.update_job(
+    store.save_job_result(
         job_id,
         result_json=json.dumps(refreshed, ensure_ascii=False, separators=(",", ":")),
+        error=str(job.get("error") or ""),
         quality_state=refreshed["quality_state"],
+        current=int(job.get("current") or 0),
+        total=int(job.get("total") or 0),
+        issues=refreshed["issues"],
     )
     return {"ok": True, "correction_id": correction_id, **get_review_payload(store, job_id)}
 
@@ -222,6 +239,34 @@ def _normalize_value(field: str, value: Any) -> Any:
 
 def _refresh_derived(workflow: Any, schedule_core: Any) -> None:
     generation = workflow.generation_result
+    generation.students = sorted({
+        str(block.get("member_key") or block.get("name"))
+        for block in generation.blocks
+        if block.get("member_key") or block.get("name")
+    })
+    calendar_weeks: set[int] = set()
+    if generation.calendar_df is not None and "week" in generation.calendar_df:
+        for value in generation.calendar_df["week"]:
+            try:
+                calendar_weeks.add(int(value))
+            except (TypeError, ValueError):
+                continue
+    generation.weeks = sorted(calendar_weeks | {
+        int(block["week"]) for block in generation.blocks if block.get("week") is not None
+    })
+    date_map = build_date_map(generation.calendar_df)
+    for block in generation.blocks:
+        block["date"] = date_map.get((int(block["week"]), str(block["weekday"])), "")
+    generation.course_blocks = course_blocks_from_legacy(generation.blocks)
+    generation.member_schedules = build_member_schedules(generation.course_blocks, generation.students)
+    prior_records = {record.source.content_hash: record for record in generation.file_records}
+    generation.file_records = build_file_records(
+        generation.model_sources, generation.course_blocks, generation.errors
+    )
+    for record in generation.file_records:
+        previous = prior_records.get(record.source.content_hash)
+        if previous:
+            record.layout_profile = previous.layout_profile
     generation.occupancy = schedule_core.build_occupancy(generation.blocks)
     generation.blocks_df = schedule_core.blocks_to_dataframe(generation.blocks)
     timetable = schedule_core.default_timetable()
@@ -243,7 +288,35 @@ def _refresh_derived(workflow: Any, schedule_core: Any) -> None:
         timetable_df=timetable,
     )
     workflow.preview_df = preview.free_df
-    workflow.process_result.slots = preview.slots
+    previous_process = workflow.process_result
+    process = build_gui_process_result(
+        course_blocks=generation.course_blocks,
+        members=generation.member_schedules,
+        file_records=generation.file_records,
+        slots=preview.slots,
+        student_count=len(generation.students),
+        block_count=len(generation.blocks),
+        week_count=len(generation.weeks),
+        calendar_df=generation.calendar_df,
+    )
+    retained_issues = [
+        issue for issue in previous_process.issues if issue.code not in DERIVED_ISSUE_CODES
+    ]
+    _, issues = evaluate_quality(
+        file_records=generation.file_records,
+        members=generation.member_schedules,
+        inherited_issues=retained_issues,
+        enforce_identity=True,
+    )
+    confirmed_ids = {issue.issue_id for issue in previous_process.issues if issue.confirmed}
+    for issue in issues:
+        issue.confirmed = issue.issue_id in confirmed_ids
+    process.issues = issues
+    process.quality_state = quality_state(issues)
+    process.corrections = previous_process.corrections
+    process.parser_signature = previous_process.parser_signature
+    process.job_id = previous_process.job_id
+    workflow.process_result = process
 
 
 def snapshot_issues(snapshot: dict[str, Any]) -> list[dict[str, Any]]:

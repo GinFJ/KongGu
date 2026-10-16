@@ -10,7 +10,7 @@ from core.quality import assert_export_allowed, evaluate_quality
 from core.runtime_control import cancellation_scope, raise_if_cancelled
 from core.signature import build_parser_signature
 from app.services.review_service import confirm_issue
-from app.services.state_store import StateStore
+from app.services.state_store import StateStore, utc_now
 
 
 def _create_v1_state_database(path):
@@ -40,12 +40,18 @@ def _create_v1_state_database(path):
             confirmed INTEGER NOT NULL DEFAULT 0,
             confirmed_at TEXT
         );
-        INSERT INTO jobs(
-            id,status,created_at,updated_at,parser_signature,request_json
-        ) VALUES ('old-job','completed','2026-08-01T00:00:00Z','2026-08-01T00:00:00Z','sig','{}');
         INSERT INTO issues(issue_id,job_id,payload_json,confirmed,confirmed_at)
         VALUES ('same-issue','old-job','{"issue_id":"same-issue"}',1,'2026-08-01T00:01:00Z');
         """
+    )
+    now = utc_now()
+    connection.execute(
+        """
+        INSERT INTO jobs(
+            id,status,created_at,updated_at,parser_signature,request_json
+        ) VALUES (?,?,?,?,?,?)
+        """,
+        ('old-job', 'completed', now, now, 'sig', '{}'),
     )
     connection.commit()
     connection.close()
@@ -117,6 +123,13 @@ def test_state_store_maps_session_paths_by_file_name(tmp_path):
     }
     reopened = StateStore(tmp_path / "state.sqlite3")
     assert reopened.source_path_map_for_job(job_id) == {}
+
+
+def test_state_store_does_not_guess_between_same_named_sources(tmp_path):
+    store = StateStore(tmp_path / "state.sqlite3")
+    job_id = store.create_job({}, "sig", ["C:/one/same.pdf", "C:/two/same.pdf"])
+
+    assert store.source_path_map_for_job(job_id) == {}
 
 
 def test_state_store_purges_old_jobs_on_startup(tmp_path):

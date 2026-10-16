@@ -114,3 +114,10 @@ def test_progress_messages_do_not_expose_quality_gate_language() -> None:
     assert "空课表已生成，可以导出" in jobs
     assert "解析与质量门禁已通过" not in workflow
     assert "任务完成并通过质量门禁" not in jobs
+
+def test_resource_panel_distinguishes_path_incompatibility() -> None:
+    main = _source("src/main.ts")
+
+    assert 'resourceDetail(state.resourceStatus)' in main
+    assert 'status.ocr.issue === "path-incompatible"' in main
+    assert '"识别模型路径不兼容"' in main

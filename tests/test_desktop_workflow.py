@@ -113,6 +113,45 @@ def test_desktop_workflow_export_can_override_week_count(tmp_path: Path):
     assert core.export_kwargs["weeks"] == [1, 2]
 
 
+def test_legacy_single_period_is_visible_in_review(tmp_path: Path):
+    pdf = tmp_path / "成员甲-中方课表.pdf"
+    pdf.write_bytes(_minimal_pdf_bytes())
+
+    class SinglePeriodCore(FakeDesktopCore):
+        def parse_actual_pdf_sources(self, sources, uploaded_calendar_df=None, progress=None):
+            blocks, calendar, errors, preview = super().parse_actual_pdf_sources(
+                sources, uploaded_calendar_df, progress
+            )
+            del blocks[0]["periods"]
+            return blocks, calendar, errors, preview
+
+    result = parse_pdf_paths(schedule_core=SinglePeriodCore(), paths=[str(pdf)])
+    assert result.generation_result.blocks[0]["periods"] == [1]
+    assert result.process_result.blocks[0].periods == [1]
+
+
+def test_missing_or_ambiguous_input_blocks_export(tmp_path: Path):
+    first = tmp_path / "first" / "成员甲-中方课表.pdf"
+    first.parent.mkdir()
+    first.write_bytes(_minimal_pdf_bytes())
+    missing = tmp_path / "成员乙-英方课表.pdf"
+    same_name = tmp_path / "second" / first.name
+    same_name.parent.mkdir()
+    same_name.write_bytes(_minimal_pdf_bytes() + b"\n% different source")
+
+    for other, expected in ((missing, "文件不存在"), (same_name, "同名课表")):
+        result = parse_pdf_paths(
+            schedule_core=FakeDesktopCore(),
+            paths=[str(first), str(other)],
+            enforce_quality=True,
+        )
+        assert result.process_result.quality_state == "blocked"
+        assert any(
+            issue.code == "INPUT_PREFLIGHT_FAILED" and expected in issue.message
+            for issue in result.process_result.issues
+        )
+
+
 def test_desktop_workflow_rejects_non_pdf(tmp_path: Path):
     note = tmp_path / "note.txt"
     note.write_text("not pdf", encoding="utf-8")

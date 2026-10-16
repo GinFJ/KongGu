@@ -46,11 +46,19 @@ def add_pdf_sources(
         for item in existing_sources
         if item.content_hash
     }
+    selected_names: dict[str, Path] = {}
     for path in paths:
         pdf_path = Path(path)
-        if not pdf_path.exists():
-            result.skipped.append(str(pdf_path))
+        if not pdf_path.is_file():
+            result.errors.append((pdf_path, ValueError("文件不存在或无法读取，请重新选择该课表。")))
             continue
+
+        name_key = pdf_path.name.casefold()
+        previous = selected_names.get(name_key)
+        if previous is not None and previous.resolve() != pdf_path.resolve():
+            result.errors.append((pdf_path, ValueError("存在同名课表文件，无法可靠对应原文；请先为文件使用不同名称。")))
+            continue
+        selected_names[name_key] = pdf_path
 
         kind = explicit_kind or _infer_pdf_kind(schedule_core, pdf_path)
         if kind not in VALID_KINDS:
