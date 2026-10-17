@@ -6,10 +6,138 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from app.offline_resources import OFFLINE_SOURCE_DIRS, _manifest_relative_path  # noqa: E402
+
+
+_CARGO_VERSION = re.compile(r'(?m)^\s*version\s*=\s*"([^"]+)"')
+_CARGO_PACKAGE_SECTION = re.compile(r"(?m)^\[package\]\s*$")
+
+
+def _cargo_package_version(text: str) -> str:
+    match = _CARGO_PACKAGE_SECTION.search(text)
+    if match is None:
+        return "<missing>"
+    version = _CARGO_VERSION.search(text[match.end():])
+    return version.group(1) if version else "<missing>"
+
+
+def _cargo_lock_version(text: str, package_name: str) -> str:
+    for block in text.split("[[package]]"):
+        if re.search(rf'(?m)^name = "{re.escape(package_name)}"\s*$', block):
+            version = re.search(r'(?m)^version = "([^"]+)"\s*$', block)
+            return version.group(1) if version else "<missing>"
+    return "<missing>"
+
+
+def _collect_versions(root: Path) -> dict[str, str]:
+    versions: dict[str, str] = {}
+
+    def json_version(relative: str, *, nested: tuple[str, ...] = ()) -> str:
+        path = root / relative
+        if not path.is_file():
+            return "<missing>"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        for key in nested:
+            if not isinstance(payload, dict):
+                return "<missing>"
+            payload = payload.get(key) or {}
+        if not isinstance(payload, dict):
+            return "<missing>"
+        return str(payload.get("version") or "<missing>")
+
+    versions["package.json"] = json_version("package.json")
+    versions["package-lock.json"] = json_version("package-lock.json")
+    versions["package-lock.json:packages"] = json_version("package-lock.json", nested=("packages", ""))
+    versions["src-tauri/tauri.conf.json"] = json_version("src-tauri/tauri.conf.json")
+    cargo_toml = root / "src-tauri" / "Cargo.toml"
+    versions["src-tauri/Cargo.toml"] = (
+        _cargo_package_version(cargo_toml.read_text(encoding="utf-8")) if cargo_toml.is_file() else "<missing>"
+    )
+    cargo_lock = root / "src-tauri" / "Cargo.lock"
+    versions["src-tauri/Cargo.lock"] = (
+        _cargo_lock_version(cargo_lock.read_text(encoding="utf-8"), "konggu") if cargo_lock.is_file() else "<missing>"
+    )
+    return versions
+
+
+def _version_checks(root: Path) -> list[tuple[str, bool, str]]:
+    """The release checklist requires one application version across every manifest."""
+
+    versions = _collect_versions(root)
+    expected = versions.get("package.json", "<missing>")
+    return [
+        (
+            f"version:{name}",
+            expected != "<missing>" and version == expected,
+            f"{version} (package.json {expected})",
+        )
+        for name, version in versions.items()
+    ]
+
+
+def _normalize_manifest_source(value: object) -> str:
+    return str(value or "").replace("\\", "/").strip("/")
+
+
+def _manifest_path_checks(manifest: dict) -> list[tuple[str, bool, str]]:
+    entries = [entry for entry in manifest.get("entries") or [] if isinstance(entry, dict)]
+    problems: list[str] = []
+    for entry in entries:
+        for field in ("source", "target"):
+            try:
+                _manifest_relative_path(entry.get(field), field)
+            except ValueError:
+                problems.append(f"{field}:{entry.get(field)!r}")
+    return [
+        (
+            "offline-manifest:paths",
+            bool(entries) and not problems,
+            ", ".join(problems[:3]) if problems else f"{len(entries)} entries",
+        )
+    ]
+
+
+def _bundled_source_files(root: Path) -> set[str]:
+    files: set[str] = set()
+    for source in OFFLINE_SOURCE_DIRS:
+        path = root / source
+        if path.is_file():
+            files.add(source)
+        elif path.is_dir():
+            files.update(item.relative_to(root).as_posix() for item in path.rglob("*") if item.is_file())
+    return files
+
+
+def _manifest_coverage_checks(root: Path, manifest: dict) -> list[tuple[str, bool, str]]:
+    """Every bundled config/asset/model file must be described by the manifest."""
+
+    entries = [entry for entry in manifest.get("entries") or [] if isinstance(entry, dict)]
+    declared = {_normalize_manifest_source(entry.get("source")) for entry in entries}
+    present = _bundled_source_files(root)
+    unlisted = sorted(present - declared)
+    missing = sorted(declared - present)
+    detail = f"{len(declared)} sources"
+    problems: list[str] = []
+    if unlisted:
+        problems.append("unlisted:" + ", ".join(unlisted[:3]))
+    if missing:
+        problems.append("missing:" + ", ".join(missing[:3]))
+    if problems:
+        detail = "; ".join(problems)
+    return [
+        (
+            "offline-manifest:coverage",
+            bool(declared) and not unlisted and not missing,
+            detail,
+        )
+    ]
 
 
 def main() -> int:
@@ -54,16 +182,27 @@ def main() -> int:
     checks.append(("offline-manifest:ocr", len(model_entries) >= 6, f"{len(model_entries)} files"))
     invalid_manifest_entries: list[str] = []
     for entry in manifest_entries:
-        source = ROOT / str(entry.get("source") or "")
-        if not source.is_file():
-            invalid_manifest_entries.append(f"missing:{entry.get('source')}")
+        source_value = str(entry.get("source") or "")
+        try:
+            relative_source = _manifest_relative_path(source_value, "source")
+        except ValueError:
+            invalid_manifest_entries.append(f"path:{source_value}")
             continue
-        if source.stat().st_size != int(entry.get("size") or -1):
-            invalid_manifest_entries.append(f"size:{entry.get('source')}")
+        source = ROOT / relative_source
+        if not source.is_file():
+            invalid_manifest_entries.append(f"missing:{source_value}")
+            continue
+        try:
+            expected_size = int(entry["size"])
+        except (KeyError, TypeError, ValueError):
+            invalid_manifest_entries.append(f"size-invalid:{source_value}")
+            continue
+        if source.stat().st_size != expected_size:
+            invalid_manifest_entries.append(f"size:{source_value}")
             continue
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
-        if digest != str(entry.get("sha256") or ""):
-            invalid_manifest_entries.append(f"hash:{entry.get('source')}")
+        if digest != str(entry.get("sha256") or "").strip().lower():
+            invalid_manifest_entries.append(f"hash:{source_value}")
     checks.append(
         (
             "offline-manifest:integrity",
@@ -71,6 +210,9 @@ def main() -> int:
             f"{len(manifest_entries)} entries" if not invalid_manifest_entries else ", ".join(invalid_manifest_entries[:3]),
         )
     )
+    checks.extend(_version_checks(ROOT))
+    checks.extend(_manifest_path_checks(manifest))
+    checks.extend(_manifest_coverage_checks(ROOT, manifest))
     checks.append(("truth-manifest", (ROOT / "benchmarks" / "ground_truth" / "manifest.json").exists(), "12 samples"))
 
     expected_installer = (

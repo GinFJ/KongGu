@@ -5,6 +5,6 @@ pdf-inspector==0.2.6
 numpy==2.3.5
 paddlepaddle==3.3.1
 paddleocr==3.7.0
-opencv-python-headless==5.0.0.93
+opencv-contrib-python==4.10.0.84
 pytest==9.1.1
 pyinstaller==6.21.0

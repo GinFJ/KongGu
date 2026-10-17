@@ -15,6 +15,12 @@
 | 缺中方或缺英方 | 成员完整性误判 | `tests/test_models.py`、`tests/test_result_view_service.py`、`tests/test_generate_availability_service.py` |
 | 节次冲突 | 中方/英方或多份课表同一成员同一节次出现不同课程 | `tests/test_legacy_adapter.py::test_build_member_schedules_flags_period_conflicts` |
 | 课程跨周次 | 周次展开错误，空课统计偏差 | `tests/test_coordinate_parsers.py` 覆盖坐标解析片段，仍需要样本库扩展 |
+| 正式导出数据含列表/结构化值 | openpyxl 拒绝写入，accepted 结果导出必败 | `tests/test_e2e_workflow_real_core.py::test_complete_pair_parses_accepted_and_exports_workbook`、`tests/test_audit_parser_logic.py` 导出展平回归 |
+| 修改学期设置后复用旧缓存/旧修正 | 日期与周次按上一学期计算 | `tests/test_audit_parser_logic.py::test_parser_signature_tracks_effective_semester_calendar` 等签名回归 |
+| 多文件进度与预检过滤 | 文件状态错行、失败文件被标为完成 | `tests/test_audit_workflow_flow.py::test_job_progress_events_follow_the_actual_file_row` 等 14 项 |
+| sidecar 中文请求编码（非 UTF-8 代码页） | 请求乱码或常驻进程退出 | `tests/test_audit_workflow_flow.py::test_serve_decodes_utf8_ndjson_requests_when_windows_stdio_uses_ansi` |
+| 离线资源清单缺失/损坏 | 资源其实未校验却报告就绪 | `tests/test_audit_platform.py::test_missing_manifest_is_reported_instead_of_ready`、`test_corrupt_manifest_is_reported_instead_of_ready` |
+| 界面旧任务响应/迟到进度 | 旧任务结果覆盖新选择、状态死锁 | `tests/test_audit_frontend_flow.py`（22 项静态契约，含 jobId 校验、PDF 生命周期、转义与分页焦点） |
 
 ## 必须用真实样本库回归
 
@@ -23,9 +29,11 @@
 | PDF 扫描质量差 | 至少 3 份低清/倾斜/阴影扫描 PDF | 能给出明确失败提示；清晰度可接受的样本应能走 OCR |
 | 课表截图嵌入 PDF | 至少 2 份无文本层、图片嵌入 PDF | 触发 OCR，不误判为空文件 |
 | 英方课表格式变化 | 每种英方版式至少 1 份 | 日期、星期、节次映射正确 |
-| 同名成员 | 至少 2 位同名但部门或角色不同的成员 | 当前仅按姓名聚合，需产品层增加唯一标识后再验收 |
+| 同名成员 | 至少 2 位同名但部门或角色不同的成员 | 已实现姓名+部门+角色的复合 `member_key`（`test_quality_persistence_and_benchmark.py`）；导出层仍按姓名展示并对同名去重，需产品层决定导出唯一标识后再验收 |
 | 多份重复课表但文件名不同 | 原件、副本、重命名副本各 1 份 | 同内容副本跳过；不同成员真实文件不能误跳过 |
-| 节假日调课 | 带官方调课/补课校历样本 | 空课日期以校历为准，而不是只按默认学期周历 |
+| 节假日调课 | 带官方调课/补课校历样本 | `config/school_calendar.json` 的 `special_adjustments` 尚未被解析链路消费，属未实现；实现后才可验收 |
+| 英方并排周面板 | 同页并排周面板版式各 1 份 | 固定 x 窗口取列仍可能取错列；需真实版式核对后再改解析器（0.5.9 审计遗留） |
+| 中方整学期表末行边界 | 表底紧贴脚注的整学期表 1 份 | 末行下边界可能把脚注首行误计为下一周占用；需人工核对后修（0.5.9 审计遗留） |
 
 ## 建议回归流程
 

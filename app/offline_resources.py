@@ -19,7 +19,18 @@ from app.privacy import safe_error_message
 APP_NAME = "Konggu"
 MANIFEST_NAME = "offline_manifest.json"
 REQUIRED_OCR_MODELS = ("PP-OCRv4_mobile_det", "PP-OCRv4_mobile_rec")
+# Directories whose files must be listed in the offline manifest; shared by the
+# release preparation script and the static release gate.
+OFFLINE_SOURCE_DIRS = ("config", "assets", "resources/ocr_models")
 _DLL_DIRECTORY_HANDLES: list[Any] = []
+
+
+class OfflineManifestError(RuntimeError):
+    """The bundled offline resource manifest is missing or cannot be trusted."""
+
+    def __init__(self, message: str, *, issue: str = "invalid-manifest") -> None:
+        super().__init__(message)
+        self.issue = issue
 
 
 @dataclass(slots=True)
@@ -70,7 +81,7 @@ def resource_status(*, check_runtime: bool = False) -> dict[str, Any]:
     """Return offline resource integrity details after preparing local cache paths."""
 
     paths = configure_offline_environment()
-    manifest = load_manifest(paths.bundled_root)
+    manifest, manifest_issue, manifest_error = _load_manifest_for_status(paths.bundled_root)
     missing: list[dict[str, Any]] = []
     invalid: list[dict[str, Any]] = []
     entries = manifest.get("entries", [])
@@ -96,17 +107,32 @@ def resource_status(*, check_runtime: bool = False) -> dict[str, Any]:
             "stage": "model-check",
             "error": ocr.get("error") or "OCR 模型文件缺失或未通过校验。",
         }
-    ready = not missing and not invalid and ocr["ready"]
+    ready = not missing and not invalid and not manifest_issue and ocr["ready"]
     return {
         "ok": True,
         "ready": ready,
         "storage": "本机应用数据目录（路径已隐藏）",
         "manifest_version": manifest.get("version", 1),
+        "manifest_issue": manifest_issue,
+        "manifest_error": manifest_error,
         "entry_count": len(entries),
         "missing": missing,
         "invalid": invalid,
         "ocr": ocr,
     }
+
+
+def _load_manifest_for_status(bundled_root: Path) -> tuple[dict[str, Any], str, str]:
+    """Load the manifest without failing open: a broken manifest is a real issue."""
+
+    try:
+        return load_manifest(bundled_root), "", ""
+    except OfflineManifestError as exc:
+        return (
+            {"version": 1, "generated_at": "", "entries": []},
+            exc.issue,
+            safe_error_message(exc),
+        )
 
 
 def repair_resources() -> dict[str, Any]:
@@ -116,7 +142,16 @@ def repair_resources() -> dict[str, Any]:
     for path in (paths.user_resources_root, paths.ocr_models_root, paths.cache_root, paths.logs_root):
         path.mkdir(parents=True, exist_ok=True)
 
-    manifest = load_manifest(paths.bundled_root)
+    try:
+        manifest = load_manifest(paths.bundled_root)
+    except OfflineManifestError as exc:
+        return {
+            "ok": False,
+            "copied": [],
+            "failed": [{"source": MANIFEST_NAME, "target": "", "error": exc.issue}],
+            "error": safe_error_message(exc),
+            "status": resource_status(check_runtime=True),
+        }
     copied: list[str] = []
     failed: list[dict[str, str]] = []
     for entry in manifest.get("entries", []):
@@ -134,6 +169,16 @@ def repair_resources() -> dict[str, Any]:
             continue
         issue = _validate_entry(target, entry)
         if not issue:
+            continue
+        if issue == "invalid-manifest-entry":
+            # Never copy over a target the manifest cannot describe; report it instead.
+            failed.append(
+                {
+                    "source": safe_error_message(entry.get("source"), "未知资源"),
+                    "target": safe_error_message(entry.get("target"), "未知目标"),
+                    "error": issue,
+                }
+            )
             continue
         try:
             _copy_entry(source, target)
@@ -181,19 +226,32 @@ def _purge_expired_processing_cache(paths: ResourcePaths, retention_days: int = 
 
 
 def load_manifest(bundled_root: Path | None = None) -> dict[str, Any]:
+    """Load the bundled offline manifest, failing closed when it is unusable.
+
+    A missing or corrupt manifest must not be treated as an empty manifest:
+    that would report ready resources that were never verified, and the repair
+    path would silently do nothing.
+    """
+
     root = bundled_root or _bundled_root()
     candidates = [
         root / "resources" / MANIFEST_NAME,
         root / MANIFEST_NAME,
-        Path(__file__).resolve().parents[1] / "resources" / MANIFEST_NAME,
     ]
     for candidate in candidates:
-        if candidate.exists():
-            try:
-                return json.loads(candidate.read_text(encoding="utf-8"))
-            except Exception:
-                break
-    return {"version": 1, "generated_at": "", "entries": []}
+        if not candidate.exists():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise OfflineManifestError("离线资源清单无法解析，已停止资源校验。") from exc
+        if not isinstance(payload, dict) or not isinstance(payload.get("entries"), list):
+            raise OfflineManifestError("离线资源清单格式不正确，已停止资源校验。")
+        return payload
+    raise OfflineManifestError(
+        "未找到离线资源清单，无法校验随包资源。",
+        issue="missing-manifest",
+    )
 
 
 def build_manifest(root: Path, sources: list[str]) -> dict[str, Any]:
@@ -254,14 +312,31 @@ def _ocr_models_root(app_data_root: Path) -> Path:
     if not _requires_ascii_path() or _is_ascii_path(default_root):
         return default_root
 
+    candidates: list[Path] = []
     for env_name in ("PROGRAMDATA", "PUBLIC"):
         base = str(os.environ.get(env_name) or "").strip()
         if not base:
             continue
         candidate = Path(base) / APP_NAME / "ocr_models"
         if _is_ascii_path(candidate):
+            candidates.append(candidate)
+    for candidate in candidates:
+        # A machine policy or a denied ACL can make ProgramData unwritable for
+        # standard users; fall back to the next ASCII root instead of failing
+        # the whole sidecar at startup.
+        if _usable_directory(candidate):
             return candidate
     return configured or default_root
+
+
+def _usable_directory(path: Path) -> bool:
+    if path.is_dir():
+        return True
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+    return True
 
 
 def _requires_ascii_path() -> bool:
@@ -331,12 +406,19 @@ def _validate_entry(target: Path, entry: dict[str, Any]) -> str:
     if not target.exists():
         return "missing"
     if target.is_dir():
-        return ""
-    expected_size = entry.get("size")
-    if expected_size is not None and target.stat().st_size != int(expected_size):
+        # Manifest entries describe files; a directory at the target is not a
+        # verified copy and must be repaired instead of counted as ready.
+        return "not-a-file"
+    try:
+        expected_size = int(entry["size"])
+    except (KeyError, TypeError, ValueError):
+        return "invalid-manifest-entry"
+    expected_hash = str(entry.get("sha256") or "").strip().lower()
+    if len(expected_hash) != 64 or any(char not in "0123456789abcdef" for char in expected_hash):
+        return "invalid-manifest-entry"
+    if target.stat().st_size != expected_size:
         return "size-mismatch"
-    expected_hash = str(entry.get("sha256") or "")
-    if expected_hash and _sha256(target) != expected_hash:
+    if _sha256(target) != expected_hash:
         return "hash-mismatch"
     return ""
 
@@ -395,8 +477,11 @@ def _copy_entry(source: Path, target: Path) -> None:
         if target.exists():
             shutil.rmtree(target)
         shutil.copytree(source, target)
-    else:
-        shutil.copy2(source, target)
+        return
+    if target.is_dir():
+        # Replace a leftover directory that occupies a file target.
+        shutil.rmtree(target)
+    shutil.copy2(source, target)
 
 
 def _iter_files(path: Path) -> list[Path]:

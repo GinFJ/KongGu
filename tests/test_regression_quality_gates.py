@@ -399,6 +399,12 @@ class TestGroundTruthEvaluation:
         assert result["ready"] is False
         assert "真值尚未完成人工核验" in result["message"]
 
+    def test_refuses_empty_truth_set(self):
+        result = evaluate_samples([], [])
+        assert result["ready"] is False
+        assert result["passed"] is False
+        assert "没有可评估的真值样本" in result["message"]
+
     def test_passes_exact_match(self):
         truth = [
             {

@@ -55,9 +55,11 @@ if (!app) throw new Error("App root not found.");
 const appRoot: HTMLDivElement = app;
 let calendar: Calendar | null = null;
 let calendarKey = "";
+let calendarViewDate: Date | null = null;
 let reviewController: ReviewController | null = null;
 let reviewMount: Promise<void> | null = null;
 let reviewPayload: ReviewPayload | null = null;
+let availabilityPage = 0;
 let shellMounted = false;
 let renderedResult: ParseResult | null | undefined;
 let runAguMode = "";
@@ -66,6 +68,7 @@ let richViewGeneration = 0;
 let cancelRequestedJobId = "";
 let completionProbeJobId = "";
 let completedJobId = "";
+let reviewReloading = false;
 const renderedHtmlCache = new WeakMap<HTMLElement, string>();
 
 const tabs: Tab[] = ["availability", "members", "files", "issues", "review", "calendar"];
@@ -78,7 +81,9 @@ client.onEvent((event) => {
     render();
     return;
   }
-  if (state.jobId && event.job_id !== state.jobId) return;
+  // 没有进行中的任务时不接受任何进度事件；已经收尾的任务也不再改写阶段与状态文字。
+  if (!state.jobId || event.job_id !== state.jobId) return;
+  if (completedJobId === event.job_id) return;
   const cancellationPending = cancelRequestedJobId !== "" && event.job_id === cancelRequestedJobId && event.stage !== "cancelled";
   state.stage = cancellationPending ? "cancelling" : event.stage;
   state.progress = { current: event.current, total: event.total };
@@ -111,22 +116,30 @@ async function boot() {
 }
 
 async function chooseFiles() {
+  if (state.busy) return;
   const selected = await open({ multiple: true, filters: [{ name: "PDF", extensions: ["pdf"] }] });
   const paths = Array.isArray(selected) ? selected : typeof selected === "string" ? [selected] : [];
+  // 取消选择对话框时保留当前结果与任务引用，不能因为空选择把已生成的结果清掉。
+  if (!paths.length) return;
   state.files = Array.from(new Set([...state.files, ...paths]));
   state.result = null;
   state.review = null;
+  state.jobId = "";
+  availabilityPage = 0;
   state.statusText = state.files.length ? `已选择 ${state.files.length} 份课表` : state.statusText;
   render();
 }
 
 async function parseSchedules() {
+  if (state.busy) return;
   if (!state.files.length) return setStatus("请先选择课表 PDF。");
   const invalid = state.files.filter((path) => !inferKind(path));
   if (invalid.length) return setStatus(`${invalid.length} 个文件无法判断中方/英方，请先按规则改名。`);
   state.busy = true;
   state.result = null;
   state.review = null;
+  // 新任务开始前清掉旧任务引用：启动请求失败时不能留下可被误重试的旧 jobId。
+  state.jobId = "";
   cancelRequestedJobId = "";
   completionProbeJobId = "";
   completedJobId = "";
@@ -141,6 +154,7 @@ async function parseSchedules() {
     await waitForJob(started.job_id);
   } catch (error) {
     state.busy = false;
+    state.stage = "failed";
     state.statusText = `解析失败：${formatError(error)}`;
     log(state.statusText);
     render();
@@ -186,12 +200,42 @@ async function finishCompletedJob(jobId: string, job: JobResponse["job"]) {
   }
 
   try {
-    state.review = await client.request<ReviewPayload>("review.get", { job_id: jobId });
+    const review = await client.request<ReviewPayload>("review.get", { job_id: jobId });
+    // 等待原文期间用户可能已经换了文件或开始了新任务，旧任务的原文不能覆盖新选择。
+    if (state.jobId !== jobId) return;
+    state.review = review;
   } catch (error) {
+    if (state.jobId !== jobId) return;
     state.statusText = `课表已处理，但原文核对暂时无法载入：${formatError(error)}`;
+    showReviewLoadFailure(formatError(error));
   }
   log(state.statusText);
   render();
+}
+
+function showReviewLoadFailure(message: string) {
+  setHtmlIfChanged(getPanel("review"), `<div class="emptyPanel"><b>课表原文暂时无法载入</b><span>${escapeHtml(message)}</span><button type="button" data-reload-review>重新载入原文</button></div>`);
+}
+
+async function reloadReview() {
+  const jobId = state.jobId;
+  if (!jobId || reviewReloading) return;
+  reviewReloading = true;
+  state.statusText = "正在重新载入课表原文";
+  render();
+  try {
+    const review = await client.request<ReviewPayload>("review.get", { job_id: jobId });
+    if (state.jobId !== jobId) return;
+    state.review = review;
+    state.statusText = "课表原文已载入";
+  } catch (error) {
+    if (state.jobId !== jobId) return;
+    state.statusText = `课表原文仍无法载入：${formatError(error)}`;
+    showReviewLoadFailure(formatError(error));
+  } finally {
+    reviewReloading = false;
+    render();
+  }
 }
 
 async function waitForJob(jobId: string) {
@@ -248,26 +292,36 @@ async function cancelJob() {
 
 async function retryFailed() {
   if (!state.jobId || state.busy) return;
+  const previousJobId = state.jobId;
   state.busy = true;
+  state.result = null;
+  state.review = null;
+  // 先松开旧任务引用，重试请求失败时不会留下指向旧任务的“重新处理”入口。
+  state.jobId = "";
+  state.stage = "queued";
+  state.statusText = "正在重新处理失败文件";
   cancelRequestedJobId = "";
   completionProbeJobId = "";
   completedJobId = "";
   render();
   try {
     const started = await client.request<{ ok: boolean; job_id: string }>("job.retry_failed", {
-      job_id: state.jobId
+      job_id: previousJobId
     });
     state.jobId = started.job_id;
     await waitForJob(started.job_id);
   } catch (error) {
     state.busy = false;
+    state.stage = "failed";
     setStatus(formatError(error));
   }
 }
 
 async function exportExcel() {
-  if (!state.result?.result_ref) return setStatus("请先生成空课表。");
-  if (!state.result.can_export) {
+  if (state.busy) return;
+  const result = state.result;
+  if (!result?.result_ref) return setStatus("请先生成空课表。");
+  if (!result.can_export) {
     state.activeTab = "issues";
     return setStatus("当前结果还不能导出，请先核对或修正“待处理”中的内容。");
   }
@@ -276,12 +330,14 @@ async function exportExcel() {
     filters: [{ name: "Excel", extensions: ["xlsx"] }]
   });
   if (!target) return;
+  // 保存对话框期间结果可能已被新任务替换，导出必须绑定用户刚才看到的那份结果。
+  if (state.result !== result) return setStatus("结果已更新，请重新确认后再导出。");
   state.busy = true;
   state.statusText = "正在生成 Excel 文件";
   render();
   try {
     const response = await client.request<{ ok: boolean; path: string }>("exports.excel", {
-      result_ref: state.result.result_ref,
+      result_ref: result.result_ref,
       target_path: target,
       mode: "classic",
       export_week_count: state.calendarSettings.teaching_weeks
@@ -299,6 +355,7 @@ async function exportExcel() {
 }
 
 async function repairResources() {
+  if (state.busy) return;
   state.busy = true;
   setStatus("正在检查并修复本地识别功能");
   try {
@@ -336,34 +393,51 @@ async function clearLocalData() {
 }
 
 async function saveSettings(showFeedback = true) {
-  const response = await client.request<{ ok: boolean; settings: CalendarSettings }>("settings.calendar.save", {
-    settings: state.calendarSettings
-  });
-  state.calendarSettings = response.settings;
-  if (showFeedback) setStatus("学期设置已保存。");
+  try {
+    const response = await client.request<{ ok: boolean; settings: CalendarSettings }>("settings.calendar.save", {
+      settings: state.calendarSettings
+    });
+    state.calendarSettings = response.settings;
+    if (showFeedback) setStatus("学期设置已保存。");
+  } catch (error) {
+    setStatus(`学期设置保存失败：${formatError(error)}`);
+    throw error;
+  }
 }
 
 async function applyReview(blockId: string, field: string, value: unknown, reason: string) {
-  if (!state.jobId) return;
+  const jobId = state.jobId;
+  if (!jobId) return;
   if (!reason.trim()) throw new Error("请填写修正原因。");
-  state.review = await client.request<ReviewPayload>("review.apply", {
-    job_id: state.jobId,
-    block_id: blockId,
-    field,
-    new_value: value,
-    reason,
-    operator_id: "本机用户"
-  });
-  await refreshJobOutput();
+  try {
+    const review = await client.request<ReviewPayload>("review.apply", {
+      job_id: jobId,
+      block_id: blockId,
+      field,
+      new_value: value,
+      reason,
+      operator_id: "本机用户"
+    });
+    // 修正响应只回填发起它的那次任务，避免切文件后把旧任务的复核结果写进新任务。
+    if (state.jobId !== jobId) return;
+    state.review = review;
+    await refreshJobOutput();
+  } catch (error) {
+    setStatus(`修正没有保存：${formatError(error)}`);
+    throw error;
+  }
 }
 
 async function confirmIssue(issueId: string) {
-  if (!state.jobId) return;
+  const jobId = state.jobId;
+  if (!jobId) return;
   try {
-    state.review = await client.request<ReviewPayload>("review.confirm", {
-      job_id: state.jobId,
+    const review = await client.request<ReviewPayload>("review.confirm", {
+      job_id: jobId,
       issue_id: issueId
     });
+    if (state.jobId !== jobId) return;
+    state.review = review;
     await refreshJobOutput();
   } catch (error) {
     setStatus(`暂时无法确认：${formatError(error)}`);
@@ -371,9 +445,13 @@ async function confirmIssue(issueId: string) {
 }
 
 async function refreshJobOutput() {
-  const response = await client.request<JobResponse>("job.get", { job_id: state.jobId });
+  const jobId = state.jobId;
+  if (!jobId) return;
+  const response = await client.request<JobResponse>("job.get", { job_id: jobId });
+  if (state.jobId !== jobId) return;
   state.result = response.job.output || state.result;
   if (state.result) {
+    state.stage = state.result.can_export ? "completed" : "review";
     state.statusText = resultActionText(state.result.quality_state);
   }
   render();
@@ -486,8 +564,10 @@ function updateShell() {
   setDisabled("#parseSchedules", !canParse);
   const cancel = getElement<HTMLButtonElement>("#cancelJob");
   const retry = getElement<HTMLButtonElement>("#retryFailed");
-  cancel.hidden = !state.busy;
-  retry.hidden = state.busy;
+  cancel.hidden = !state.busy || !state.jobId;
+  // 只有失败、中断或被取消的任务才给“重新处理”，成功结果不能出现误导性的重试入口。
+  const canRetry = !state.busy && Boolean(state.jobId) && ["failed", "interrupted", "cancelled"].includes(state.stage);
+  retry.hidden = !canRetry;
   retry.disabled = !state.jobId;
   setDisabled("#exportExcel", !result?.can_export || state.busy);
   setDisabled("#saveSettings", state.busy);
@@ -532,9 +612,12 @@ function bindActions() {
   document.querySelector("#exportExcel")?.addEventListener("click", exportExcel);
   document.querySelector("#repairResources")?.addEventListener("click", repairResources);
   document.querySelector("#clearLocalData")?.addEventListener("click", clearLocalData);
-  document.querySelector("#saveSettings")?.addEventListener("click", () => void saveSettings());
+  document.querySelector("#saveSettings")?.addEventListener("click", () => {
+    if (state.busy) return;
+    void saveSettings().catch(() => undefined);
+  });
   document.querySelector("#clearFiles")?.addEventListener("click", () => {
-    state.files = []; state.result = null; state.review = null; render();
+    state.files = []; state.result = null; state.review = null; state.jobId = ""; availabilityPage = 0; render();
   });
   document.querySelector<HTMLInputElement>("#semesterStart")?.addEventListener("change", (event) => {
     state.calendarSettings.semester_start_date = (event.target as HTMLInputElement).value;
@@ -552,18 +635,53 @@ function bindActions() {
     }
     const remove = target.closest<HTMLButtonElement>("[data-remove]");
     if (remove) {
+      // 处理中移除文件会清空 jobId，但任务仍在跑；此时 UI 会同时失去取消和重试入口。
+      if (state.busy) {
+        setStatus("正在处理课表，完成后再调整文件。");
+        return;
+      }
       const chip = remove.closest<HTMLElement>(".sourceChip");
       const commit = () => {
         state.files = state.files.filter((path) => path !== remove.dataset.remove);
         state.result = null;
         state.review = null;
+        state.jobId = "";
+        availabilityPage = 0;
         render();
       };
       chip ? commitAfterExit(chip, commit) : commit();
       return;
     }
     const confirm = target.closest<HTMLButtonElement>("[data-confirm-inline]");
-    if (confirm) void confirmIssue(confirm.dataset.confirmInline || "");
+    if (confirm) {
+      void confirmIssue(confirm.dataset.confirmInline || "");
+      return;
+    }
+    const reload = target.closest<HTMLButtonElement>("[data-reload-review]");
+    if (reload) {
+      void reloadReview();
+      return;
+    }
+    const pager = target.closest<HTMLButtonElement>("[data-availability-page]");
+    if (pager) {
+      const previousPage = availabilityPage;
+      const nextPage = Math.max(0, Number(pager.dataset.availabilityPage || 0));
+      const goForward = nextPage > previousPage;
+      const pagerGroup = pager.closest<HTMLElement>(".tablePager");
+      const groups = Array.from(getPanel("availability").querySelectorAll<HTMLElement>(".tablePager"));
+      const groupIndex = pagerGroup ? Math.max(0, groups.indexOf(pagerGroup)) : 0;
+      availabilityPage = nextPage;
+      if (state.result) setHtmlIfChanged(getPanel("availability"), renderPanel("availability", state.result));
+      // 分页会整体替换面板内容；焦点要回到同一组、同一方向的按钮，否则键盘用户会掉到文档开头。
+      onNextFrame(() => {
+        const panel = getPanel("availability");
+        const group = panel.querySelectorAll<HTMLElement>(".tablePager")[groupIndex] || panel.querySelector<HTMLElement>(".tablePager");
+        const sameButton = group?.querySelector<HTMLButtonElement>(`[data-availability-page="${nextPage + (goForward ? 1 : -1)}"]:not(:disabled)`);
+        const fallback = group?.querySelector<HTMLButtonElement>("button:not(:disabled)");
+        (sameButton || fallback)?.focus();
+      });
+      return;
+    }
   });
   appRoot.addEventListener("keydown", (event) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-tab]");
@@ -664,10 +782,15 @@ function updatePanels(result: ParseResult | null) {
   });
 
   if (renderedResult !== result) {
+    const previousResultRef = renderedResult?.result_ref || "";
+    const refreshingSameResult = Boolean(result && previousResultRef === result.result_ref);
+    // 同一结果内的修正刷新要保留各表格的滚动位置，只有换任务结果才回到顶部第一页。
+    const scrollPositions = refreshingSameResult ? captureTableScroll() : null;
     renderedResult = result;
+    if (!result || result.result_ref !== previousResultRef) availabilityPage = 0;
     if (!result) {
       resetRichViews();
-      setHtmlIfChanged(getPanel("availability"), renderWelcome());
+      setHtmlIfChanged(getPanel("availability"), renderWelcome(state.stage !== "failed"));
       for (const tab of tabs.filter((item) => item !== "availability")) {
         setHtmlIfChanged(getPanel(tab), `<div class="emptyPanel"><b>先生成空课表</b><span>导入成员课表并完成处理后，可在这里查看${tabEmptyLabel(tab)}。</span></div>`);
       }
@@ -680,12 +803,14 @@ function updatePanels(result: ParseResult | null) {
       if (!calendar) setHtmlIfChanged(getPanel("calendar"), `<div class="calendarHost"></div>`);
       const nextCalendarKey = calendarSignature(result);
       if (calendar && calendarKey !== nextCalendarKey) {
+        calendarViewDate = calendar.getDate();
         calendar.destroy();
         calendar = null;
         calendarKey = "";
         getPanel("calendar").innerHTML = `<div class="calendarHost"></div>`;
       }
     }
+    if (scrollPositions) restoreTableScroll(scrollPositions);
   }
 
   if (reviewController && state.review && reviewPayload !== state.review) {
@@ -731,16 +856,36 @@ function ensureCalendar(result: ParseResult) {
     onNextFrame(() => calendar?.updateSize());
     return;
   }
+  // 重建周视图时回到用户正在看的周，而不是又跳回第一门课所在周。
+  const initialDate = calendar?.getDate() || calendarViewDate || undefined;
   calendar?.destroy();
+  calendar = null;
+  calendarKey = "";
   const host = getPanel("calendar").querySelector<HTMLElement>(".calendarHost");
   if (!host) return;
   calendar = mountCalendar(host, result.courses, state.calendarSettings, async (block, patch) => {
     for (const [field, value] of Object.entries(patch)) {
       await applyReview(block.block_id, field, value, "周课表拖拽修正");
     }
-  });
+  }, initialDate);
   calendarKey = key;
   onNextFrame(() => calendar?.updateSize());
+}
+
+function captureTableScroll() {
+  const positions = new Map<Tab, number>();
+  tabs.forEach((tab) => {
+    const wrap = getPanel(tab).querySelector<HTMLElement>(".tableWrap");
+    if (wrap) positions.set(tab, wrap.scrollTop);
+  });
+  return positions;
+}
+
+function restoreTableScroll(positions: Map<Tab, number>) {
+  positions.forEach((value, tab) => {
+    const wrap = getPanel(tab).querySelector<HTMLElement>(".tableWrap");
+    if (wrap) wrap.scrollTop = value;
+  });
 }
 
 function resetRichViews() {
@@ -752,6 +897,7 @@ function resetRichViews() {
   calendar?.destroy();
   calendar = null;
   calendarKey = "";
+  calendarViewDate = null;
 }
 
 function calendarSignature(result: ParseResult) {
@@ -769,7 +915,7 @@ function getPanel(tab: Tab) {
   return getElement<HTMLElement>(`#panel-${tab}`);
 }
 
-function renderWelcome() {
+function renderWelcome(showAgu = true) {
   return `<div class="emptyPanel welcomePanel">
     <div class="welcomeCopy">
       <span class="welcomeKicker">先导入课表</span>
@@ -777,7 +923,7 @@ function renderWelcome() {
       <p>请导入同一批成员的中方和英方课表。空谷会整理每个人的上课时间，把不确定的内容列出来核对，然后生成共同空闲时段。</p>
       <div class="welcomeSteps"><span><i>1</i>导入课表</span><span><i>2</i>生成空课表</span><span><i>3</i>核对并导出</span></div>
     </div>
-    ${renderAguMotion("welcome")}
+    ${showAgu ? renderAguMotion("welcome") : ""}
   </div>`;
 }
 
@@ -807,7 +953,7 @@ function renderPanel(tab: Tab, result: ParseResult) {
   }
   if (tab === "issues") {
     if (!unresolvedIssueCount(result)) return `<div class="emptyPanel"><b>没有待处理问题</b><span>本次结果已检查完成，可以导出空课表。</span></div>`;
-    return `<div class="issueTable">${result.issues.map((issue) => `<article class="${issue.confirmed ? "confirmed" : issue.severity}">
+    return `<div class="issueTable">${result.issues.map((issue) => `<article class="${escapeHtml(issue.confirmed ? "confirmed" : issue.severity)}">
       <div><b>${issueStateLabel(issue)}</b></div>
       <h3>${escapeHtml(friendlyMessage(issue.message))}</h3><p>${escapeHtml(friendlyMessage(issue.suggestion || "请在“原文核对”中对照课表。"))}</p>
       ${issueAction(issue)}
@@ -815,7 +961,23 @@ function renderPanel(tab: Tab, result: ParseResult) {
   }
   if (tab === "review") return `<div class="loadingPanel">正在载入课表原文…</div>`;
   if (tab === "calendar") return `<div class="calendarHost"></div>`;
-  return table(result.availability_preview.slice(0, 800), ["周次", "日期", "星期", "节次", "时间", "空闲人数", "空闲人员", "占用人数", "有课人员"]);
+  const rows = result.availability_preview;
+  const pageSize = 800;
+  const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
+  const page = Math.min(availabilityPage, pageCount - 1);
+  const pageRows = rows.slice(page * pageSize, (page + 1) * pageSize);
+  const columns = ["周次", "日期", "星期", "节次", "时间", "空闲人数", "空闲人员", "占用人数", "有课人员"];
+  const pager = availabilityPager(rows.length, page, pageCount);
+  return `${pager}${table(pageRows, columns)}${pager}`;
+}
+
+function availabilityPager(total: number, page: number, pageCount: number) {
+  if (pageCount <= 1) return "";
+  return `<div class="tablePager" role="group" aria-label="共同空闲分页">
+    <span aria-live="polite">共 ${total} 个时段，当前第 ${page + 1} / ${pageCount} 页</span>
+    <button type="button" data-availability-page="${page - 1}" ${page === 0 ? "disabled" : ""}>上一页</button>
+    <button type="button" data-availability-page="${page + 1}" ${page >= pageCount - 1 ? "disabled" : ""}>下一页</button>
+  </div>`;
 }
 
 function tabEmptyLabel(tab: Tab) {

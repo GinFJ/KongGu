@@ -3,11 +3,33 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 import pandas as pd
 
 from core.legacy_adapter import availability_slot_from_row
 from core.models import AvailabilitySlot
+
+
+def display_member_name(value: object) -> str:
+    """Return the user-facing name of an internal ``姓名｜部门｜角色`` member key."""
+
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    name = re.split(r"\s*[｜|]\s*", text, maxsplit=1)[0].strip()
+    return name or text
+
+
+def build_display_name_map(students: list[str]) -> dict[str, str]:
+    """Map internal member keys to display names, keeping keys that would collide."""
+
+    keys = [str(student) for student in students]
+    names = {key: display_member_name(key) for key in keys}
+    counts: dict[str, int] = {}
+    for name in names.values():
+        counts[name] = counts.get(name, 0) + 1
+    return {key: (key if counts[display] > 1 else display) for key, display in names.items()}
 
 
 @dataclass(slots=True)
@@ -33,11 +55,15 @@ def build_availability_preview(
         return AvailabilityPreviewResult(free_df=pd.DataFrame(), slots=[])
 
     total_students = len(students)
+    display_names = build_display_name_map(students)
     rows = []
     slots = []
     date_map = build_date_map(calendar_df)
     time_map = build_time_map(timetable_df)
     periods = build_period_order(timetable_df) or list(range(1, 12))
+
+    def label(member: str) -> str:
+        return display_names.get(member) or display_member_name(member)
 
     for week in weeks:
         for weekday in weekdays:
@@ -52,9 +78,9 @@ def build_availability_preview(
                     "节次": period,
                     "时间": time_map.get(period, ""),
                     "空闲人数": free_count,
-                    "空闲人员": "、".join(free_students),
+                    "空闲人员": "、".join(label(student) for student in free_students),
                     "占用人数": len(busy_students),
-                    "有课人员": "、".join(busy_students),
+                    "有课人员": "、".join(label(student) for student in busy_students),
                 }
                 rows.append(row)
                 slots.append(availability_slot_from_row(row))

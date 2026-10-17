@@ -9,10 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from app.offline_resources import ResourcePaths
-
-
-DEFAULT_SEMESTER_START_DATE = "2026-03-02"
-DEFAULT_TEACHING_WEEKS = 18
+from core.signature import DEFAULT_SEMESTER_START_DATE, DEFAULT_TEACHING_WEEKS
 
 
 def settings_path(paths: ResourcePaths) -> Path:

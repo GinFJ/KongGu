@@ -115,10 +115,7 @@ def add_pdf_sources(
 
 
 def _infer_pdf_kind(schedule_core: Any, pdf_path: Path) -> str:
-    inferred = schedule_core.infer_pdf_kind(pdf_path.name, str(pdf_path))
-    if inferred in VALID_KINDS:
-        return inferred
-    return inferred
+    return str(schedule_core.infer_pdf_kind(pdf_path.name, str(pdf_path)) or "")
 
 
 def _looks_like_placeholder_file_name(file_name: str) -> bool:

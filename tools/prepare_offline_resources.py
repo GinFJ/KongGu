@@ -17,13 +17,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.offline_resources import build_manifest  # noqa: E402
+from app.offline_resources import OFFLINE_SOURCE_DIRS, build_manifest  # noqa: E402
 
 OCR_CONFIG = ROOT / "config" / "ocr_models.json"
 OFFLINE_ROOT = ROOT / "resources"
 OCR_TARGET = OFFLINE_ROOT / "ocr_models"
 DOWNLOAD_CACHE = ROOT / "downloads" / "ocr"
 MANIFEST_PATH = OFFLINE_ROOT / "offline_manifest.json"
+MODEL_CONFIG_FILES = ("inference.yml", "inference.yaml", "model.yml", "config.yml")
 
 
 def main() -> None:
@@ -34,11 +35,10 @@ def main() -> None:
 
     if args.download_ocr:
         _download_ocr_models()
-    elif not args.allow_missing_ocr:
-        _assert_ocr_models_present()
+    _assert_ocr_models_usable(allow_missing=args.allow_missing_ocr)
 
     OFFLINE_ROOT.mkdir(parents=True, exist_ok=True)
-    manifest = build_manifest(ROOT, ["config", "assets", "resources/ocr_models"])
+    manifest = build_manifest(ROOT, list(OFFLINE_SOURCE_DIRS))
     MANIFEST_PATH.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Offline manifest written: {MANIFEST_PATH}")
     print(f"Manifest entries: {len(manifest['entries'])}")
@@ -136,18 +136,65 @@ def _sha256(path: Path) -> str:
 
 
 def _assert_ocr_models_present() -> None:
-    missing = []
+    """Backward-compatible alias for the stricter payload gate."""
+
+    _assert_ocr_models_usable(allow_missing=False)
+
+
+def _assert_ocr_models_usable(*, allow_missing: bool) -> None:
+    """Fail the release build when OCR model payloads are absent or corrupt.
+
+    A manifest generated from an empty or truncated ``inference.json`` is
+    self-consistent, so every later integrity gate passes while OCR can never
+    work and ``resources.repair`` cannot fix it (the hash matches the manifest).
+    """
+
     config = json.loads(OCR_CONFIG.read_text(encoding="utf-8"))
+    problems: list[str] = []
     for model in config["models"]:
-        model_dir = OCR_TARGET / model["name"]
-        if not model_dir.exists() or not any(model_dir.iterdir()):
-            missing.append(model["name"])
-    if missing:
+        name = str(model["name"])
+        model_dir = OCR_TARGET / name
+        if not model_dir.exists():
+            if not allow_missing:
+                problems.append(f"{name}: 模型目录缺失")
+            continue
+        problems.extend(f"{name}: {issue}" for issue in _model_payload_issues(model_dir))
+    if problems:
         raise SystemExit(
-            "Missing offline OCR models: "
-            + ", ".join(missing)
-            + ". Run with --download-ocr before release, or use --allow-missing-ocr for development."
+            "Invalid offline OCR model payload: "
+            + "; ".join(problems)
+            + ". Re-run with --download-ocr before release; --allow-missing-ocr is only for development."
         )
+
+
+def _model_payload_issues(model_dir: Path) -> list[str]:
+    """Return concrete problems found in an extracted Paddle inference model directory."""
+
+    if not model_dir.is_dir():
+        return ["模型目录不存在"]
+    files = {item.name: item for item in model_dir.iterdir() if item.is_file()}
+    issues: list[str] = []
+    config_names = [name for name in MODEL_CONFIG_FILES if name in files]
+    if not config_names or files[config_names[0]].stat().st_size == 0:
+        issues.append("缺少非空模型配置（inference.yml 等）")
+    weights = [item for name, item in files.items() if name.endswith(".pdiparams")]
+    if not weights:
+        issues.append("缺少 .pdiparams 权重文件")
+    elif any(item.stat().st_size == 0 for item in weights):
+        issues.append(".pdiparams 权重文件为空")
+    graph = [item for name, item in files.items() if name.endswith(".pdmodel") and item.stat().st_size > 0]
+    inference_json = files.get("inference.json")
+    if inference_json is not None:
+        try:
+            payload = json.loads(inference_json.read_text(encoding="utf-8"))
+        except Exception:
+            issues.append("inference.json 不是有效 JSON")
+        else:
+            if not isinstance(payload, dict) or not payload:
+                issues.append("inference.json 内容为空")
+    elif not graph:
+        issues.append("缺少模型结构文件（inference.json 或 .pdmodel）")
+    return issues
 
 
 if __name__ == "__main__":

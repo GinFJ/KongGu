@@ -52,7 +52,12 @@ def parse_pdf_paths(
     progress: Callable[[str, int, int, str], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
 ) -> DesktopWorkflowResult:
-    """Parse selected PDFs and produce preview/export-ready data."""
+    """Parse selected PDFs and produce preview/export-ready data.
+
+    ``progress(stage, current, total, message)`` reports a 0-based index into
+    the *selected* ``paths`` list (never into a preflight-filtered subset), so
+    callers can map an event back to the file row they created for that path.
+    """
 
     pdf_paths = [str(Path(path)) for path in paths if str(path).strip()]
     if not pdf_paths:
@@ -102,7 +107,7 @@ def parse_pdf_paths(
         raise ValueError("PDF 文件读取失败，请检查文件是否可访问。")
 
     if progress:
-        progress("pdf_inspection", 0, len(add_result.added), "正在检查文件是否需要图片文字识别")
+        progress("pdf_inspection", 0, len(pdf_paths), "正在检查文件是否需要图片文字识别")
     pdf_inspections = inspect_pdf_sources(add_result.added)
     if cancelled and cancelled():
         raise InterruptedError("处理已取消。")
@@ -131,9 +136,17 @@ def parse_pdf_paths(
         raise ValueError(f"本批 PDF 总页数不能超过 {MAX_TOTAL_PDF_PAGES} 页。")
     if not ready_sources:
         raise ValueError("没有通过 PDF 安全检查的课表，已阻止继续解析。")
+    ready_positions = _selected_positions(pdf_paths, ready_sources)
+
+    def report_ready_progress(stage: str, current: int, total: int, message: str) -> None:
+        """Translate the parser's ready-source index back to a selected path index."""
+
+        if not progress:
+            return
+        progress(stage, _selected_index(current, ready_positions, message), len(pdf_paths), message)
 
     if progress:
-        progress("course_parse", 0, len(ready_sources), "正在整理课程时间")
+        report_ready_progress("course_parse", 0, len(ready_sources), "正在整理课程时间")
     with cancellation_scope(cancelled):
         generation = generate_availability(
             schedule_core=schedule_core,
@@ -141,7 +154,7 @@ def parse_pdf_paths(
             root_dir="",
             weekdays=WEEKDAYS,
             pdf_inspections=pdf_inspections,
-            progress=progress,
+            progress=report_ready_progress,
         )
     if cancelled and cancelled():
         raise InterruptedError("处理已取消。")
@@ -177,7 +190,7 @@ def parse_pdf_paths(
     process_result.issues = issues
     process_result.parser_signature = signature.digest
     if progress:
-        progress(
+        report_ready_progress(
             "review" if quality_state != "accepted" else "completed",
             len(ready_sources),
             len(ready_sources),
@@ -417,3 +430,50 @@ def _export_weeks(default_weeks: list[int], export_week_count: int | None) -> li
     if count <= 0:
         return list(default_weeks)
     return list(range(1, min(count, 30) + 1))
+
+
+def _selected_positions(pdf_paths: list[str], ready_sources: list[Any]) -> list[int]:
+    """Map each ready PdfSource back to its 0-based index in the selected paths."""
+
+    positions: dict[str, int] = {}
+    for index, path in enumerate(pdf_paths):
+        positions.setdefault(_resolved_path_key(path), index)
+    by_name: dict[str, int] = {}
+    for index, path in enumerate(pdf_paths):
+        by_name.setdefault(Path(path).name, index)
+    mapped: list[int] = []
+    for source in ready_sources:
+        position = positions.get(_resolved_path_key(str(getattr(source, "source_path", ""))))
+        if position is None:
+            position = by_name.get(Path(str(getattr(source, "file_name", ""))).name)
+        mapped.append(position if position is not None else 0)
+    return mapped
+
+
+def _resolved_path_key(path: str) -> str:
+    try:
+        return str(Path(path).resolve())
+    except (OSError, RuntimeError):
+        return str(Path(path))
+
+
+def _selected_index(current: int, ready_positions: list[int], message: str = "") -> int:
+    """Clamp a parser progress value onto the selected-path index space.
+
+    The recovered parser core reports completion counts 1-based ("已完成 2/5
+    份课表", "{file} 已阻止处理") while its mid-file OCR page events carry the
+    0-based index of the file being processed.  Both are normalised here so
+    callers always receive a 0-based index into the originally selected paths.
+    """
+
+    if not ready_positions:
+        return 0
+    try:
+        value = int(current)
+    except (TypeError, ValueError):
+        value = 0
+    if "图片文字识别" in message:
+        index = min(max(value, 0), len(ready_positions) - 1)
+    else:
+        index = min(max(value - 1, 0), len(ready_positions) - 1)
+    return ready_positions[index]

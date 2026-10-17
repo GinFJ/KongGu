@@ -15,6 +15,13 @@ def evaluate_samples(
     prediction_samples: Iterable[dict[str, Any]],
 ) -> dict[str, Any]:
     truth_rows = list(truth_samples)
+    if not truth_rows:
+        return {
+            "ready": False,
+            "passed": False,
+            "pending_samples": [],
+            "message": "没有可评估的真值样本，禁止生成准确率结论。",
+        }
     predictions = {str(row["sample_id"]): row for row in prediction_samples}
     pending = [str(row["sample_id"]) for row in truth_rows if row.get("annotation_status") != "verified"]
     if pending:

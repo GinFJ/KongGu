@@ -30,7 +30,7 @@ from core.pdf_inspection import inspect_pdf_sources
 def _configure_stdio() -> None:
     """Keep sidecar protocol and diagnostics decodable by the Tauri shell plugin."""
 
-    for stream in (sys.stdout, sys.stderr):
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if not callable(reconfigure):
             continue

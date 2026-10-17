@@ -199,7 +199,13 @@ class StateStore:
         self.add_audit_event(job_id, "job.created", {"file_count": len(paths)})
         return job_id
 
-    def update_job(self, job_id: str, **fields: Any) -> None:
+    def update_job(
+        self,
+        job_id: str,
+        *,
+        connection: sqlite3.Connection | None = None,
+        **fields: Any,
+    ) -> None:
         allowed = {
             "status",
             "result_json",
@@ -214,11 +220,13 @@ class StateStore:
             return
         values["updated_at"] = utc_now()
         assignments = ", ".join(f"{key}=?" for key in values)
-        with self.connect() as connection:
-            connection.execute(
-                f"UPDATE jobs SET {assignments} WHERE id=?",
-                (*values.values(), job_id),
-            )
+        statement = f"UPDATE jobs SET {assignments} WHERE id=?"
+        params = (*values.values(), job_id)
+        if connection is not None:
+            connection.execute(statement, params)
+            return
+        with self.connect() as own:
+            own.execute(statement, params)
 
     def save_job_result(
         self,
@@ -230,35 +238,71 @@ class StateStore:
         current: int,
         total: int,
         issues: list[dict[str, Any]],
+        connection: sqlite3.Connection | None = None,
     ) -> None:
         """Atomically persist a completed result and its review issues."""
 
-        with self.connect() as connection:
-            cursor = connection.execute(
-                """
-                UPDATE jobs
-                   SET status='completed',
-                       result_json=?,
-                       error=?,
-                       quality_state=?,
-                       current=?,
-                       total=?,
-                       updated_at=?
-                 WHERE id=?
-                """,
-                (
-                    result_json,
-                    error,
-                    quality_state,
-                    current,
-                    total,
-                    utc_now(),
-                    job_id,
-                ),
+        if connection is not None:
+            self._save_job_result_on(
+                connection,
+                job_id,
+                result_json=result_json,
+                error=error,
+                quality_state=quality_state,
+                current=current,
+                total=total,
+                issues=issues,
             )
-            if not cursor.rowcount:
-                raise ValueError("未找到要保存结果的任务。")
-            self._replace_issues(connection, job_id, issues)
+            return
+        with self.connect() as own:
+            self._save_job_result_on(
+                own,
+                job_id,
+                result_json=result_json,
+                error=error,
+                quality_state=quality_state,
+                current=current,
+                total=total,
+                issues=issues,
+            )
+
+    def _save_job_result_on(
+        self,
+        connection: sqlite3.Connection,
+        job_id: str,
+        *,
+        result_json: str,
+        error: str,
+        quality_state: str,
+        current: int,
+        total: int,
+        issues: list[dict[str, Any]],
+    ) -> None:
+        cursor = connection.execute(
+            """
+            UPDATE jobs
+               SET status='completed',
+                   result_json=?,
+                   error=?,
+                   quality_state=?,
+                   current=?,
+                   total=?,
+                   updated_at=?
+             WHERE id=?
+            """,
+            (
+                result_json,
+                error,
+                quality_state,
+                current,
+                total,
+                utc_now(),
+                job_id,
+            ),
+        )
+        if not cursor.rowcount:
+            raise ValueError("未找到要保存结果的任务。")
+        self._replace_issues(connection, job_id, issues)
 
     def update_file(self, job_id: str, source_path: str, **fields: Any) -> None:
         allowed = {"kind", "source_hash", "status", "stage", "message"}
@@ -442,9 +486,15 @@ class StateStore:
                 (issue_id, job_id, _json(issue), prior[0], prior[1]),
             )
 
-    def confirm_issue(self, job_id: str, issue_id: str) -> None:
-        with self.connect() as connection:
-            cursor = connection.execute(
+    def confirm_issue(
+        self,
+        job_id: str,
+        issue_id: str,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        def apply(target: sqlite3.Connection) -> None:
+            cursor = target.execute(
                 """
                 UPDATE issues SET confirmed=1, confirmed_at=?
                  WHERE job_id=? AND issue_id=?
@@ -453,7 +503,13 @@ class StateStore:
             )
             if not cursor.rowcount:
                 raise ValueError("未找到要确认的问题。")
-        self.add_audit_event(job_id, "review.confirmed", {"issue_id": issue_id})
+            self.add_audit_event(job_id, "review.confirmed", {"issue_id": issue_id}, connection=target)
+
+        if connection is not None:
+            apply(connection)
+            return
+        with self.connect() as own:
+            apply(own)
 
     def add_correction(
         self,
@@ -467,10 +523,12 @@ class StateStore:
         parser_signature: str,
         operator_id: str,
         job_id: str | None = None,
+        connection: sqlite3.Connection | None = None,
     ) -> str:
         correction_id = str(uuid4())
-        with self.connect() as connection:
-            connection.execute(
+
+        def apply(target: sqlite3.Connection) -> None:
+            target.execute(
                 """
                 INSERT INTO corrections(
                     id,source_hash,block_id,field,original_json,new_json,reason,
@@ -490,7 +548,18 @@ class StateStore:
                     utc_now(),
                 ),
             )
-        self.add_audit_event(job_id, "review.corrected", {"correction_id": correction_id, "field": field})
+            self.add_audit_event(
+                job_id,
+                "review.corrected",
+                {"correction_id": correction_id, "field": field},
+                connection=target,
+            )
+
+        if connection is not None:
+            apply(connection)
+        else:
+            with self.connect() as own:
+                apply(own)
         return correction_id
 
     def corrections_for_source(self, source_hash: str, parser_signature: str) -> list[dict[str, Any]]:
@@ -522,15 +591,24 @@ class StateStore:
             )
             return int(cursor.rowcount)
 
-    def add_audit_event(self, job_id: str | None, event: str, payload: dict[str, Any]) -> None:
-        with self.connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO audit_events(job_id,event,payload_json,created_at)
-                VALUES(?,?,?,?)
-                """,
-                (job_id, event, _json(payload), utc_now()),
-            )
+    def add_audit_event(
+        self,
+        job_id: str | None,
+        event: str,
+        payload: dict[str, Any],
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        statement = """
+            INSERT INTO audit_events(job_id,event,payload_json,created_at)
+            VALUES(?,?,?,?)
+        """
+        params = (job_id, event, _json(payload), utc_now())
+        if connection is not None:
+            connection.execute(statement, params)
+            return
+        with self.connect() as own:
+            own.execute(statement, params)
 
 
 def _json(value: Any) -> str:

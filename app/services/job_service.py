@@ -46,13 +46,28 @@ class JobCoordinator:
             self._active_job_id = job_id
             self._cancel_event = threading.Event()
         if background:
-            self._thread = threading.Thread(
-                target=self._run,
-                args=(job_id, payload, paths),
-                name=f"konggu-job-{job_id[:8]}",
-                daemon=True,
-            )
-            self._thread.start()
+            try:
+                thread = threading.Thread(
+                    target=self._run,
+                    args=(job_id, payload, paths),
+                    name=f"konggu-job-{job_id[:8]}",
+                    daemon=True,
+                )
+                self._thread = thread
+                thread.start()
+            except Exception as exc:
+                # A thread that never starts must not keep this coordinator
+                # locked out of the next batch.
+                safe_error = safe_error_message(exc)
+                try:
+                    self.store.update_job(job_id, status="failed", error=safe_error)
+                    self.store.clear_job_source_paths(job_id)
+                    self.store.add_audit_event(job_id, "job.failed", {"error": safe_error})
+                finally:
+                    with self._lock:
+                        if self._active_job_id == job_id:
+                            self._active_job_id = None
+                raise
         else:
             self._run(job_id, payload, paths)
         return {"ok": True, "job_id": job_id, "status": "queued"}
@@ -74,6 +89,9 @@ class JobCoordinator:
                 if not job:
                     raise ValueError("找不到这次处理记录。")
                 return {"ok": True, "job_id": job_id, "status": job["status"]}
+            job = self.store.get_job(job_id, include_result=False)
+            if job and job["status"] in {"completed", "failed", "cancelled", "interrupted"}:
+                return {"ok": True, "job_id": job_id, "status": job["status"]}
             self._cancel_event.set()
             self.store.update_job(job_id, status="cancelling", error="正在完成当前图片页后停止。")
         self._emit(job_id, "", "cancelling", 0, 0, "正在停止处理；如果等待时间较长，空谷会自动恢复识别功能。")
@@ -91,6 +109,7 @@ class JobCoordinator:
 
     def _run(self, job_id: str, payload: dict[str, Any], paths: list[str]) -> None:
         self.store.update_job(job_id, status="running", error="", current=0, total=len(paths))
+        final_status: str | None = None
         file_rows = self.store.get_job(
             job_id,
             include_result=False,
@@ -118,7 +137,10 @@ class JobCoordinator:
                 raise InterruptedError("处理已取消。")
 
             def on_progress(stage: str, current: int, total: int, message: str) -> None:
-                active = file_rows[min(current, max(0, len(file_rows) - 1))] if file_rows else None
+                # parse_pdf_paths reports a 0-based index into the selected paths,
+                # which is exactly the row order created by store.create_job.
+                index = max(0, min(int(current), len(file_rows) - 1)) if file_rows else 0
+                active = file_rows[index] if file_rows else None
                 source_id = str(active["id"]) if active else ""
                 if active:
                     self.store.update_file(
@@ -148,6 +170,7 @@ class JobCoordinator:
                 raise InterruptedError("处理已取消。")
             apply_saved_corrections(workflow, self.store, self.schedule_core)
             save_workflow_result(workflow, self.store, job_id=job_id, request=payload)
+            final_status = "completed"
             state = workflow.process_result.quality_state
             for file_row in file_rows:
                 record = next(
@@ -159,13 +182,27 @@ class JobCoordinator:
                     None,
                 )
                 failed = bool(record and (record.error or record.block_count == 0))
+                message = record.display_result if record else ""
+                if record is None:
+                    # Preflight-filtered or duplicate-skipped inputs never produced
+                    # a parse record; reporting them as completed hides the problem.
+                    failed = True
+                    issue = next(
+                        (
+                            item
+                            for item in workflow.process_result.issues
+                            if item.source_file == file_row["file_name"] and item.blocks_export
+                        ),
+                        None,
+                    )
+                    message = issue.message if issue else "未生成解析记录：文件被跳过或未通过输入预检。"
                 stage = "failed" if failed else ("review" if state != "accepted" else "completed")
                 self.store.update_file(
                     job_id,
                     file_row["source_path"],
                     status="failed" if failed else "completed",
                     stage=stage,
-                    message=record.display_result if record else "处理完成",
+                    message=message or "处理完成",
                 )
             self.store.clear_job_source_paths(job_id)
             self.store.add_audit_event(job_id, "job.completed", {"quality_state": state})
@@ -178,6 +215,7 @@ class JobCoordinator:
                 "课表已处理，请核对标记内容" if state != "accepted" else "空课表已生成，可以导出",
             )
         except InterruptedError as exc:
+            final_status = "cancelled"
             safe_error = safe_error_message(exc)
             self.store.update_job(job_id, status="cancelled", error=safe_error)
             for path in paths:
@@ -192,6 +230,7 @@ class JobCoordinator:
             self.store.add_audit_event(job_id, "job.cancelled", {"message": safe_error})
             self._emit(job_id, "", "cancelled", 0, len(paths), safe_error)
         except Exception as exc:
+            final_status = "failed"
             safe_error = safe_error_message(exc)
             self.store.update_job(job_id, status="failed", error=safe_error)
             for path in paths:
@@ -208,6 +247,11 @@ class JobCoordinator:
         finally:
             with self._lock:
                 if self._active_job_id == job_id:
+                    # A cancel() that raced with the terminal write above may have
+                    # persisted "cancelling" after the real terminal state; restore it
+                    # before releasing the coordinator so the job cannot stay stuck.
+                    if final_status is not None:
+                        self.store.update_job(job_id, status=final_status)
                     self._active_job_id = None
 
     def _emit(
@@ -219,18 +263,22 @@ class JobCoordinator:
         total: int,
         message: str,
     ) -> None:
-        self.event_sink(
-            {
-                "type": "event",
-                "event": "job.progress",
-                "job_id": job_id,
-                "source_id": source_id,
-                "stage": stage,
-                "current": int(current),
-                "total": int(total),
-                "message": message,
-            }
-        )
+        try:
+            self.event_sink(
+                {
+                    "type": "event",
+                    "event": "job.progress",
+                    "job_id": job_id,
+                    "source_id": source_id,
+                    "stage": stage,
+                    "current": int(current),
+                    "total": int(total),
+                    "message": message,
+                }
+            )
+        except Exception:
+            # A closed output pipe must never change the persisted job state.
+            return
 
 
 def _file_hash(path: str) -> str:

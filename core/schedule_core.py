@@ -22,14 +22,20 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from core.ocr_engines import PaddleV4Engine
 from core.runtime_control import raise_if_cancelled
-from core.signature import cache_signature
+from core.signature import (
+    DEFAULT_OCR_ENGINE,
+    DEFAULT_OCR_MODEL,
+    DEFAULT_SEMESTER_START_DATE,
+    DEFAULT_TEACHING_WEEKS,
+    cache_signature,
+)
 from core.pdf_inspection import MAX_PDF_BYTES, MAX_PDF_PAGES
 
 
 WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 WEEKDAY_INDEX = {weekday: index for index, weekday in enumerate(WEEKDAYS)}
-SEMESTER_START = date(2026, 3, 2)
-TEACHING_WEEKS = 18
+SEMESTER_START = date.fromisoformat(DEFAULT_SEMESTER_START_DATE)
+TEACHING_WEEKS = int(DEFAULT_TEACHING_WEEKS)
 PERIOD_DISPLAY_ORDER = [1, 2, 3, 4, 12, 13, 5, 6, 7, 8, 9, 10, 11]
 PERIOD_DISPLAY_INDEX = {period: index for index, period in enumerate(PERIOD_DISPLAY_ORDER)}
 ENGLISH_WEEKDAY_MAP = {
@@ -85,6 +91,7 @@ _OCR_ENGINE = None
 LOGGER = logging.getLogger("konggu")
 PARSE_CACHE_VERSION = 34
 OCR_LAYOUT_CACHE_VERSION = 3
+OCR_TEXT_CACHE_VERSION = 1
 NAME_STOPWORDS = {
     "办公室",
     "外联部",
@@ -192,10 +199,28 @@ def period_time_range(period: int) -> str:
 
 
 def infer_pdf_kind(file_name: str, path: str = "") -> str:
-    haystack = f"{file_name} {path}"
-    if "英方" in haystack or "uk" in haystack.lower() or "english" in haystack.lower():
+    """Infer the timetable kind from the file name, then from a directory hint.
+
+    The README contract is a file-name based identity.  Directory names are
+    user data: folders named ``English``, ``chinese`` or a temporary directory
+    containing ``uk`` must not override an explicit 中方/英方 marker in the
+    file name.  Only the unambiguous Chinese markers are accepted as a
+    directory fallback, and only when the file name carries no marker itself.
+    """
+
+    name_text = Path(str(file_name or "")).name or str(file_name or "")
+    kind = _infer_kind_from_text(name_text)
+    if kind:
+        return kind
+    directory_text = str(Path(str(path or "")).parent) if path else ""
+    return _infer_kind_from_text(directory_text, chinese_markers_only=True)
+
+
+def _infer_kind_from_text(text: str, *, chinese_markers_only: bool = False) -> str:
+    lowered = text.lower()
+    if "英方" in text or (not chinese_markers_only and ("uk" in lowered or "english" in lowered)):
         return "英方"
-    if "中方" in haystack or "chinese" in haystack.lower():
+    if "中方" in text or (not chinese_markers_only and "chinese" in lowered):
         return "中方"
     return ""
 
@@ -665,10 +690,33 @@ def build_slot_table(
     return pd.DataFrame(rows)
 
 
+def _block_weekday_sort_key(weekday: Any) -> int:
+    return WEEKDAY_INDEX.get(str(weekday or ""), len(WEEKDAYS))
+
+
+def _block_period_sort_key(period: Any) -> int:
+    try:
+        value = int(period)
+    except Exception:
+        return 10_000
+    return PERIOD_DISPLAY_INDEX.get(value, 10_000 + value)
+
+
 def blocks_to_dataframe(blocks: list[dict[str, Any]]) -> pd.DataFrame:
     if not blocks:
         return pd.DataFrame(columns=["name", "source", "week", "date", "weekday", "period", "time", "course"])
-    return pd.DataFrame(blocks).sort_values(["name", "week", "weekday", "period"]).reset_index(drop=True)
+    frame = pd.DataFrame(blocks)
+    # Sort in teaching order: 周一..周日 and the display period order used by the
+    # UI (1,2,3,4,12,13,5,...).  Plain string/value sorting would list 周一,
+    # 周三, 周二 and put noon periods after 11.
+    weekday_source = frame["weekday"] if "weekday" in frame.columns else pd.Series("", index=frame.index)
+    period_source = frame["period"] if "period" in frame.columns else pd.Series(None, index=frame.index)
+    leading_columns = [column for column in ("name", "week") if column in frame.columns]
+    ordered = frame.assign(
+        _weekday_order=weekday_source.map(_block_weekday_sort_key),
+        _period_order=period_source.map(_block_period_sort_key),
+    ).sort_values([*leading_columns, "_weekday_order", "_period_order"], kind="stable")
+    return ordered.drop(columns=["_weekday_order", "_period_order"]).reset_index(drop=True)
 
 
 def _dedupe_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1154,8 +1202,21 @@ def _excel_safe_cell(value: Any) -> Any:
     Course names, member names, filenames and review messages are all external
     input.  They must remain text at the workbook boundary even when they start
     with a formula-triggering character or whitespace followed by one.
+
+    DataFrame cells can also hold non-scalar values (for example the ``periods``
+    list added to legacy blocks, ``bbox`` tuples or ``provenance`` dictionaries).
+    openpyxl rejects those objects, so they are flattened to readable text here
+    instead of failing the whole export.
     """
 
+    if isinstance(value, (set, frozenset)):
+        value = ",".join(sorted(str(item) for item in value))
+    elif isinstance(value, (list, tuple)):
+        value = ",".join(str(item) for item in value)
+    elif isinstance(value, dict):
+        value = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    elif not isinstance(value, (str, int, float, bool, type(None), datetime, date)):
+        value = str(value)
     if not isinstance(value, str):
         return value
     text = value.replace("\x00", "")
@@ -1230,10 +1291,16 @@ def _extract_pdf_ocr_text(
     *,
     progress: Callable[[int, int], None] | None = None,
 ) -> str:
-    cache_path = _ocr_cache_path(source)
-    if cache_path.exists():
-        LOGGER.info("命中 OCR 缓存: %s", _source_name(source))
-        return cache_path.read_text(encoding="utf-8", errors="ignore")
+    cache_path = _ocr_text_cache_path(source)
+    if cache_path.exists() and _ocr_text_cache_matches(cache_path):
+        cached_text = cache_path.read_text(encoding="utf-8", errors="ignore")
+        if cached_text.strip():
+            LOGGER.info("命中 OCR 缓存: %s", _source_name(source))
+            _write_ocr_text_cache_meta(cache_path)
+            return cached_text
+        # An empty cached text can come from a broken/partial OCR run.  Reusing it
+        # would permanently disable OCR for this source, so retry instead.
+        LOGGER.info("OCR 缓存为空，重新识别: %s", _source_name(source))
 
     items = _extract_pdf_ocr_items(source, progress=progress)
     pages: dict[int, list[dict[str, Any]]] = defaultdict(list)
@@ -1243,12 +1310,54 @@ def _extract_pdf_ocr_text(
         "\n".join(item["text"] for item in sorted(page_items, key=lambda value: (value["y0"], value["x0"])))
         for _, page_items in sorted(pages.items())
     )
-    try:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(text, encoding="utf-8")
-    except Exception as exc:
-        LOGGER.warning("OCR 文本缓存写入失败: %s error=%s", cache_path.name, exc)
+    if text.strip():
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(text, encoding="utf-8")
+            _write_ocr_text_cache_meta(cache_path)
+        except Exception as exc:
+            LOGGER.warning("OCR 文本缓存写入失败: %s error=%s", cache_path.name, exc)
     return text
+
+
+def _ocr_text_cache_path(source: dict[str, Any]) -> Path:
+    """OCR 文字缓存仍按文件哈希存档，引擎与模型信息写入旁路元数据。"""
+
+    return _ocr_cache_path(source)
+
+
+def _ocr_text_cache_meta_path(cache_path: Path) -> Path:
+    return cache_path.with_name(f"{cache_path.name}.meta.json")
+
+
+def _ocr_text_cache_matches(cache_path: Path) -> bool:
+    """只复用同一 OCR 引擎与模型的识别文字；旧缓存没有元数据时按当前引擎处理。"""
+
+    meta_path = _ocr_text_cache_meta_path(cache_path)
+    if not meta_path.exists():
+        return True
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return (
+        meta.get("version") == OCR_TEXT_CACHE_VERSION
+        and meta.get("ocr_engine") == DEFAULT_OCR_ENGINE
+        and meta.get("ocr_model") == DEFAULT_OCR_MODEL
+    )
+
+
+def _write_ocr_text_cache_meta(cache_path: Path) -> None:
+    meta_path = _ocr_text_cache_meta_path(cache_path)
+    payload = {
+        "version": OCR_TEXT_CACHE_VERSION,
+        "ocr_engine": DEFAULT_OCR_ENGINE,
+        "ocr_model": DEFAULT_OCR_MODEL,
+    }
+    try:
+        meta_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:
+        LOGGER.warning("OCR 文本缓存元数据写入失败: %s error=%s", meta_path.name, exc)
 
 
 def _extract_pdf_ocr_items(
@@ -1264,6 +1373,7 @@ def _extract_pdf_ocr_items(
                 payload.get("version") == OCR_LAYOUT_CACHE_VERSION
                 and payload.get("parser_signature") == cache_signature()
                 and isinstance(payload.get("items"), list)
+                and payload["items"]
             ):
                 LOGGER.info("命中 OCR 坐标缓存: %s", _source_name(source))
                 return payload["items"]
@@ -1279,9 +1389,9 @@ def _extract_pdf_ocr_items(
     if doc is None:
         return []
 
-    ocr = _build_ocr_engine()
     items: list[dict[str, Any]] = []
     try:
+        ocr = _build_ocr_engine()
         total_pages = max(1, int(doc.page_count))
         for page_number, page in enumerate(doc):
             pix = page.get_pixmap(dpi=120, alpha=False)
@@ -1302,6 +1412,11 @@ def _extract_pdf_ocr_items(
                 progress(page_number + 1, total_pages)
     finally:
         doc.close()
+
+    if not items:
+        # Do not persist an empty layout result: it would permanently disable OCR
+        # for this source even after the local runtime or models were repaired.
+        return []
 
     payload = {
         "version": OCR_LAYOUT_CACHE_VERSION,
@@ -1615,6 +1730,7 @@ def _parse_chinese_pdf_layout(source: dict[str, Any], file_name: str) -> list[di
     all_blocks: list[dict[str, Any]] = []
     try:
         for page in doc:
+            raise_if_cancelled()
             all_blocks.extend(_parse_chinese_table_page_items(_page_words(page), name, float(page.rect.height)))
     finally:
         doc.close()
@@ -1725,7 +1841,7 @@ def _parse_chinese_table_page_items(
             for item in sorted(row_words, key=lambda value: (value["y0"], value["x0"]))
             if _item_center(item)[0] < bands[0]["left"] and re.search(r"\d{2}/\d{2}", item["text"])
         )
-        week_start = _parse_week_start(date_text) if date_text else None
+        week_start = _parse_week_start(date_text, week_item["week"]) if date_text else None
         cells: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
         for item in row_words:
             token = item["text"]
@@ -1774,7 +1890,7 @@ def _parse_chinese_full_term_grid_page_items(
             row_bottom = week_row["y"] + grid["row_gap"] * 0.55
 
         row_items = [item for item in items if row_top <= _item_center(item)[1] < row_bottom]
-        week_start = _parse_week_start(week_row.get("date_text", "")) if week_row.get("date_text") else None
+        week_start = _parse_week_start(week_row.get("date_text", ""), week_row["week"]) if week_row.get("date_text") else None
         for cell in grid["cells"]:
             cell_items = [
                 item
@@ -1819,6 +1935,7 @@ def _parse_chinese_full_term_visual_occupancy(source: dict[str, Any], file_name:
 
         blocks: list[dict[str, Any]] = []
         for page_number, page in enumerate(doc):
+            raise_if_cancelled()
             pix = page.get_pixmap(dpi=180, alpha=False)
             image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
             if pix.n > 3:
@@ -2156,64 +2273,68 @@ def _parse_chinese_legacy_web_layout(source: dict[str, Any], file_name: str) -> 
     except Exception:
         return []
 
-    text = _extract_pdf_text(source)
-    if "学期理论课表" not in text and "旧版课表打印" not in text:
-        return []
+    try:
+        text = _extract_pdf_text(source)
+        if "学期理论课表" not in text and "旧版课表打印" not in text:
+            return []
 
-    name = _extract_chinese_name(text, file_name)
-    blocks: list[dict[str, Any]] = []
-    for page in doc:
-        words = [
-            {
-                "x0": float(word[0]),
-                "y0": float(word[1]),
-                "x1": float(word[2]),
-                "y1": float(word[3]),
-                "text": str(word[4]).replace("\xa0", " ").strip(),
-            }
-            for word in page.get_text("words")
-            if str(word[4]).replace("\xa0", " ").strip()
-        ]
-        header_words = sorted(
-            [word for word in words if word["text"] in ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")],
-            key=lambda word: word["x0"],
-        )
-        if len(header_words) < 5:
-            continue
-
-        columns = []
-        for word in header_words:
-            weekday = word["text"].replace("星期", "周")
-            columns.append({"center": (word["x0"] + word["x1"]) / 2, "weekday": weekday})
-        header_y = min(word["y0"] for word in header_words)
-
-        day_words: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for word in words:
-            if word["y0"] <= header_y + 8:
+        name = _extract_chinese_name(text, file_name)
+        blocks: list[dict[str, Any]] = []
+        for page in doc:
+            raise_if_cancelled()
+            words = [
+                {
+                    "x0": float(word[0]),
+                    "y0": float(word[1]),
+                    "x1": float(word[2]),
+                    "y1": float(word[3]),
+                    "text": str(word[4]).replace("\xa0", " ").strip(),
+                }
+                for word in page.get_text("words")
+                if str(word[4]).replace("\xa0", " ").strip()
+            ]
+            header_words = sorted(
+                [word for word in words if word["text"] in ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")],
+                key=lambda word: word["x0"],
+            )
+            if len(header_words) < 5:
                 continue
-            if word["x0"] < min(column["center"] for column in columns) - 45:
-                continue
-            x_center = (word["x0"] + word["x1"]) / 2
-            nearest = min(columns, key=lambda column: abs(column["center"] - x_center))
-            if abs(nearest["center"] - x_center) > 50:
-                continue
-            token = word["text"]
-            if not token or (token and 0xE000 <= ord(token[0]) <= 0xF8FF) or token in {"---------------------"}:
-                continue
-            day_words[nearest["weekday"]].append(word)
 
-        for weekday, column_words in day_words.items():
-            lines = [word["text"] for word in sorted(column_words, key=lambda item: (item["y0"], item["x0"]))]
-            for course, week_expr, period_expr in _extract_legacy_course_specs(lines):
-                weeks = _expand_week_expr(week_expr)
-                periods = _expand_period_expr(period_expr)
-                for week in weeks:
-                    day = _date_for_weekday(week, weekday)
-                    for period in periods:
-                        if 1 <= period <= 11:
-                            blocks.append(_block(name, "中方", week, day, weekday, period, course))
+            columns = []
+            for word in header_words:
+                weekday = word["text"].replace("星期", "周")
+                columns.append({"center": (word["x0"] + word["x1"]) / 2, "weekday": weekday})
+            header_y = min(word["y0"] for word in header_words)
 
-    return blocks
+            day_words: dict[str, list[dict[str, Any]]] = defaultdict(list)
+            for word in words:
+                if word["y0"] <= header_y + 8:
+                    continue
+                if word["x0"] < min(column["center"] for column in columns) - 45:
+                    continue
+                x_center = (word["x0"] + word["x1"]) / 2
+                nearest = min(columns, key=lambda column: abs(column["center"] - x_center))
+                if abs(nearest["center"] - x_center) > 50:
+                    continue
+                token = word["text"]
+                if not token or (token and 0xE000 <= ord(token[0]) <= 0xF8FF) or token in {"---------------------"}:
+                    continue
+                day_words[nearest["weekday"]].append(word)
+
+            for weekday, column_words in day_words.items():
+                lines = [word["text"] for word in sorted(column_words, key=lambda item: (item["y0"], item["x0"]))]
+                for course, week_expr, period_expr in _extract_legacy_course_specs(lines):
+                    weeks = _expand_week_expr(week_expr)
+                    periods = _expand_period_expr(period_expr)
+                    for week in weeks:
+                        day = _date_for_weekday(week, weekday)
+                        for period in periods:
+                            if 1 <= period <= 11:
+                                blocks.append(_block(name, "中方", week, day, weekday, period, course))
+
+        return blocks
+    finally:
+        doc.close()
 
 
 def _parse_chinese_ocr_legacy_layout(
@@ -2346,6 +2467,22 @@ def _expand_period_expr(expr: str) -> list[int]:
     return sorted({number for number in numbers if 1 <= number <= 12})
 
 
+def _looks_like_chinese_legend_line(token: str) -> bool:
+    """Detect the bottom course legend of a full-term Chinese timetable text dump.
+
+    The legend entries follow the last week row and carry course numbers, credit
+    hours or week/period ranges in brackets (for example
+    ``高等数学(高)[1-16周][1-2节] 2024-2025 教师 ...``).  A plain cell value never
+    contained brackets in the controlled sample library, so carrying on would
+    turn legend text into phantom occupancy (18+ blocks covering every period).
+    """
+
+    text = str(token or "").strip()
+    if not text or ("[" not in text and "]" not in text):
+        return False
+    return len(text) >= 24 or bool(re.search(r"\d{6,}", text))
+
+
 def _parse_chinese_text(text: str, file_name: str) -> list[dict[str, Any]]:
     name = _extract_chinese_name(text, file_name)
     lines = _clean_lines(text)
@@ -2364,11 +2501,13 @@ def _parse_chinese_text(text: str, file_name: str) -> list[dict[str, Any]]:
         week = int(week_match.group(1))
         week_start = None
         if index + 1 < len(lines):
-            week_start = _parse_week_start(lines[index + 1])
+            week_start = _parse_week_start(lines[index + 1], week)
         index += 2
         slot_index = 0
         while index < len(lines) and not re.match(r"^\d{1,2}周$", lines[index]):
             token = lines[index]
+            if _looks_like_chinese_legend_line(token):
+                break
             if slot_index >= len(slots):
                 index += 1
                 continue
@@ -2464,6 +2603,7 @@ def _parse_english_pdf_grid_layout(source: dict[str, Any], file_name: str) -> li
     blocks: list[dict[str, Any]] = []
     try:
         for page in doc:
+            raise_if_cancelled()
             items = _page_words(page)
             if not items:
                 continue
@@ -2580,8 +2720,6 @@ def _complete_english_period_columns(by_period: dict[int, dict[str, Any]]) -> li
         for period, item in by_period.items()
         if 1 <= int(period) <= 11
     }
-    if len(known) >= 8:
-        return [{"period": period, "center": known[period], "synthetic": False} for period in sorted(known)]
     if len(known) < 6 or not {1, 2, 3, 4}.issubset(known):
         return [{"period": period, "center": known[period], "synthetic": False} for period in sorted(known)]
 
@@ -2957,11 +3095,32 @@ def _extract_chinese_name_from_text(text: str) -> str:
     return "" if candidate in NAME_STOPWORDS else candidate
 
 
-def _parse_week_start(text: str) -> date | None:
+def _date_from_month_day(month: int, day: int, expected: date) -> date:
+    candidates = []
+    for year in (expected.year - 1, expected.year, expected.year + 1):
+        try:
+            candidates.append(date(year, month, day))
+        except ValueError:
+            continue
+    if not candidates:
+        raise ValueError("无效的月日")
+    closest = min(candidates, key=lambda candidate: abs((candidate - expected).days))
+    if abs((closest - expected).days) > max(190, _teaching_weeks() * 7 + 14):
+        raise ValueError("月日无法对应当前学期")
+    return closest
+
+
+def _parse_week_start(text: str, week: int | None = None) -> date | None:
     match = re.search(r"(\d{2})/(\d{2})", text)
     if not match:
         return None
-    return date(2026, int(match.group(1)), int(match.group(2)))
+    expected = _semester_start_date() + timedelta(days=(week - 1) * 7) if week is not None else _semester_start_date()
+    try:
+        return _date_from_month_day(int(match.group(1)), int(match.group(2)), expected)
+    except ValueError:
+        # A noisy date row (e.g. OCR "13/45-13/51") must not abort the whole PDF.
+        # The caller falls back to deterministic synthetic dates for this week.
+        return None
 
 
 def _parse_date(text: str) -> date:
@@ -2973,7 +3132,7 @@ def _parse_date(text: str) -> date:
         return datetime.strptime(digits[:8], "%Y%m%d").date()
     if re.match(r"\d{2}/\d{2}", text):
         month, day = map(int, text[:5].split("/"))
-        return date(2026, month, day)
+        return _date_from_month_day(month, day, _semester_start_date())
     return date.fromisoformat(text[:10])
 
 
@@ -3075,6 +3234,9 @@ def _is_empty_or_non_class(token: str) -> bool:
 
 def _looks_like_room(token: str) -> bool:
     compact = re.sub(r"\s+", "", token.strip())
+    # A numbered course alias (e.g. 大3L99) is distinct from a room such as 大301.
+    if re.match(r"^大\d+[LRX]\d+", compact, re.IGNORECASE):
+        return False
     return bool(re.search(r"^(?:E\d|C\d|TT|内|大\d|L\d|[A-Z]\d|C075|Room|教室)", compact, re.IGNORECASE))
 
 

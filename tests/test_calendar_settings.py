@@ -1,7 +1,9 @@
 import os
 
 from app.offline_resources import configure_offline_environment
+from app.services import calendar_settings
 from app.services.calendar_settings import load_calendar_settings, save_calendar_settings
+from core.signature import DEFAULT_SEMESTER_START_DATE, DEFAULT_TEACHING_WEEKS
 
 
 def test_calendar_settings_persist_and_apply_to_environment(tmp_path, monkeypatch):
@@ -33,3 +35,10 @@ def test_calendar_settings_reject_invalid_values(tmp_path, monkeypatch):
         assert "YYYY-MM-DD" in str(exc)
     else:
         raise AssertionError("Expected invalid date to fail.")
+
+
+def test_calendar_defaults_have_one_source():
+    """The persisted settings, signature and parser must share one default pair."""
+
+    assert calendar_settings.DEFAULT_SEMESTER_START_DATE == DEFAULT_SEMESTER_START_DATE
+    assert calendar_settings.DEFAULT_TEACHING_WEEKS == DEFAULT_TEACHING_WEEKS

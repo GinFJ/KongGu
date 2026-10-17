@@ -5,6 +5,8 @@ export type ResourceStatus = {
   storage: string;
   missing: Array<{ target: string; kind: string; issue: string }>;
   invalid: Array<{ target: string; kind: string; issue: string }>;
+  manifest_issue?: string;
+  manifest_error?: string;
   ocr: {
     ready: boolean;
     issue: string;

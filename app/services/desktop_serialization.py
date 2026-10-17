@@ -118,7 +118,9 @@ def result_summary(result: ProcessResult | None, *, pdf_count: int = 0, warning_
     return {
         "pdf_count": result.summary.source_file_count or pdf_count,
         "member_count": result.summary.member_count,
-        "complete_member_count": sum(1 for member in result.members if _member_risk(member)[0] == "正常"),
+        # Reuse the core summary so payload.summary cannot disagree with the
+        # ProcessSummary that owns the same number.
+        "complete_member_count": result.summary.complete_member_count,
         "warning_count": warning_count + file_warning_count + member_warning_count,
         "course_block_count": len(result.blocks),
         "availability_slot_count": result.summary.slot_count,

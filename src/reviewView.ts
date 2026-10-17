@@ -42,6 +42,7 @@ export async function mountReview(
   let loadedPath = "";
   let renderTask: { cancel: () => void; promise: Promise<unknown> } | null = null;
   let renderVersion = 0;
+  let loadVersion = 0;
   let destroyed = false;
   let sourceOptionsKey = "";
   let blockOptionsKey = "";
@@ -107,6 +108,17 @@ export async function mountReview(
     const target = root.querySelector<T>(selector);
     if (!target) throw new Error(`Missing review element: ${selector}`);
     return target;
+  }
+
+  function reportLoadFailure() {
+    if (destroyed) return;
+    const meta = root.querySelector<HTMLElement>("#reviewSourceMeta");
+    if (meta) meta.textContent = "原文暂时无法载入，请确认文件仍在这台电脑上";
+  }
+
+  function pageLabelFailure() {
+    const label = root.querySelector<HTMLElement>("#pageLabel");
+    if (label) label.textContent = `第 ${currentPage} 页暂时无法显示`;
   }
 
   function renderQuality() {
@@ -195,10 +207,10 @@ export async function mountReview(
       <div class="identityLine">${escapeHtml(activeBlock.member_key || activeBlock.name)}</div>
       <label>课程<input id="editCourse" value="${escapeHtml(activeBlock.course || "")}" /></label>
       <div class="fieldPair">
-        <label>周次<input id="editWeek" type="number" min="1" max="30" value="${activeBlock.week}" /></label>
+        <label>周次<input id="editWeek" type="number" min="1" max="30" value="${escapeHtml(String(activeBlock.week ?? ""))}" /></label>
         <label>星期<select id="editWeekday">${["周一","周二","周三","周四","周五","周六","周日"].map((day) => `<option ${day === activeBlock?.weekday ? "selected" : ""}>${day}</option>`).join("")}</select></label>
       </div>
-      <label>节次<input id="editPeriods" value="${(activeBlock.periods || []).join(",")}" placeholder="例如 1,2" /></label>
+      <label>节次<input id="editPeriods" value="${escapeHtml((activeBlock.periods || []).join(","))}" placeholder="例如 1,2" /></label>
       <label>修正原因<textarea id="editReason" rows="2" placeholder="说明为何需要修正"></textarea></label>
       <button id="applyCorrection" class="primary">保存修正</button>
     `;
@@ -206,6 +218,7 @@ export async function mountReview(
 
   async function loadSource(path: string, resetPosition = false) {
     if (destroyed) return;
+    const version = ++loadVersion;
     if (!path) {
       await destroyPdf();
       loadedPath = "";
@@ -215,10 +228,19 @@ export async function mountReview(
       renderTask?.cancel();
       await destroyPdf();
       const bytes = await readFile(path);
-      if (destroyed) return;
-      pdf = await pdfjs.getDocument({ data: bytes }).promise;
+      if (destroyed || version !== loadVersion) return;
+      const loadedPdf = await pdfjs.getDocument({ data: bytes }).promise;
+      if (destroyed || version !== loadVersion) {
+        // 载入期间视图已销毁或切到别的文件：新文档必须自己释放，不能留在内存里。
+        const destroyDocument = (loadedPdf as unknown as { destroy?: () => Promise<void> | void }).destroy;
+        if (destroyDocument) void destroyDocument.call(loadedPdf);
+        else loadedPdf.cleanup();
+        return;
+      }
+      pdf = loadedPdf;
       loadedPath = path;
     }
+    if (destroyed || version !== loadVersion) return;
     if (resetPosition) {
       const viewport = element<HTMLElement>("#pdfViewport");
       viewport.scrollLeft = 0;
@@ -236,14 +258,22 @@ export async function mountReview(
     const scrollLeft = viewportElement.scrollLeft;
     const scrollTop = viewportElement.scrollTop;
     renderTask?.cancel();
-    const page = await pdf.getPage(currentPage);
+    // 视图销毁或文档被替换后取页会失败，这属于正常取消，不能变成未处理的 Promise rejection。
+    const page = await pdf.getPage(currentPage).catch(() => null);
+    if (!page) {
+      if (!destroyed && version === renderVersion) pageLabelFailure();
+      return;
+    }
     if (destroyed || version !== renderVersion) return;
     const viewport = page.getViewport({ scale });
     viewportMetrics = { width: viewport.width, height: viewport.height, rotation: viewport.rotation };
     const pixelRatio = window.devicePixelRatio || 1;
     const canvas = element<HTMLCanvasElement>("#pdfCanvas");
     const context = canvas.getContext("2d");
-    if (!context) throw new Error("无法创建课表预览画布。");
+    if (!context) {
+      pageLabelFailure();
+      return;
+    }
     canvas.width = Math.floor(viewport.width * pixelRatio);
     canvas.height = Math.floor(viewport.height * pixelRatio);
     canvas.style.width = `${viewport.width}px`;
@@ -258,7 +288,9 @@ export async function mountReview(
     try {
       await task.promise;
     } catch (error) {
-      if ((error as { name?: string }).name !== "RenderingCancelledException") throw error;
+      if (destroyed || version !== renderVersion) return;
+      if ((error as { name?: string }).name === "RenderingCancelledException") return;
+      pageLabelFailure();
       return;
     }
     if (destroyed || version !== renderVersion) return;
@@ -308,7 +340,7 @@ export async function mountReview(
     return (root.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(selector)?.value || "").trim();
   }
 
-  root.addEventListener("click", (event) => {
+  const handleRootClick = (event: Event) => {
     const target = event.target as HTMLElement;
     const block = target.closest<HTMLButtonElement>("[data-block-id]");
     if (block) {
@@ -341,7 +373,8 @@ export async function mountReview(
       return;
     }
     if (target.closest("#applyCorrection")) void applyCorrection();
-  });
+  };
+  root.addEventListener("click", handleRootClick);
 
   sourceSelect.addEventListener("change", () => {
     activeSource = review.sources.find((source) => source.source_path === sourceSelect.value) || review.sources[0];
@@ -351,7 +384,7 @@ export async function mountReview(
     fieldsKey = "";
     renderBlockOptions();
     renderFields();
-    void loadSource(sourceSelect.value, true);
+    void loadSource(sourceSelect.value, true).catch(reportLoadFailure);
   });
   const pdfViewport = element<HTMLElement>("#pdfViewport");
   pdfViewport.addEventListener("wheel", handlePdfWheel, { passive: false });
@@ -359,6 +392,10 @@ export async function mountReview(
 
   async function applyCorrection() {
     if (!activeBlock) return;
+    const button = root.querySelector<HTMLButtonElement>("#applyCorrection");
+    // 逐字段保存期间禁用按钮，避免重复点击写出多条相同的人工修正记录。
+    if (button?.disabled) return;
+    if (button) button.disabled = true;
     const reason = valueOf("#editReason");
     const updates: Array<[string, unknown]> = [
       ["course", valueOf("#editCourse")],
@@ -372,10 +409,17 @@ export async function mountReview(
       weekday: activeBlock.weekday,
       periods: activeBlock.periods || []
     };
-    for (const [field, value] of updates) {
-      if (JSON.stringify(original[field]) !== JSON.stringify(value)) {
-        await actions.apply(activeBlock.block_id, field, value, reason);
+    try {
+      for (const [field, value] of updates) {
+        if (JSON.stringify(original[field]) !== JSON.stringify(value)) {
+          await actions.apply(activeBlock.block_id, field, value, reason);
+        }
       }
+    } catch {
+      // 失败原因由上层状态栏显示，这里只避免未处理的 Promise rejection。
+    } finally {
+      const current = root.querySelector<HTMLButtonElement>("#applyCorrection");
+      if (current) current.disabled = false;
     }
   }
 
@@ -391,7 +435,11 @@ export async function mountReview(
     renderInspection();
     renderOverlay();
     if (activeSource && previousPath !== activeSource.source_path) {
-      await loadSource(activeSource.source_path, true);
+      try {
+        await loadSource(activeSource.source_path, true);
+      } catch {
+        reportLoadFailure();
+      }
     }
   }
 
@@ -410,7 +458,9 @@ export async function mountReview(
   function destroy() {
     destroyed = true;
     renderVersion += 1;
+    loadVersion += 1;
     renderTask?.cancel();
+    root.removeEventListener("click", handleRootClick);
     pdfViewport.removeEventListener("wheel", handlePdfWheel);
     void destroyPdf();
   }
@@ -430,7 +480,13 @@ export async function mountReview(
   renderBlockOptions();
   renderFields();
   renderInspection();
-  if (activeSource) await loadSource(activeSource.source_path);
+  if (activeSource) {
+    try {
+      await loadSource(activeSource.source_path);
+    } catch {
+      reportLoadFailure();
+    }
+  }
 
   return { update, destroy, getViewState };
 }
@@ -503,7 +559,7 @@ function transformRect(block: CourseRow, width: number, height: number, rotation
 
 function issueCard(issue: ParseIssue) {
   const state = issue.confirmed ? "confirmed" : issue.severity;
-  return `<article class="issueCard ${state}">
+  return `<article class="issueCard ${escapeHtml(state)}">
     <div><b>${issue.confirmed ? "已核对" : issue.severity === "error" ? "必须处理" : "请核对"}</b></div>
     <p>${escapeHtml(friendlyMessage(issue.message))}</p>
     ${issue.suggestion ? `<small>${escapeHtml(friendlyMessage(issue.suggestion))}</small>` : ""}

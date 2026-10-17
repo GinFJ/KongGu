@@ -846,6 +846,22 @@ tbody tr:hover { background: rgba(211, 231, 216, .72); }
   .reviewInspector { background: #f1f2ec; }
 }
 
+/* 共同空闲分页：结果较多时显式分页并提供总数，不静默截断。 */
+.tablePager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-solid);
+  color: var(--muted);
+  font-size: 12px;
+}
+.tablePager:last-child { border-bottom: 0; border-top: 1px solid var(--line); }
+.tablePager span { margin-right: auto; }
+.tablePager button { min-height: 28px; padding: 4px 10px; font-size: 12px; }
+.tablePager button:disabled { opacity: .45; }
+
 @media (prefers-contrast: more) {
   :root { --line: #52645a; --muted: #46534c; }
   button, input, select, textarea { border-color: #52645a; }

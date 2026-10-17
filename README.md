@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.5.5-116c54" />
+  <img alt="Version" src="https://img.shields.io/badge/version-0.5.9-116c54" />
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-2563eb" />
   <img alt="Desktop" src="https://img.shields.io/badge/desktop-Tauri-24c8db" />
   <img alt="Python" src="https://img.shields.io/badge/python-3.12-3776ab" />
@@ -266,14 +266,18 @@ schedule.pdf
 
 | 项目 | 状态 | 说明 |
 | :--- | :--- | :--- |
-| 单元测试 | 已验证 | 173 passed（2026-10-16，0.5.5 当前工作区） |
-| TypeScript / 前端构建 | 已验证 | `tsc --noEmit` 与 `npm.cmd run build:frontend` 通过（46 modules） |
+| 单元测试 | 已验证 | 286 passed（2026-10-18，0.5.9 当前工作区，项目虚拟环境；含导出链路、协议编码、前端生命周期与离线资源回归） |
+| TypeScript / 前端构建 | 已验证 | `tsc --noEmit` 与 `npm.cmd run build:frontend` 通过（47 modules） |
 | 桌面层检查 | 已验证 | `cargo check --manifest-path src-tauri\Cargo.toml --locked` 通过 |
 | 真实样本页级诊断 | 已验证 | 仓库外 70 份、109 页；PDF Inspector 与 PyMuPDF 的无文本层页集合一致 |
-| 课程块人工真值 | 未验证 | 受控目录已生成 70 份来源、7687 个预测占用槽的人工标注包；尚无人工作答，不能计算准确率 |
-| 0.5.3 离线安装包 | 已构建、已静态核验、未签名 | `Konggu_0.5.3_x64-setup.exe`，531,812,144 字节，SHA-256 `95C81B5B205D2106D2DC43D3C81569B04934A85DB587F48858D63BC93FAE6920`；WebView2 Standalone Runtime 随 NSIS 安装包嵌入 |
+| 课程块人工真值 | 未验证 | 受控目录保留原页 AI 核对与独立几何候选；6 份完成占用 AI 视觉核对，其余仍待核。AI 标注不等于独立人工真值，不计算准确率 |
+| 0.5.9 代码审计修复 | 已验证（源码、全量回归与仓库外样本只读冒烟） | 修复正式导出必败（`periods` 列表单元格）、任务进度错行、取消/重启竞态、sidecar stdin 编码、评审写入原子性、共同空闲显示内部成员标识、离线清单失败开放、发布门禁缺版本与清单校验、解析缓存未含学期设置（签名升至 39）等 49 项问题；`pytest 286 passed`、`tsc --noEmit`、Vite 构建、Cargo locked check 与发布静态门禁通过；未构建安装包 |
+| 0.5.7 课程简称过滤 | 已验证（源码与解析回归） | 保留带数字的课程简称，地点以“校外”开头的课程不计入；签名 38。70 份原件哈希核验后重跑，8435 条程序占用、解析异常 0；17 份复用匹配哈希的原始 OCR 文字坐标，未重验 OCR 准确性。7 份中方原件截断按问题课表保留，审计几何识别尚未集成至应用。当前审计口径为 7 组 `blocked`、28 组 `needs_review`、0 组 `accepted`；旧 15/17/3 属 0.5.5 流程状态 |
+| 0.5.8 结果安全修复 | 已验证（源码、前端契约与缓存回归） | 共同空闲改为每页 800 行显式分页（不再静默截断）；原文核对销毁时释放点击监听；重试与换文件清空旧结果和旧任务；修正/设置失败可见；失败态不渲染阿谷；周视图注册中文 locale；OCR 文字缓存校验引擎与模型。午间口径经用户确认：中方“午”列不排课、不计占用，英方午间格有课即计入，与当前实现一致。`200 passed`、`tsc --noEmit`、Vite 构建通过 |
+| 0.5.3 离线安装包 | 已构建、已静态核验、未签名 | 历史记录为 `Konggu_0.5.3_x64-setup.exe`，531,812,144 字节，SHA-256 `95C81B5B205D2106D2DC43D3C81569B04934A85DB587F48858D63BC93FAE6920`；2026-09-13 本机现存同名产物为 532,487,843 字节、SHA-256 `E2C79321E1019FA95F608DFC1984469D6085B3298B595403E906CF65D800FF80`，重建后未回写记录，引用前需按现存产物复核；WebView2 Standalone Runtime 随 NSIS 安装包嵌入 |
 | 0.5.4 中文用户名 OCR 修复 | 已验证（源码、回归与隔离运行） | 中文应用数据路径下自动改用 `%PROGRAMDATA%\Konggu\ocr_models`，真实 PaddleOCR 初始化返回 `ready: true`；状态面板区分路径不兼容、模型缺失和校验失败；尚未构建 0.5.4 安装包 |
-| 0.5.5 结果可信度修复 | 已验证（源码、合成及 35 组真实配对流程回归） | 缺失/同名文件阻断、节次规范化、人工修正后重算与签名构建失败码修复；35 组当前为 15 `accepted`、17 `needs_review`、3 `blocked`，不可按旧登记分类放行 |
+| 0.5.5 结果可信度修复 | 已验证（源码、合成及 35 组真实配对流程回归） | 缺失/同名文件阻断、节次规范化、人工修正后重算与签名构建失败码修复；0.5.5 流程下 35 组为 15 `accepted`、17 `needs_review`、3 `blocked`（历史状态，0.5.7 已重新审计为 7/28/0），不可按旧登记分类放行 |
+| 0.5.6 跨年识别修复 | 已验证（源码、合成及两份既有 PDF 副本的流程回归） | 无年份日期按学期配置及表内周次确定年份；秋季跨年和新学期英方日期网格回归通过，解析器签名升至 36。两份中英 PDF 副本重跑得到 92 条占用、解析错误 0；原件对应关系、真实跨年样本与安装包尚未验证 |
 | 0.5.5 离线安装包 | [GitHub 预发布候选](https://github.com/GinFJ/KongGu/releases/tag/v0.5.5-rc.1)、未签名 | `Konggu_0.5.5_x64-setup.exe`，532,483,538 字节，SHA-256 `A3F5987E01A3A2618C47C3DF36C2B3D343A9F97738C254DEE8790CFB9D789BA3`；当前电脑 release 主程序已验证导入、解析和待复核门禁；同页提供 OCR 诊断工具包 |
 | 代码签名 | 在研 | `build-release-signed.ps1` 已接入安装器、`konggu.exe` 和 `konggu-worker.exe`；当前机器缺少受信任发布证书，正式签名构建被安全门禁阻止 |
 | 真实安装与断网终检 | 未完成 | 尚未在另一台电脑完成 NSIS 安装、断网导入导出、卸载、WebView2 和用户数据库迁移复核 |
@@ -428,16 +432,18 @@ resources/ocr_models/PP-OCRv4_mobile_rec
 
 ## 测试
 
-最近一次代码验证（2026-10-16，0.5.5 当前工作区）：
+最近一次代码验证（2026-10-18，0.5.9 当前工作区）：
 
 ```text
-173 passed
+286 passed
 ```
+
+本轮新增导出链路、任务状态机、sidecar 协议、前端生命周期、离线资源与解析缓存回归后为 286 项。仓库外真实样本另做隔离冒烟（3 组中英配对、757 个课程块、1638 个时段，`needs_review` 正确阻止导出）和 sidecar 命令级冒烟；安装态、课程人工真值与真实跨年样本仍未验证。
 
 主命令：
 
 ```powershell
-python -m pytest -q
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
 异常矩阵见 [`docs/exception-test-matrix.md`](./docs/exception-test-matrix.md)。真实成员课表应放在版本库外，通过脱敏样本库测试。最新状态以 `docs/状态与质量门禁.md` 与 `MEMORY/事实.md` 为准。
@@ -507,4 +513,4 @@ python -m pytest -q
 
 ---
 
-最后更新：2026-08-14
+最后更新：2026-10-18

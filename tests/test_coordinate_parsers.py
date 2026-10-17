@@ -1,3 +1,5 @@
+import pytest
+
 from core import schedule_core
 
 
@@ -144,6 +146,24 @@ def test_synthesized_calendar_uses_persisted_semester_environment(monkeypatch):
     assert calendar[(calendar["week"] == 6) & (calendar["weekday"] == "周一")].iloc[0]["date"] == "2026-10-12"
 
 
+def test_yearless_schedule_dates_follow_autumn_semester_across_new_year(monkeypatch):
+    monkeypatch.setenv("KONGGU_SEMESTER_START_DATE", "2026-09-07")
+
+    assert schedule_core._parse_week_start("09/07-09/13", 1).isoformat() == "2026-09-07"
+    assert schedule_core._parse_week_start("01/04-01/10", 18).isoformat() == "2027-01-04"
+    assert schedule_core._parse_date("01/04").isoformat() == "2027-01-04"
+    assert schedule_core._week_from_date(schedule_core._parse_date("01/04")) == 18
+
+
+def test_yearless_schedule_dates_follow_new_spring_semester(monkeypatch):
+    monkeypatch.setenv("KONGGU_SEMESTER_START_DATE", "2027-03-01")
+
+    assert schedule_core._parse_week_start("03/15-03/21", 3).isoformat() == "2027-03-15"
+    assert schedule_core._parse_date("03/15").isoformat() == "2027-03-15"
+    with pytest.raises(ValueError, match="当前学期"):
+        schedule_core._parse_date("02/29")
+
+
 def _item(text, x, y, w=18, h=8):
     return {"text": text, "x0": float(x), "y0": float(y), "x1": float(x + w), "y1": float(y + h)}
 
@@ -286,6 +306,25 @@ def test_english_date_grid_parser_accepts_ocr_date_tokens():
     occupied = {(block["date"], block["week"], block["weekday"], block["period"], block["course"]) for block in blocks}
     assert ("2026-05-06", 10, "周三", 1, "ESAP-A") in occupied
     assert ("2026-05-08", 10, "周五", 4, "AE") in occupied
+
+
+def test_english_date_grid_parser_places_yearless_january_date_in_autumn_term(monkeypatch):
+    monkeypatch.setenv("KONGGU_SEMESTER_START_DATE", "2026-09-07")
+    items = [_item(str(period), 90 + period * 28, 48, w=8) for period in range(1, 12)]
+    items.extend(
+        [
+            _item("Monday", 20, 92, w=45),
+            _item("01/04", 20, 104, w=40),
+            _item("Academic Writing", 90 + 1 * 28, 96, w=65),
+        ]
+    )
+
+    blocks = schedule_core._parse_english_grid_page_items_from_pdf_words(items, "成员甲")
+
+    assert any(
+        block["date"] == "2027-01-04" and block["week"] == 18 and block["weekday"] == "周一"
+        for block in blocks
+    )
 
 
 def test_english_date_grid_parser_accepts_combined_weekday_date_token():
@@ -619,3 +658,20 @@ def test_slot_table_reports_free_and_occupied_members():
     assert row["occupied_members"] == "张三"
     assert row["free_count"] == 1
     assert row["occupied_count"] == 1
+
+
+def test_infer_pdf_kind_ignores_english_directory_names():
+    """Directory names are user data and must not override the file-name marker."""
+
+    assert schedule_core.infer_pdf_kind(
+        "活动部-张三-干事-中方课表.pdf", r"D:\English\uk\活动部-张三-干事-中方课表.pdf"
+    ) == "中方"
+    assert schedule_core.infer_pdf_kind(
+        "活动部-张三-干事-英方课表.pdf", r"D:\中文资料\活动部-张三-干事-英方课表.pdf"
+    ) == "英方"
+
+
+def test_infer_pdf_kind_falls_back_to_chinese_directory_marker_only():
+    assert schedule_core.infer_pdf_kind("张三.pdf", r"D:\英方课表\张三.pdf") == "英方"
+    assert schedule_core.infer_pdf_kind("张三.pdf", r"D:\English\张三.pdf") == ""
+    assert schedule_core.infer_pdf_kind("chinese.pdf") == "中方"

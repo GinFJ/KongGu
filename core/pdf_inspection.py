@@ -73,6 +73,10 @@ def inspect_pdf_source(source: PdfSource) -> PdfInspectionResult:
         base.status = "skipped"
         base.error = str(exc)
         return base
+    except _InspectionBlockedError as exc:
+        base.status = "skipped"
+        base.error = str(exc)
+        return base
     except Exception as exc:
         base.status = "unavailable"
         base.error = f"PDF 结构检查失败：{type(exc).__name__}"
@@ -159,7 +163,7 @@ def _preflight_pdf(source: PdfSource) -> int:
     )
     try:
         if document.needs_pass:
-            raise ValueError("PDF 已加密，无法在未提供密码时检查。")
+            raise _InspectionBlockedError("PDF 已加密，无法在未提供密码时检查。")
         return int(document.page_count)
     finally:
         document.close()
@@ -256,3 +260,7 @@ def _page_image_coverage(page: Any) -> float:
 
 class _InspectionLimitError(ValueError):
     pass
+
+
+class _InspectionBlockedError(ValueError):
+    """A safe, user-actionable reason to block this PDF (encrypted, etc.)."""

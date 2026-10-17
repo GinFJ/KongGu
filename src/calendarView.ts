@@ -1,4 +1,5 @@
 import { Calendar, EventDropArg } from "@fullcalendar/core";
+import zhCnLocale from "@fullcalendar/core/locales/zh-cn";
 import interactionPlugin, { EventResizeDoneArg } from "@fullcalendar/interaction";
 import timeGridPlugin from "@fullcalendar/timegrid";
 import type { CalendarSettings, CourseRow } from "./types";
@@ -16,15 +17,17 @@ export function mountCalendar(
   element: HTMLElement,
   courses: CourseRow[],
   settings: CalendarSettings,
-  onEdit: (block: CourseRow, patch: Partial<CourseRow>) => Promise<void>
+  onEdit: (block: CourseRow, patch: Partial<CourseRow>) => Promise<void>,
+  initialDate?: Date
 ) {
   const firstWeek = courses[0]?.week || 1;
   const firstDate = dateFor(settings.semester_start_date, firstWeek, "周一");
   const calendar = new Calendar(element, {
     plugins: [timeGridPlugin, interactionPlugin],
     initialView: "timeGridWeek",
-    initialDate: firstDate,
+    initialDate: initialDate ?? firstDate,
     locale: "zh-cn",
+    locales: [zhCnLocale],
     firstDay: 1,
     allDaySlot: false,
     editable: true,
@@ -67,7 +70,7 @@ async function handleChange(
   const end = arg.event.end;
   const block = arg.event.extendedProps.block as CourseRow;
   if (!start || !end || start.toDateString() !== end.toDateString()) {
-    arg.revert();
+    revertSafely(arg);
     return;
   }
   const weekAndDay = weekAndDayFor(settings.semester_start_date, start);
@@ -78,13 +81,21 @@ async function handleChange(
     weekAndDay.week > settings.teaching_weeks ||
     !periods.length
   ) {
-    arg.revert();
+    revertSafely(arg);
     return;
   }
   try {
     await onEdit(block, { week: weekAndDay.week, weekday: weekAndDay.weekday, periods });
   } catch {
+    revertSafely(arg);
+  }
+}
+
+function revertSafely(arg: EventDropArg | EventResizeDoneArg) {
+  try {
     arg.revert();
+  } catch {
+    // 保存过程中结果刷新可能已经重建日历，销毁后的实例不能再执行 revert。
   }
 }
 

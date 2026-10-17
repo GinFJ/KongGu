@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from app.services.pdf_source_service import add_pdf_sources, load_reference_library_summary
+from core import schedule_core as real_schedule_core
 from core.models import PdfSource
 
 
@@ -161,3 +162,79 @@ def test_load_reference_library_summary_counts_pdfs(tmp_path: Path):
 def test_load_reference_library_summary_raises_for_missing_path(tmp_path: Path):
     with pytest.raises(FileNotFoundError):
         load_reference_library_summary(str(tmp_path / "missing"))
+
+
+def test_add_pdf_sources_keeps_chinese_kind_inside_english_directory(tmp_path: Path):
+    """Directory names must not override the file-name 中方/英方 identity.
+
+    A Chinese timetable stored in a folder such as ``English`` or ``uk`` used to
+    be inferred as 英方 and then went through the English/OCR fallback path,
+    which could end with "没有识别到可用课表时间块".
+    """
+
+    english_dir = tmp_path / "English" / "uk"
+    english_dir.mkdir(parents=True)
+    chinese = english_dir / "活动部-张三-干事-中方课表.pdf"
+    chinese.write_bytes(b"chinese-content")
+
+    result = add_pdf_sources(
+        paths=[str(chinese)],
+        explicit_kind=None,
+        existing_sources=[],
+        schedule_core=real_schedule_core,
+    )
+
+    assert result.errors == []
+    assert [source.kind for source in result.added] == ["中方"]
+
+
+def test_add_pdf_sources_keeps_english_kind_inside_chinese_directory(tmp_path: Path):
+    chinese_dir = tmp_path / "中方资料"
+    chinese_dir.mkdir()
+    english = chinese_dir / "活动部-张三-干事-英方课表.pdf"
+    english.write_bytes(b"english-content")
+
+    result = add_pdf_sources(
+        paths=[str(english)],
+        explicit_kind=None,
+        existing_sources=[],
+        schedule_core=real_schedule_core,
+    )
+
+    assert result.errors == []
+    assert [source.kind for source in result.added] == ["英方"]
+
+
+def test_add_pdf_sources_uses_chinese_directory_marker_as_last_resort(tmp_path: Path):
+    english_dir = tmp_path / "英方课表"
+    english_dir.mkdir()
+    unnamed = english_dir / "张三.pdf"
+    unnamed.write_bytes(b"unnamed-content")
+
+    result = add_pdf_sources(
+        paths=[str(unnamed)],
+        explicit_kind=None,
+        existing_sources=[],
+        schedule_core=real_schedule_core,
+    )
+
+    assert result.errors == []
+    assert [source.kind for source in result.added] == ["英方"]
+
+
+def test_add_pdf_sources_does_not_guess_from_english_directory_word(tmp_path: Path):
+    english_dir = tmp_path / "English"
+    english_dir.mkdir()
+    unnamed = english_dir / "张三.pdf"
+    unnamed.write_bytes(b"unnamed-english-dir")
+
+    result = add_pdf_sources(
+        paths=[str(unnamed)],
+        explicit_kind=None,
+        existing_sources=[],
+        schedule_core=real_schedule_core,
+    )
+
+    assert result.added == []
+    assert len(result.errors) == 1
+    assert "无法识别课表类型" in str(result.errors[0][1])

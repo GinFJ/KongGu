@@ -115,3 +115,23 @@ def test_pdf_inspection_returns_privacy_safe_error_for_invalid_pdf(tmp_path: Pat
 
     assert result.status == "unavailable"
     assert str(tmp_path) not in result.error
+
+
+def test_pdf_inspection_explains_encrypted_pdf_without_leaking_path(tmp_path: Path):
+    pdf = tmp_path / "members-encrypted.pdf"
+    document = fitz.open()
+    document.new_page()
+    document.save(
+        str(pdf),
+        encryption=fitz.PDF_ENCRYPT_AES_256,
+        owner_pw="owner-secret",
+        user_pw="user-secret",
+    )
+    document.close()
+
+    result = inspect_pdf_source(PdfSource(pdf.name, "中方", str(pdf)))
+
+    assert result.status == "skipped"
+    assert "加密" in result.error
+    assert "ValueError" not in result.error
+    assert str(tmp_path) not in result.error

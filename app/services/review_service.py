@@ -104,17 +104,6 @@ def apply_correction(
         target["period"] = normalized[0] if normalized else None
     signature = str(snapshot.get("parser_signature") or job.get("parser_signature") or "")
     source_hash = str(target.get("source_hash") or "")
-    correction_id = store.add_correction(
-        source_hash=source_hash,
-        block_id=block_id,
-        field=field,
-        original_value=original_value,
-        new_value=normalized,
-        reason=reason.strip(),
-        parser_signature=signature,
-        operator_id=operator_id.strip() or "本机用户",
-        job_id=job_id,
-    )
     correction = CorrectionRecord(
         source_hash=source_hash,
         block_id=block_id,
@@ -130,15 +119,31 @@ def apply_correction(
     workflow = restore_workflow(snapshot, schedule_core)
     _refresh_derived(workflow, schedule_core)
     refreshed = snapshot_workflow(workflow)
-    store.save_job_result(
-        job_id,
-        result_json=json.dumps(refreshed, ensure_ascii=False, separators=(",", ":")),
-        error=str(job.get("error") or ""),
-        quality_state=refreshed["quality_state"],
-        current=int(job.get("current") or 0),
-        total=int(job.get("total") or 0),
-        issues=refreshed["issues"],
-    )
+    # The correction row, the refreshed snapshot and its issues must land together:
+    # a failed save must not leave a correction that no review snapshot reflects.
+    with store.connect() as connection:
+        correction_id = store.add_correction(
+            source_hash=source_hash,
+            block_id=block_id,
+            field=field,
+            original_value=original_value,
+            new_value=normalized,
+            reason=reason.strip(),
+            parser_signature=signature,
+            operator_id=operator_id.strip() or "本机用户",
+            job_id=job_id,
+            connection=connection,
+        )
+        store.save_job_result(
+            job_id,
+            result_json=json.dumps(refreshed, ensure_ascii=False, separators=(",", ":")),
+            error=str(job.get("error") or ""),
+            quality_state=refreshed["quality_state"],
+            current=int(job.get("current") or 0),
+            total=int(job.get("total") or 0),
+            issues=refreshed["issues"],
+            connection=connection,
+        )
     return {"ok": True, "correction_id": correction_id, **get_review_payload(store, job_id)}
 
 
@@ -154,7 +159,6 @@ def confirm_issue(store: StateStore, job_id: str, issue_id: str) -> dict[str, An
         raise ValueError("未找到要确认的问题。")
     if target.get("severity") == "error":
         raise ValueError("阻断错误不能仅靠确认放行，必须修复源文件或解析结果。")
-    store.confirm_issue(job_id, issue_id)
     snapshot = dict(job["result"])
     issues = []
     for item in snapshot.get("issues", []):
@@ -166,11 +170,15 @@ def confirm_issue(store: StateStore, job_id: str, issue_id: str) -> dict[str, An
     state = quality_state(parsed_issues)
     snapshot["issues"] = issues
     snapshot["quality_state"] = state
-    store.update_job(
-        job_id,
-        result_json=json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
-        quality_state=state,
-    )
+    # The confirmed flag and the snapshot that records it must commit together.
+    with store.connect() as connection:
+        store.confirm_issue(job_id, issue_id, connection=connection)
+        store.update_job(
+            job_id,
+            result_json=json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
+            quality_state=state,
+            connection=connection,
+        )
     return {"ok": True, **get_review_payload(store, job_id)}
 
 
