@@ -131,7 +131,8 @@ def test_desktop_workflow_export_can_override_week_count(tmp_path: Path):
         export_week_count=2,
     )
 
-    assert core.export_kwargs["weeks"] == [1, 2]
+    # 用户要求导出 2 周，但解析到第 3 周仍有课程：已识别的教学周不能被周数设置丢掉。
+    assert core.export_kwargs["weeks"] == [1, 2, 3]
 
 
 def test_export_rejects_result_after_calendar_or_parser_settings_change(tmp_path: Path, monkeypatch):
@@ -299,3 +300,14 @@ def test_visual_export_mode_is_reserved(tmp_path: Path):
         assert "visual 导出模式已预留" in str(exc)
     else:
         raise AssertionError("Expected visual export mode to be reserved.")
+
+
+def test_export_weeks_never_drop_parsed_teaching_weeks():
+    from app.services.desktop_workflow import _export_weeks
+
+    assert _export_weeks([1, 2, 16, 17, 18], 16) == list(range(1, 19))
+    assert _export_weeks([], 5) == [1, 2, 3, 4, 5]
+    assert _export_weeks([3, 4], None) == [3, 4]
+    assert _export_weeks([1, 31], 2) == [1, 2]
+    assert _export_weeks([1, 2], 0) == [1, 2]
+    assert _export_weeks([1, 2], 20) == list(range(1, 21))

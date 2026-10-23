@@ -177,8 +177,6 @@ class JobCoordinator:
             if self._cancel_event.is_set():
                 raise InterruptedError("处理已取消。")
             apply_saved_corrections(workflow, self.store, self.schedule_core)
-            save_workflow_result(workflow, self.store, job_id=job_id, request=payload)
-            final_status = "completed"
             state = workflow.process_result.quality_state
             for file_row in file_rows:
                 record = next(
@@ -212,6 +210,10 @@ class JobCoordinator:
                     stage=stage,
                     message=message or "处理完成",
                 )
+            # Persist per-file terminal states before marking the job completed:
+            # the 650ms UI poll must never see "completed" with files still running.
+            save_workflow_result(workflow, self.store, job_id=job_id, request=payload)
+            final_status = "completed"
             self.store.clear_job_source_paths(job_id)
             self.store.add_audit_event(job_id, "job.completed", {"quality_state": state})
             self._emit(

@@ -485,15 +485,19 @@ def _detected_weeks(blocks: list[dict[str, Any]]) -> list[int]:
 
 
 def _export_weeks(default_weeks: list[int], export_week_count: int | None) -> list[int]:
+    parsed = {int(week) for week in default_weeks if week is not None}
     if export_week_count is None:
-        return list(default_weeks)
+        return sorted(parsed)
     try:
         count = int(export_week_count)
     except Exception:
-        return list(default_weeks)
+        return sorted(parsed)
     if count <= 0:
-        return list(default_weeks)
-    return list(range(1, min(count, 30) + 1))
+        return sorted(parsed)
+    # The requested week count must never drop weeks the parser actually found:
+    # exporting week 1..count only would silently remove later teaching weeks.
+    weeks = set(range(1, min(count, 30) + 1)) | parsed
+    return sorted(week for week in weeks if 1 <= week <= 30)
 
 
 def _selected_positions(pdf_paths: list[str], ready_sources: list[Any]) -> list[int]:

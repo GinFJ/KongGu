@@ -118,7 +118,9 @@ def test_manifest_entry_without_size_or_hash_is_not_trusted(tmp_path: Path, monk
     assert status["ready"] is False
     assert status["invalid"][0]["issue"] == "invalid-manifest-entry"
     repaired = repair_resources()
-    assert repaired["ok"] is False
+    # 修复操作本身完成（ok=True），但资源未就绪且失败条目可诊断。
+    assert repaired["ok"] is True
+    assert repaired["ready"] is False
     assert repaired["copied"] == []
     assert repaired["failed"][0]["error"] == "invalid-manifest-entry"
 
@@ -184,7 +186,8 @@ def test_manifest_target_escape_is_rejected_without_writing_outside(tmp_path: Pa
     assert status["ready"] is False
     assert status["invalid"][0]["issue"] == "invalid-manifest-path"
     repaired = repair_resources()
-    assert repaired["ok"] is False
+    assert repaired["ok"] is True
+    assert repaired["ready"] is False
     assert repaired["failed"][0]["error"] == "ValueError"
     assert not outside.exists()
     assert not (app_data / "outside.txt").exists()

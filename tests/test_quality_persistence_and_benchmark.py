@@ -2,6 +2,8 @@ from dataclasses import asdict
 import json
 import sqlite3
 
+import pytest
+
 from core.benchmark import evaluate_samples
 from core.identity import identity_from_filename
 from core.models import FileProcessRecord, MemberIdentity, MemberSchedule, ParseIssue, PdfSource
@@ -92,6 +94,51 @@ def test_same_issue_id_is_allowed_in_separate_jobs(tmp_path):
 
     assert store.get_job(first_job)["issues"][0]["issue_id"] == "same-issue"
     assert store.get_job(second_job)["issues"][0]["issue_id"] == "same-issue"
+
+
+def test_signature_round_trip_keeps_correction_reusable(tmp_path):
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.add_correction(
+        source_hash="hash-a",
+        block_id="b1",
+        field="course",
+        original_value="旧课",
+        new_value="新课",
+        reason="核对",
+        parser_signature="sig-a",
+        operator_id="tester",
+    )
+
+    # 其他签名视角下动态判为 stale，但读取不能把记录永久染脏。
+    assert store.corrections_for_source("hash-a", "sig-b")[0]["stale"] is True
+    # 签名恢复（A→B→A）后，同一修正仍可复用。
+    assert store.corrections_for_source("hash-a", "sig-a")[0]["stale"] is False
+
+
+def test_failed_schema_migration_rolls_back_and_can_retry(tmp_path, monkeypatch):
+    database = tmp_path / "state.sqlite3"
+    _create_v1_state_database(database)
+
+    def boom(connection, *args, **kwargs):
+        raise sqlite3.OperationalError("simulated migration failure")
+
+    monkeypatch.setattr(StateStore, "_migrate_issues_to_job_scoped_key", staticmethod(boom))
+    with pytest.raises(sqlite3.OperationalError):
+        StateStore(database)
+
+    # 失败的迁移必须整体回滚：不能残留 issues_v1，版本号保持 1 以便重试。
+    connection = sqlite3.connect(database)
+    tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    version = connection.execute("SELECT version FROM schema_info").fetchone()[0]
+    connection.close()
+    assert "issues_v1" not in tables
+    assert version == 1
+
+    # 去掉故障注入后重开，应正常完成迁移。
+    monkeypatch.undo()
+    store = StateStore(database)
+    with store.connect() as connection:
+        assert connection.execute("SELECT version FROM schema_info").fetchone()[0] == 2
 
 
 def test_state_store_hides_source_paths_and_request_paths_by_default(tmp_path):

@@ -11,6 +11,7 @@ from pathlib import Path
 from pathlib import PurePosixPath, PureWindowsPath
 import shutil
 import sys
+import time
 from typing import Any
 
 from app.privacy import safe_error_message
@@ -23,6 +24,9 @@ REQUIRED_OCR_MODELS = ("PP-OCRv4_mobile_det", "PP-OCRv4_mobile_rec")
 # release preparation script and the static release gate.
 OFFLINE_SOURCE_DIRS = ("config", "assets", "resources/ocr_models")
 _DLL_DIRECTORY_HANDLES: list[Any] = []
+_PADDLE_DLL_CONFIGURED = False
+_LAST_CACHE_PURGE_AT = 0.0
+CACHE_PURGE_INTERVAL_SECONDS = 3600.0
 
 
 class OfflineManifestError(RuntimeError):
@@ -57,12 +61,22 @@ def resolve_resource_paths() -> ResourcePaths:
 
 
 def configure_offline_environment() -> ResourcePaths:
-    """Point Paddle/Konggu caches and OCR lookup to local writable directories."""
+    """Point Paddle/Konggu caches and OCR lookup to local writable directories.
+
+    The sidecar calls this once per NDJSON request, so cache purging is throttled
+    and DLL directories are registered only once per process: repeating either
+    work on every poll would scan the cache tree and leak DLL handles.
+    """
+
+    global _LAST_CACHE_PURGE_AT
 
     paths = resolve_resource_paths()
     for path in (paths.user_resources_root, paths.ocr_models_root, paths.cache_root, paths.logs_root):
         path.mkdir(parents=True, exist_ok=True)
-    _purge_expired_processing_cache(paths)
+    now = time.monotonic()
+    if now - _LAST_CACHE_PURGE_AT >= CACHE_PURGE_INTERVAL_SECONDS:
+        _purge_expired_processing_cache(paths)
+        _LAST_CACHE_PURGE_AT = now
     os.environ.setdefault("KONGGU_RESOURCE_ROOT", str(paths.user_resources_root))
     os.environ["KONGGU_OCR_MODEL_DIR"] = str(paths.ocr_models_root)
     os.environ.setdefault("KONGGU_OCR_TEXT_CACHE", str(paths.cache_root / "pdf_text"))
@@ -193,7 +207,15 @@ def repair_resources() -> dict[str, Any]:
             )
 
     status = resource_status(check_runtime=True)
-    return {"ok": not failed, "copied": copied, "failed": failed, "status": status}
+    # 部分失败属于“修复已执行但资源未就绪”：调用方需要拿到失败条目与状态，
+    # 而不是被当成一次通用请求错误吞掉诊断信息。
+    return {
+        "ok": True,
+        "ready": bool(status.get("ready")),
+        "copied": copied,
+        "failed": failed,
+        "status": status,
+    }
 
 
 def clear_processing_cache(paths: ResourcePaths | None = None) -> list[str]:
@@ -348,10 +370,14 @@ def _is_ascii_path(path: Path) -> bool:
 
 
 def _configure_paddle_dll_paths() -> None:
+    global _PADDLE_DLL_CONFIGURED
+    if _PADDLE_DLL_CONFIGURED:
+        return
     candidates: list[Path] = []
     if hasattr(sys, "_MEIPASS"):
         candidates.append(Path(sys._MEIPASS) / "paddle" / "libs")
     candidates.append(Path(__file__).resolve().parents[1] / "paddle" / "libs")
+    configured = False
     for path in candidates:
         if not path.exists():
             continue
@@ -365,6 +391,9 @@ def _configure_paddle_dll_paths() -> None:
             except OSError:
                 continue
             _DLL_DIRECTORY_HANDLES.append(handle)
+        configured = True
+    # Only remember success: a later call may find the directory after a repair.
+    _PADDLE_DLL_CONFIGURED = configured
 
 
 def _target_path(paths: ResourcePaths, entry: dict[str, Any]) -> Path:

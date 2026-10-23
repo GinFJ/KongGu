@@ -113,16 +113,35 @@ class StateStore:
                 );
                 """
             )
-            row = connection.execute("SELECT version FROM schema_info LIMIT 1").fetchone()
-            if row is None:
-                connection.execute("INSERT INTO schema_info(version) VALUES (?)", (SCHEMA_VERSION,))
-            else:
-                version = int(row["version"])
-                if version == 1:
-                    self._migrate_issues_to_job_scoped_key(connection)
-                    connection.execute("UPDATE schema_info SET version=?", (SCHEMA_VERSION,))
-                elif version != SCHEMA_VERSION:
-                    raise RuntimeError(f"不支持的 SQLite schema 版本：{row['version']}")
+        # Schema versioning runs in its own explicit transaction: a failed
+        # migration must roll back instead of leaving a renamed/duplicated table
+        # and an old version number that mark the database unopenable.
+        self._migrate_schema_version()
+
+    def _migrate_schema_version(self) -> None:
+        connection = sqlite3.connect(self.path, timeout=30)
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute("SELECT version FROM schema_info LIMIT 1").fetchone()
+                if row is None:
+                    connection.execute("INSERT INTO schema_info(version) VALUES (?)", (SCHEMA_VERSION,))
+                else:
+                    version = int(row["version"])
+                    if version == 1:
+                        self._migrate_issues_to_job_scoped_key(connection)
+                        connection.execute("UPDATE schema_info SET version=?", (SCHEMA_VERSION,))
+                    elif version != SCHEMA_VERSION:
+                        raise RuntimeError(f"不支持的 SQLite schema 版本：{row['version']}")
+                connection.execute("COMMIT")
+            except Exception:
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK")
+                raise
+        finally:
+            connection.close()
 
     @staticmethod
     def _migrate_issues_to_job_scoped_key(connection: sqlite3.Connection) -> None:

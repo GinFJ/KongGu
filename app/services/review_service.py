@@ -48,7 +48,8 @@ def get_review_payload(store: StateStore, job_id: str) -> dict[str, Any]:
     }
     corrections = []
     for source_hash in sorted(source_hashes):
-        store.mark_other_signatures_stale(source_hash, signature)
+        # 只读接口不得写库；stale 由 corrections_for_source 按当前签名动态判定，
+        # 旧签名修正不能因此被永久标记（签名恢复后仍应能复用）。
         corrections.extend(store.corrections_for_source(source_hash, signature))
     issues = job.get("issues", [])
     sources = [dict(item) for item in generation.get("sources", [])]
@@ -189,7 +190,6 @@ def apply_saved_corrections(workflow: Any, store: StateStore, schedule_core: Any
     for source in workflow.generation_result.model_sources:
         if not source.content_hash:
             continue
-        store.mark_other_signatures_stale(source.content_hash, signature)
         for correction in store.corrections_for_source(source.content_hash, signature):
             if correction["stale"]:
                 continue
