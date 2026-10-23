@@ -71,11 +71,10 @@ def _chinese_table_items():
 def test_export_flattens_list_cell_from_generated_blocks_dataframe():
     """Export must not fail on the ``periods`` list added to legacy blocks.
 
-    ``generate_availability`` copies ``periods`` from the normalized
-    ``CourseBlock`` into the legacy block dict, and ``blocks_to_dataframe``
-    therefore produces a DataFrame column whose cells are Python lists.
-    openpyxl raises ``Cannot convert [1, 2] to Excel`` for those cells, which
-    broke formal export of every ``accepted`` result.
+    The list cell used to break openpyxl export of every accepted result.  The
+    export boundary now projects blocks onto the user-facing columns, so the
+    internal list column is dropped instead of being flattened into the
+    workbook; the export must still succeed and keep the normal columns.
     """
 
     blocks = [dict(_typed_block(period=1), periods=[1, 2])]
@@ -99,8 +98,9 @@ def test_export_flattens_list_cell_from_generated_blocks_dataframe():
         workbook.close()
     header = list(rows[0])
     values = rows[1]
-    assert values[header.index("periods")] == "1,2"
-    assert values[header.index("period")] == 1
+    assert "periods" not in header
+    assert values[header.index("节次")] == 1
+    assert values[header.index("成员")] == "张三"
 
 
 def test_export_flattens_dict_and_tuple_cells_instead_of_raising():
@@ -111,6 +111,7 @@ def test_export_flattens_dict_and_tuple_cells_instead_of_raising():
                 "week": 1,
                 "weekday": "周一",
                 "period": 1,
+                "course": "课程",
                 "periods": (1, 2),
                 "bbox": (12.5, 30.0, 80.0, 44.0),
                 "provenance": {"page": 1, "text_source": "内嵌文本"},
@@ -135,9 +136,11 @@ def test_export_flattens_dict_and_tuple_cells_instead_of_raising():
         workbook.close()
     header = list(rows[0])
     values = rows[1]
-    assert values[header.index("periods")] == "1,2"
-    assert values[header.index("bbox")] == "12.5,30.0,80.0,44.0"
-    assert '"page": 1' in values[header.index("provenance")]
+    # 非标量内部列不再进入导出物，导出仍必须成功且保留用户列。
+    for internal in ("periods", "bbox", "provenance"):
+        assert internal not in header
+    assert values[header.index("成员")] == "张三"
+    assert values[header.index("课程")] == "课程"
 
 
 # ---------------------------------------------------------------------------

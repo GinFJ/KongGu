@@ -1,4 +1,5 @@
 from core.legacy_adapter import (
+    _error_belongs_to,
     build_file_records,
     build_member_schedules,
     build_process_result,
@@ -132,3 +133,11 @@ def test_build_member_schedules_flags_period_conflicts():
     result = build_process_result(blocks=blocks, members=members, file_records=[])
     assert result.summary.complete_member_count == 0
     assert result.summary.pending_member_count == 1
+
+
+def test_error_attribution_uses_the_prefixed_file_name():
+    # `1-中方课表.pdf` 不能继承 `11-中方课表.pdf` 的失败记录。
+    assert _error_belongs_to("11-中方课表.pdf：解析失败", "11-中方课表.pdf")
+    assert _error_belongs_to("11-中方课表.pdf: 解析失败", "11-中方课表.pdf")
+    assert not _error_belongs_to("11-中方课表.pdf：解析失败", "1-中方课表.pdf")
+    assert not _error_belongs_to("11-中方课表.pdf：解析失败", "")

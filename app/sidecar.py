@@ -80,8 +80,11 @@ def dispatch(
         return repair_resources()
     if command == "data.clear":
         store = coordinator.store if coordinator is not None else StateStore.from_resource_paths(paths)
+        # 先清缓存再清数据库：缓存被占用时中止，数据库还在，用户重试即可；
+        # 反过来会出现“数据库已清但接口报错”的不可解释状态。
+        cleared = clear_processing_cache(paths)
         store.clear_all_data()
-        return {"ok": True, "cleared_cache": clear_processing_cache(paths)}
+        return {"ok": True, "cleared_cache": cleared}
     if command == "settings.calendar.get":
         return {"ok": True, "settings": load_calendar_settings(paths)}
     if command == "settings.calendar.save":

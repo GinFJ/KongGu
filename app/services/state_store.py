@@ -42,6 +42,9 @@ class StateStore:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA journal_mode = WAL")
+        # 删除的行必须被覆写：隐私清理不能只把行从索引里摘掉，
+        # 否则 sqlite 主文件里仍能扫出姓名、课程与路径。
+        connection.execute("PRAGMA secure_delete = ON")
         try:
             yield connection
             connection.commit()
@@ -190,11 +193,26 @@ class StateStore:
             )
             return int(cursor.rowcount)
 
+    @staticmethod
+    def _strip_request_paths(value: Any) -> Any:
+        """Recursively drop source paths from a request before it is stored."""
+
+        if isinstance(value, dict):
+            return {
+                key: StateStore._strip_request_paths(item)
+                for key, item in value.items()
+                if key not in {"paths", "source_path", "source_paths"}
+            }
+        if isinstance(value, list):
+            return [StateStore._strip_request_paths(item) for item in value]
+        return value
+
     def create_job(self, request: dict[str, Any], parser_signature: str, paths: list[str]) -> str:
         job_id = str(uuid4())
         now = utc_now()
         self._session_paths[job_id] = list(paths)
-        safe_request = {key: value for key, value in request.items() if key != "paths"}
+        # paths 不进持久化请求（顶层与嵌套 payload 都要剔除），只保留在内存会话里。
+        safe_request = self._strip_request_paths(request)
         safe_request["file_count"] = len(paths)
         with self.connect() as connection:
             connection.execute(
@@ -438,13 +456,21 @@ class StateStore:
         return bool(cursor.rowcount)
 
     def clear_all_data(self) -> None:
-        """Delete local processing results, corrections and audit history."""
+        """Delete local processing results, corrections and audit history.
+
+        Deleting rows is not enough for a privacy clear: the deleted bytes must be
+        overwritten and the database rebuilt, or names, courses and paths stay
+        recoverable in the file.
+        """
 
         with self.connect() as connection:
             connection.execute("DELETE FROM corrections")
             connection.execute("DELETE FROM audit_events")
             connection.execute("DELETE FROM jobs")
         self._session_paths.clear()
+        # 行删除由 secure_delete 覆写；再截断 WAL 并重建主文件，清除旧页残留。
+        self._checkpoint()
+        self._secure_vacuum()
         self._checkpoint()
 
     def purge_expired(self, retention_days: int = RETENTION_DAYS) -> int:
@@ -459,21 +485,43 @@ class StateStore:
                     "SELECT id FROM jobs WHERE updated_at < ?", (cutoff_text,)
                 ).fetchall()
             ]
+            removed_corrections = 0
             if old_jobs:
                 placeholders = ",".join("?" for _ in old_jobs)
                 connection.execute(f"DELETE FROM jobs WHERE id IN ({placeholders})", old_jobs)
                 connection.execute(f"DELETE FROM audit_events WHERE job_id IN ({placeholders})", old_jobs)
-            connection.execute("DELETE FROM corrections WHERE created_at < ?", (cutoff_text,))
+            cursor = connection.execute("DELETE FROM corrections WHERE created_at < ?", (cutoff_text,))
+            removed_corrections = int(cursor.rowcount or 0)
         for job_id in old_jobs:
             self._session_paths.pop(job_id, None)
-        if old_jobs:
+        if old_jobs or removed_corrections:
+            self._checkpoint()
+            self._secure_vacuum()
             self._checkpoint()
         return len(old_jobs)
 
     def _checkpoint(self) -> None:
         connection = sqlite3.connect(self.path, timeout=30)
         try:
-            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            row = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        finally:
+            connection.close()
+        busy = int(row[0]) if row else 0
+        if busy:
+            raise RuntimeError("本机记录已删除，但数据库仍被其他窗口占用；请关闭其他空谷窗口后重试清理。")
+
+    def _secure_vacuum(self) -> None:
+        """Rebuild the database file so deleted pages cannot be recovered."""
+
+        connection = sqlite3.connect(self.path, timeout=30)
+        connection.isolation_level = None
+        try:
+            connection.execute("PRAGMA secure_delete = ON")
+            connection.execute("VACUUM")
+        except sqlite3.OperationalError as exc:
+            raise RuntimeError(
+                "本机记录已删除，但数据库整理失败（可能仍被其他窗口占用）；请关闭其他空谷窗口后重试。"
+            ) from exc
         finally:
             connection.close()
 

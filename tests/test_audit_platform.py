@@ -193,6 +193,18 @@ def test_manifest_target_escape_is_rejected_without_writing_outside(tmp_path: Pa
     assert not (app_data / "outside.txt").exists()
 
 
+def test_manifest_entries_that_are_not_objects_fail_closed(tmp_path: Path, monkeypatch):
+    bundled, app_data = _offline_fixture(tmp_path, monkeypatch, with_models=False)
+    (bundled / "resources" / "offline_manifest.json").write_text(
+        json.dumps({"version": 1, "generated_at": "", "entries": ["x"]}), encoding="utf-8"
+    )
+
+    status = resource_status()
+
+    assert status["ready"] is False
+    assert status["manifest_issue"] == "invalid-manifest-entry"
+
+
 def test_ocr_models_root_falls_back_to_public_when_programdata_is_unusable(tmp_path: Path, monkeypatch):
     app_data = tmp_path / "用户目录" / "Konggu"
     blocked = tmp_path / "programdata-blocked"

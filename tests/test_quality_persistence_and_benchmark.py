@@ -115,6 +115,38 @@ def test_signature_round_trip_keeps_correction_reusable(tmp_path):
     assert store.corrections_for_source("hash-a", "sig-a")[0]["stale"] is False
 
 
+def test_job_request_never_persists_source_paths(tmp_path):
+    store = StateStore(tmp_path / "state.sqlite3")
+    paths = ["C:/secret/张三-中方课表.pdf"]
+    job_id = store.create_job(
+        {"paths": paths, "payload": {"paths": paths, "explicit_kind": "中方"}},
+        "sig",
+        paths,
+    )
+
+    with store.connect() as connection:
+        request_json = connection.execute(
+            "SELECT request_json FROM jobs WHERE id=?", (job_id,)
+        ).fetchone()[0]
+
+    assert "secret" not in request_json
+    assert "paths" not in request_json
+    assert "explicit_kind" in request_json
+
+
+def test_clear_all_data_overwrites_deleted_rows_on_disk(tmp_path):
+    db_path = tmp_path / "state.sqlite3"
+    store = StateStore(db_path)
+    marker = "张三-机密课程标记"
+    job_id = store.create_job({"paths": [marker]}, "sig", [marker])
+    store.replace_issues(job_id, [{"issue_id": "i1", "message": marker}])
+
+    store.clear_all_data()
+
+    for path in tmp_path.glob("state.sqlite3*"):
+        assert marker.encode("utf-8") not in path.read_bytes()
+
+
 def test_failed_schema_migration_rolls_back_and_can_retry(tmp_path, monkeypatch):
     database = tmp_path / "state.sqlite3"
     _create_v1_state_database(database)

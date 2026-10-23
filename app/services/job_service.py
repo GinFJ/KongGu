@@ -118,29 +118,29 @@ class JobCoordinator:
     def _run(self, job_id: str, payload: dict[str, Any], paths: list[str]) -> None:
         self.store.update_job(job_id, status="running", error="", current=0, total=len(paths))
         final_status: str | None = None
-        file_rows = self.store.get_job(
-            job_id,
-            include_result=False,
-            include_sensitive_paths=True,
-        )["files"]
-        for index, file_row in enumerate(file_rows):
-            self.store.update_file(
-                job_id,
-                file_row["source_path"],
-                status="queued",
-                stage="waiting",
-                message="等待处理",
-                source_hash=_file_hash(file_row["source_path"]),
-            )
-            self._emit(
-                job_id,
-                file_row["id"],
-                "waiting",
-                index,
-                len(paths),
-                f"{file_row['file_name']} 已加入处理队列",
-            )
         try:
+            file_rows = self.store.get_job(
+                job_id,
+                include_result=False,
+                include_sensitive_paths=True,
+            )["files"]
+            for index, file_row in enumerate(file_rows):
+                self.store.update_file(
+                    job_id,
+                    file_row["source_path"],
+                    status="queued",
+                    stage="waiting",
+                    message="等待处理",
+                    source_hash=_file_hash(file_row["source_path"]),
+                )
+                self._emit(
+                    job_id,
+                    file_row["id"],
+                    "waiting",
+                    index,
+                    len(paths),
+                    f"{file_row['file_name']} 已加入处理队列",
+                )
             if self._cancel_event.is_set():
                 raise InterruptedError("处理已取消。")
 
@@ -293,10 +293,15 @@ class JobCoordinator:
 
 def _file_hash(path: str) -> str:
     target = Path(path)
-    if not target.exists():
+    try:
+        if not target.exists():
+            return ""
+        hasher = hashlib.sha256()
+        with target.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    except OSError:
+        # 文件被其他进程占用或不可读时，哈希只是旁路信息：不能让它把
+        # 后台线程连同 running 状态一起带走。
         return ""
-    hasher = hashlib.sha256()
-    with target.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            hasher.update(chunk)
-    return hasher.hexdigest()

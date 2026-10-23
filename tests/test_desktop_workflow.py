@@ -311,3 +311,22 @@ def test_export_weeks_never_drop_parsed_teaching_weeks():
     assert _export_weeks([1, 31], 2) == [1, 2]
     assert _export_weeks([1, 2], 0) == [1, 2]
     assert _export_weeks([1, 2], 20) == list(range(1, 21))
+
+
+def test_week_beyond_teaching_weeks_is_reported_and_blocks_export(tmp_path: Path):
+    class OutOfTermCore(FakeDesktopCore):
+        def parse_actual_pdf_sources(self, sources, uploaded_calendar_df=None, progress=None):
+            blocks, calendar, errors, preview = super().parse_actual_pdf_sources(
+                sources, uploaded_calendar_df, progress
+            )
+            blocks[0]["week"] = 20
+            blocks[0]["date"] = "2026-07-20"
+            return blocks, calendar, errors, preview
+
+    pdf = tmp_path / "张三-中方课表.pdf"
+    pdf.write_bytes(_minimal_pdf_bytes())
+    result = parse_pdf_paths(schedule_core=OutOfTermCore(), paths=[str(pdf)])
+
+    codes = {issue.code for issue in result.process_result.issues}
+    assert "WEEK_OUT_OF_SEMESTER" in codes
+    assert result.process_result.quality_state != "accepted"

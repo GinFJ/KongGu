@@ -994,7 +994,7 @@ def build_empty_schedule_excel_bytes(
     _append_dataframe_sheet(workbook, "成员完整性检查", member_df)
     if blocks_df is None:
         blocks_df = pd.DataFrame()
-    _append_dataframe_sheet(workbook, "课程占用明细", _export_member_dataframe(blocks_df, member_labels))
+    _append_dataframe_sheet(workbook, "课程占用明细", _export_block_dataframe(blocks_df, member_labels))
     _append_dataframe_sheet(workbook, "处理日志摘要", logs_df)
     _append_dataframe_sheet(
         workbook,
@@ -1004,7 +1004,7 @@ def build_empty_schedule_excel_bytes(
     _append_dataframe_sheet(
         workbook,
         "成员课程明细",
-        _export_member_dataframe(member_course_df if member_course_df is not None else blocks_df, member_labels),
+        _export_block_dataframe(member_course_df if member_course_df is not None else blocks_df, member_labels),
     )
     _append_dataframe_sheet(
         workbook,
@@ -1149,6 +1149,55 @@ def _export_slot_dataframe(
                 lambda value: len([item for item in str(value or "").split("、") if item])
             )
     return result
+
+
+_BLOCK_EXPORT_COLUMNS = {
+    "name": "成员",
+    "source": "课表来源",
+    "week": "周次",
+    "date": "日期",
+    "weekday": "星期",
+    "period": "节次",
+    "time": "时间",
+    "course": "课程",
+    "source_file": "来源文件",
+}
+
+
+def _export_block_dataframe(
+    frame: pd.DataFrame | None,
+    labels: dict[str, str] | None = None,
+) -> pd.DataFrame:
+    """Project course blocks onto the user-facing columns only.
+
+    Internal identifiers (block_id, member_key, source_hash), geometry
+    (bbox/page/page_width/page_height) and parser bookkeeping must never reach
+    the exported workbook: they are neither needed for scheduling nor safe to
+    hand out.
+    """
+
+    if frame is None or frame.empty:
+        return pd.DataFrame()
+    columns = [column for column in _BLOCK_EXPORT_COLUMNS if column in frame.columns]
+    if not columns:
+        return pd.DataFrame()
+    result = frame[columns].copy()
+    if "name" in result.columns:
+        display: list[str] = []
+        keys = frame["member_key"] if "member_key" in frame.columns else None
+        for position, value in enumerate(result["name"]):
+            shown = ""
+            if keys is not None:
+                shown = _export_member_label(keys.iloc[position], labels)
+                if shown == _export_member_name(keys.iloc[position]):
+                    shown = labels.get(str(keys.iloc[position] or "").strip(), shown) if labels else shown
+            display.append(shown or _export_member_name(value))
+        result["name"] = display
+    text_columns = {"source", "weekday", "course", "time", "date", "source_file"}
+    for column in result.columns:
+        if column in text_columns:
+            result[column] = result[column].map(lambda value: "" if value is None else str(value))
+    return result.rename(columns=_BLOCK_EXPORT_COLUMNS)
 
 
 def _export_member_dataframe(

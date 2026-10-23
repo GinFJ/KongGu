@@ -38,7 +38,10 @@ def save_calendar_settings(paths: ResourcePaths, payload: dict[str, Any]) -> dic
     settings = normalize_calendar_settings(payload)
     path = settings_path(paths)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 原子替换：写入中断或磁盘满时不能留下半截 JSON 让设置静默回退默认值。
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temporary, path)
     apply_calendar_settings(settings)
     return settings
 
@@ -49,6 +52,11 @@ def normalize_calendar_settings(payload: dict[str, Any]) -> dict[str, Any]:
         start = date.fromisoformat(start_text)
     except Exception as exc:
         raise ValueError("学期第 1 周周一日期格式应为 YYYY-MM-DD。") from exc
+    if start.weekday() != 0:
+        weekday_label = "一二三四五六日"[start.weekday()]
+        raise ValueError(
+            f"学期第 1 周日期必须是周一（{start_text} 是周{weekday_label}），请选择该周的周一。"
+        )
 
     try:
         weeks = int(payload.get("teaching_weeks"))

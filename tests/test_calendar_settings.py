@@ -42,3 +42,15 @@ def test_calendar_defaults_have_one_source():
 
     assert calendar_settings.DEFAULT_SEMESTER_START_DATE == DEFAULT_SEMESTER_START_DATE
     assert calendar_settings.DEFAULT_TEACHING_WEEKS == DEFAULT_TEACHING_WEEKS
+
+
+def test_calendar_rejects_non_monday_semester_start(tmp_path, monkeypatch):
+    monkeypatch.setenv("KONGGU_APP_DATA_ROOT", str(tmp_path / "appdata"))
+    paths = configure_offline_environment()
+
+    try:
+        save_calendar_settings(paths, {"semester_start_date": "2026-09-09", "teaching_weeks": 18})
+    except ValueError as exc:
+        assert "周一" in str(exc)
+    else:
+        raise AssertionError("Expected a non-Monday semester start to be rejected.")

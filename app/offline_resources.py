@@ -219,15 +219,27 @@ def repair_resources() -> dict[str, Any]:
 
 
 def clear_processing_cache(paths: ResourcePaths | None = None) -> list[str]:
-    """Remove only Konggu-generated processing caches under the app data root."""
+    """Remove Konggu-generated processing caches.
+
+    ``schedule_core`` falls back to the repository ``cache/`` directory when the
+    KONGGU_* cache variables are missing (development and packaged runs without
+    the environment), so a privacy clear must cover both roots; otherwise real
+    timetable caches survive ``data.clear``.
+    """
 
     resolved = paths or resolve_resource_paths()
+    roots = [resolved.cache_root, Path(__file__).resolve().parents[1] / "cache"]
     cleared: list[str] = []
-    for name in ("pdf_text", "pdf_layout", "parsed_blocks"):
-        target = _safe_child(resolved.cache_root, name, "cache")
-        if target.exists():
-            shutil.rmtree(target)
-            cleared.append(name)
+    for root in roots:
+        for name in ("pdf_text", "pdf_layout", "parsed_blocks"):
+            try:
+                target = _safe_child(root, name, "cache")
+            except ValueError:
+                continue
+            if target.exists():
+                shutil.rmtree(target)
+                if name not in cleared:
+                    cleared.append(name)
     return cleared
 
 
@@ -269,6 +281,13 @@ def load_manifest(bundled_root: Path | None = None) -> dict[str, Any]:
             raise OfflineManifestError("离线资源清单无法解析，已停止资源校验。") from exc
         if not isinstance(payload, dict) or not isinstance(payload.get("entries"), list):
             raise OfflineManifestError("离线资源清单格式不正确，已停止资源校验。")
+        entries = payload.get("entries") or []
+        if any(not isinstance(entry, dict) for entry in entries):
+            # 非对象条目会让后续 entry.get(...) 抛 AttributeError 并把整个启动拖垮。
+            raise OfflineManifestError(
+                "离线资源清单包含无效条目，已停止资源校验。",
+                issue="invalid-manifest-entry",
+            )
         return payload
     raise OfflineManifestError(
         "未找到离线资源清单，无法校验随包资源。",

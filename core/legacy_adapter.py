@@ -263,6 +263,16 @@ def _course_label(block: CourseBlock) -> str:
     return str(getattr(block, "course", "") or block.source_file or block.source_type).strip()
 
 
+def _error_belongs_to(text: str, file_name: str) -> bool:
+    """Match one file's error by its prefixed name instead of a loose substring.
+
+    Loose substring matching makes "1-中方课表.pdf" inherit the failure of
+    "11-中方课表.pdf"; every parser/sidecar error is prefixed with the file name.
+    """
+
+    return text.startswith(f"{file_name}：") or text.startswith(f"{file_name}: ")
+
+
 def build_file_records(
     sources: Iterable[PdfSource],
     blocks: Iterable[CourseBlock],
@@ -290,7 +300,7 @@ def build_file_records(
         related_errors = [
             text
             for text in error_texts
-            if (source.file_name and source.file_name in text)
+            if (source.file_name and _error_belongs_to(text, source.file_name))
             or (source.source_path and source.source_path in text)
         ]
         first_member = next((block.name for block in related_blocks if block.name), inferred_member)

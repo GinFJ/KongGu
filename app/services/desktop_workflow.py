@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 import json
+import os
 
 import pandas as pd
 
@@ -241,11 +242,59 @@ def parse_pdf_paths(
     warnings = _collect_result_warnings(process_result, [*warnings, *generation.errors])
     warnings.extend(_inspection_warnings(generation.pdf_inspections))
     errors.extend(generation.errors or [])
+    # 解析结果必须落在当前学期范围内：晚于教学周的课程若被静默裁剪，用户会拿到
+    # 一张缺课的空课表；早于学期的课程被钳到第 1 周同样不可信。
+    schedule_range_issues: list[ParseIssue] = []
+    calendar_weeks: set[int] = set()
+    calendar_dates: list[str] = []
+    if generation.calendar_df is not None and not generation.calendar_df.empty:
+        if "week" in generation.calendar_df:
+            for value in generation.calendar_df["week"]:
+                try:
+                    calendar_weeks.add(int(value))
+                except (TypeError, ValueError):
+                    continue
+        if "date" in generation.calendar_df:
+            calendar_dates = [
+                str(value) for value in generation.calendar_df["date"] if str(value).strip()
+            ]
+    detected_weeks = _detected_weeks(generation.blocks)
+    outside_weeks = [week for week in detected_weeks if week not in calendar_weeks]
+    if outside_weeks:
+        schedule_range_issues.append(
+            ParseIssue(
+                code="WEEK_OUT_OF_SEMESTER",
+                message=(
+                    f"课表包含第 {'、'.join(str(week) for week in outside_weeks)} 周课程，"
+                    "超出当前学期教学周设置，正式空课会缺少这些周。"
+                ),
+                severity="error",
+                suggestion="调整学期第 1 周和教学周数后重新生成空课表。",
+                blocks_export=True,
+            )
+        )
+    if calendar_dates:
+        earliest = min(calendar_dates)
+        early_blocks = [
+            block
+            for block in generation.blocks
+            if str(block.get("date") or "") and str(block.get("date")) < earliest
+        ]
+        if early_blocks:
+            schedule_range_issues.append(
+                ParseIssue(
+                    code="PRE_TERM_DATE",
+                    message="课表包含早于当前学期第 1 周的日期，可能是上一学期的课表。",
+                    severity="error",
+                    suggestion="确认课表属于当前学期，或调整学期第 1 周日期后重新生成。",
+                    blocks_export=True,
+                )
+            )
     signature = build_parser_signature()
     quality_state, issues = evaluate_quality(
         file_records=process_result.file_records,
         members=process_result.members,
-        inherited_issues=[*preflight_issues, *inspection_issues],
+        inherited_issues=[*preflight_issues, *inspection_issues, *schedule_range_issues],
         enforce_identity=enforce_quality,
     )
     process_result.quality_state = quality_state
@@ -328,7 +377,6 @@ def export_excel(
                         "状态": record.status,
                         "质量状态": record.quality_state,
                         "课程块数": record.block_count,
-                        "来源哈希": record.source_hash or record.source.content_hash or "",
                         "说明": record.display_result,
                     }
                     for record in workflow_result.process_result.file_records
@@ -337,8 +385,9 @@ def export_excel(
             correction_df=pd.DataFrame(
                 [
                     {
-                        "来源哈希": correction.source_hash,
-                        "课程块ID": correction.block_id,
+                        # 内部标识与内容哈希不进导出物：只保留可追溯的短编号。
+                        "来源编号": (correction.source_hash or "")[:8],
+                        "课程块": (correction.block_id or "")[:8],
                         "字段": correction.field,
                         "原值": json.dumps(correction.original_value, ensure_ascii=False),
                         "新值": json.dumps(correction.new_value, ensure_ascii=False),
@@ -361,7 +410,20 @@ def export_excel(
             ),
         ),
     )
-    target.write_bytes(data)
+    temporary = target.with_name(target.name + ".tmp")
+    try:
+        # 先写临时文件再原子替换：写失败或目标被 Excel 占用时不能留下半截工作簿，
+        # 也不破坏用户原有的同名文件。
+        temporary.write_bytes(data)
+        os.replace(temporary, target)
+    except OSError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise ValueError(
+            "无法写入导出文件：请关闭正在占用该文件的程序（如 Excel），或换一个位置后重试。"
+        ) from exc
     return target
 
 

@@ -101,7 +101,10 @@ def generate_availability(
             legacy_block.setdefault("source_hash", matching_source.content_hash)
     occupancy = schedule_core.build_occupancy(blocks)
     students = sorted({str(block.get("member_key") or block["name"]) for block in blocks})
-    weeks = _weeks_from_calendar(calendar_df) or sorted({int(block["week"]) for block in blocks if block.get("week") is not None})
+    block_weeks = {int(block["week"]) for block in blocks if block.get("week") is not None}
+    # 解析出的课程周必须并入结果周：只取日历周会让晚于教学周的课程在空课表里
+    # 静默消失（课程占用明细有、空课明细没有）。
+    weeks = sorted(set(_weeks_from_calendar(calendar_df)) | block_weeks)
     periods = _periods_from_timetable(schedule_core)
     all_slot_df = align_slot_dates(
         schedule_core.build_slot_table(occupancy, students, weeks, weekdays, periods),

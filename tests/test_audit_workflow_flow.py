@@ -571,3 +571,18 @@ def test_confirm_issue_rolls_back_flag_when_snapshot_save_fails(tmp_path: Path, 
     job = store.get_job(job_id)
     assert job["quality_state"] == "needs_review"
     assert job["issues"][0]["confirmed"] is False
+
+
+def test_file_hash_tolerates_unreadable_file(tmp_path: Path, monkeypatch):
+    from app.services import job_service
+
+    target = tmp_path / "locked.pdf"
+    target.write_bytes(b"pdf")
+
+    def denied(self, *args, **kwargs):
+        raise PermissionError("locked by another process")
+
+    monkeypatch.setattr(Path, "open", denied)
+
+    # 哈希只是旁路信息：文件被占用时返回空串，不能让后台线程连同 running 状态一起死掉。
+    assert job_service._file_hash(str(target)) == ""
