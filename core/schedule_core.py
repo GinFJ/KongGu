@@ -229,12 +229,24 @@ def local_pdf_sources_from_dir(root: str | Path) -> list[dict[str, Any]]:
     sources: list[dict[str, Any]] = []
     for path in sorted(Path(root).rglob("*.pdf")):
         kind = infer_pdf_kind(path.name, str(path)) or "中方"
+        digest = ""
+        try:
+            hasher = hashlib.sha256()
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    hasher.update(chunk)
+            digest = hasher.hexdigest()
+        except OSError:
+            digest = ""
         sources.append(
             {
                 "name": path.name,
                 "path": str(path),
                 "kind": kind,
+                # 目录发现不保留字节，但必须带上真实内容哈希：否则所有来源的
+                # content_hash 都等于 sha256(b"")，修正键与来源追溯全部失真。
                 "content": b"",
+                "content_hash": digest,
             }
         )
     return sources
@@ -1844,9 +1856,14 @@ def _parse_chinese_text_page_by_cell_borders(
         return []
     header_y = max(_item_center(item)[1] for item in headers)
     headers = sorted((item for item in headers if abs(_item_center(item)[1] - header_y) < 2), key=lambda item: _item_center(item)[0])
-    if len(headers) != 42:
+    period_labels = list(period_groups)
+    if not headers or len(headers) % len(period_labels):
         return []
-    if [str(item["text"]) for item in headers] != list(period_groups) * 7:
+    day_count = len(headers) // len(period_labels)
+    # 5 天制（周一至周五）整学期课表同样合法：按实际天数校验，不写死 7 天。
+    if not 5 <= day_count <= 7:
+        return []
+    if [str(item["text"]) for item in headers] != period_labels * day_count:
         return []
     try:
         drawings = page.get_drawings()
@@ -1874,7 +1891,13 @@ def _parse_chinese_text_page_by_cell_borders(
             return []
         periods = period_groups[str(header["text"])]
         for offset, period in enumerate(periods):
-            slots.append((index // 6, period, left + (right - left) * (offset + 0.5) / len(periods)))
+            slots.append(
+                (
+                    index // len(period_groups),
+                    period,
+                    left + (right - left) * (offset + 0.5) / len(periods),
+                )
+            )
 
     week_starts = [(number, float(item["y0"])) for number, item in weeks]
     gap = (week_starts[-1][1] - week_starts[0][1]) / max(1, len(week_starts) - 1)
@@ -1987,7 +2010,9 @@ def _parse_chinese_table_page_items(
     week_candidates = []
     for item in items:
         match = re.fullmatch(r"(?:第)?(\d{1,2})周", item["text"])
-        if match and _item_center(item)[0] < bands[0]["left"]:
+        # 周次列紧贴首列左边线时 x 可能略大于 bands[0]["left"]（竖版 5 天整学期表），
+        # 用首列中心作界限才不会把周次行整体漏掉。
+        if match and _item_center(item)[0] < bands[0]["center"]:
             week_candidates.append({**item, "week": int(match.group(1))})
     week_rows = []
     for group in _cluster_items_by_y(week_candidates, 6.0):
@@ -2020,7 +2045,7 @@ def _parse_chinese_table_page_items(
         date_text = " ".join(
             item["text"]
             for item in sorted(row_words, key=lambda value: (value["y0"], value["x0"]))
-            if _item_center(item)[0] < bands[0]["left"] and re.search(r"\d{2}/\d{2}", item["text"])
+            if _item_center(item)[0] < bands[0]["center"] and re.search(r"\d{2}/\d{2}", item["text"])
         )
         week_start = _parse_week_start(date_text, week_item["week"]) if date_text else None
         cells: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
@@ -2042,12 +2067,18 @@ def _parse_chinese_table_page_items(
             if _looks_like_room(cell_text):
                 continue
             day = week_start + timedelta(days=WEEKDAY_INDEX.get(weekday, 0)) if week_start else _date_for_weekday(week_item["week"], weekday)
-            cell_bbox = (
-                float(band["left"]),
-                min(float(word["y0"]) for word in cell_words),
-                float(band["right"]),
-                max(float(word["y1"]) for word in cell_words),
+            cell_band = next(
+                (item for item in bands if item.get("weekday") == weekday and item.get("label") == label),
+                None,
             )
+            cell_bbox = None
+            if cell_band is not None:
+                cell_bbox = (
+                    float(cell_band["left"]),
+                    min(float(word["y0"]) for word in cell_words),
+                    float(cell_band["right"]),
+                    max(float(word["y1"]) for word in cell_words),
+                )
             for period in PERIOD_GROUPS.get(label, []):
                 blocks.append(
                     _block(

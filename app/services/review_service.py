@@ -281,8 +281,24 @@ def _refresh_derived(workflow: Any, schedule_core: Any) -> None:
         int(block["week"]) for block in generation.blocks if block.get("week") is not None
     })
     date_map = build_date_map(generation.calendar_df)
+    time_range = getattr(schedule_core, "period_time_range", None)
     for block in generation.blocks:
-        block["date"] = date_map.get((int(block["week"]), str(block["weekday"])), "")
+        try:
+            week = int(block["week"])
+            weekday = str(block["weekday"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        mapped_date = date_map.get((week, weekday))
+        # 日历之外的周次（例如末行残留的第 19–21 周）不能被清空日期，
+        # 否则任意一次人工修正都会让明细与快照丢失日期。
+        if mapped_date:
+            block["date"] = mapped_date
+        # 修正 periods 后 time 必须跟着重算，否则导出会出现“节次 5 / 时间 08:10–08:55”。
+        if callable(time_range):
+            try:
+                block["time"] = time_range(int(block.get("period")))
+            except (TypeError, ValueError):
+                pass
     generation.course_blocks = course_blocks_from_legacy(generation.blocks)
     generation.member_schedules = build_member_schedules(generation.course_blocks, generation.students)
     prior_records = {record.source.content_hash: record for record in generation.file_records}

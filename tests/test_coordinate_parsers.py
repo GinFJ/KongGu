@@ -316,6 +316,54 @@ def test_chinese_table_parser_attaches_cell_geometry_for_review_overlay():
         assert 48 <= top < bottom <= 220
 
 
+def test_chinese_five_day_table_with_week_column_at_first_band_edge():
+    labels = ["1-2", "3-4", "午", "5-6", "7-8", "9-11"]
+    items = []
+    x = 48
+    for _weekday in schedule_core.WEEKDAYS[:5]:
+        for label in labels:
+            items.append(_item(label, x, 48, w=12))
+            x += 32
+    for week in range(1, 22):
+        y = 100 + (week - 1) * 20
+        items.append(_item(f"{week}周", 40, y, w=20))
+        items.append(_item("03/02", 44, y, w=24))
+    # 周次文字中心(50) 落在首列带左界(36) 与中心(54) 之间：旧判据 x < left 会把整列漏掉。
+    items.append(_item("高等数学", 50, 140, w=36))
+
+    blocks = schedule_core._parse_chinese_table_page_items(items, "张三", 560, page=0, page_width=400)
+
+    assert blocks, "竖版 5 天整学期表的坐标解析不应为空"
+    assert any(block["course"] == "高等数学" and block["week"] == 3 for block in blocks)
+
+
+def test_chinese_table_bbox_uses_the_matching_column_band():
+    labels = ["1-2", "3-4", "午", "5-6", "7-8", "9-11"]
+    items = []
+    x = 100
+    for _weekday in schedule_core.WEEKDAYS[:5]:
+        for label in labels:
+            items.append(_item(label, x, 48, w=12))
+            x += 32
+    items.extend(
+        [
+            _item("3周", 20, 100, w=20),
+            _item("03/16", 48, 100, w=28),
+            _item("高等数学", 102, 101, w=36),
+            _item("大学英语", 100 + 6 * 32 + 3 * 32, 101, w=36),
+        ]
+    )
+
+    blocks = schedule_core._parse_chinese_table_page_items(items, "张三", 220, page=0, page_width=400)
+
+    bbox_by_course = {}
+    for block in blocks:
+        bbox_by_course.setdefault(block["course"], block["bbox"])
+    # 每格必须用自己列的 x 范围，不能复用循环残留的最后一列 band。
+    assert bbox_by_course["高等数学"][0] < bbox_by_course["大学英语"][0]
+    assert bbox_by_course["高等数学"][2] < bbox_by_course["大学英语"][0]
+
+
 def test_chinese_full_term_course_text_uses_legend_aliases():
     aliases = {"高", "中", "P"}
 

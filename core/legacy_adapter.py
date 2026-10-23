@@ -63,7 +63,11 @@ def legacy_source_to_model(source: dict[str, Any]) -> PdfSource:
 
     file_name = str(source.get("file_name") or Path(str(source.get("source_path", ""))).name)
     kind = source.get("kind") if source.get("kind") in {"中方", "英方"} else "中方"
-    data = source.get("bytes") or source.get("bytes_data")
+    data = source.get("bytes")
+    if data is None:
+        data = source.get("bytes_data")
+    if data is None:
+        data = source.get("content")
     if data is not None and not isinstance(data, bytes):
         data = bytes(data)
     return PdfSource(
@@ -284,7 +288,10 @@ def build_file_records(
                 if block.source_type == source.kind and block.name == inferred_member
             ]
         related_errors = [
-            text for text in error_texts if source.file_name in text or source.source_path in text
+            text
+            for text in error_texts
+            if (source.file_name and source.file_name in text)
+            or (source.source_path and source.source_path in text)
         ]
         first_member = next((block.name for block in related_blocks if block.name), inferred_member)
         if related_errors:
