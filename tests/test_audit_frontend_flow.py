@@ -103,7 +103,7 @@ def test_stale_job_responses_cannot_overwrite_newer_task() -> None:
         assert "if (state.jobId !== jobId) return;" in body
 
     finish = _section(main, "async function finishCompletedJob(", "function showReviewLoadFailure(")
-    assert "const review = await client.request<ReviewPayload>(\"review.get\", { job_id: jobId });" in finish
+    assert 'client.request<ReviewPayload>("review.get", { job_id: jobId }' in finish
     assert "if (state.jobId !== jobId) return;" in finish
 
 

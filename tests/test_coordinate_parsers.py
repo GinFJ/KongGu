@@ -284,6 +284,38 @@ def test_chinese_table_parser_maps_courses_by_xy_cells():
     assert all(block["course"] not in {"无", "C101"} for block in blocks)
 
 
+def test_chinese_table_parser_attaches_cell_geometry_for_review_overlay():
+    labels = ["1-2", "3-4", "午", "5-6", "7-8", "9-11"]
+    items = []
+    x = 100
+    for _weekday in schedule_core.WEEKDAYS[:5]:
+        for label in labels:
+            items.append(_item(label, x, 48, w=12))
+            x += 32
+
+    items.extend(
+        [
+            _item("3周", 20, 100, w=20),
+            _item("03/16", 48, 100, w=28),
+            _item("高等数学", 102, 101, w=36),
+        ]
+    )
+
+    blocks = schedule_core._parse_chinese_table_page_items(
+        items, "张三", 220, page=0, page_width=400
+    )
+
+    assert blocks
+    for block in blocks:
+        assert block["page"] == 0
+        assert block["page_width"] == 400
+        assert block["page_height"] == 220
+        left, top, right, bottom = block["bbox"]
+        assert left < right
+        assert top < bottom
+        assert 48 <= top < bottom <= 220
+
+
 def test_chinese_full_term_course_text_uses_legend_aliases():
     aliases = {"高", "中", "P"}
 

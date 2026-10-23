@@ -89,4 +89,4 @@ def test_terminal_progress_event_settles_review_state_without_waiting_for_stop()
     assert "async function settleCompletedJob(jobId: string)" in main
     assert "state.busy = false;" in main
     assert 'state.activeTab = state.result?.can_export ? "availability" : "issues";' in main
-    assert 'client.request<ReviewPayload>("review.get", { job_id: jobId })' in main
+    assert 'client.request<ReviewPayload>("review.get", { job_id: jobId }' in main

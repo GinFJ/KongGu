@@ -171,7 +171,7 @@ async function settleCompletedJob(jobId: string) {
   if (!state.busy || state.jobId !== jobId || completionProbeJobId === jobId || completedJobId === jobId) return;
   completionProbeJobId = jobId;
   try {
-    const response = await client.request<JobResponse>("job.get", { job_id: jobId });
+    const response = await client.request<JobResponse>("job.get", { job_id: jobId }, 60_000);
     if (state.jobId !== jobId || response.job.status !== "completed") return;
     await finishCompletedJob(jobId, response.job);
   } catch {
@@ -191,7 +191,10 @@ async function finishCompletedJob(jobId: string, job: JobResponse["job"]) {
   state.busy = false;
   state.stage = state.result?.can_export ? "completed" : "review";
   if (state.result?.detected_max_week) {
+    // 检测周数只用于本次结果的展示与导出，不是用户设置。同步已保存基准，
+    // 避免下一次保存设置时被误判为“用户改了学期”而静默清空结果和人工修正。
     state.calendarSettings.teaching_weeks = state.result.detected_max_week;
+    savedCalendarSettings = { ...state.calendarSettings };
   }
   state.activeTab = state.result?.can_export ? "availability" : "issues";
   state.statusText = state.result
@@ -207,7 +210,7 @@ async function finishCompletedJob(jobId: string, job: JobResponse["job"]) {
   }
 
   try {
-    const review = await client.request<ReviewPayload>("review.get", { job_id: jobId });
+    const review = await client.request<ReviewPayload>("review.get", { job_id: jobId }, 120_000);
     // 等待原文期间用户可能已经换了文件或开始了新任务，旧任务的原文不能覆盖新选择。
     if (state.jobId !== jobId) return;
     state.review = review;
@@ -231,7 +234,7 @@ async function reloadReview() {
   state.statusText = "正在重新载入课表原文";
   render();
   try {
-    const review = await client.request<ReviewPayload>("review.get", { job_id: jobId });
+    const review = await client.request<ReviewPayload>("review.get", { job_id: jobId }, 120_000);
     if (state.jobId !== jobId) return;
     state.review = review;
     state.statusText = "课表原文已载入";
@@ -247,7 +250,7 @@ async function reloadReview() {
 
 async function waitForJob(jobId: string) {
   while (state.jobId === jobId && completedJobId !== jobId) {
-    const response = await client.request<JobResponse>("job.get", { job_id: jobId });
+    const response = await client.request<JobResponse>("job.get", { job_id: jobId }, 60_000);
     const job = response.job;
     state.progress = { current: job.current, total: job.total };
     state.failedFileCount = job.files.filter((file) => file.status === "failed").length;
@@ -427,9 +430,23 @@ async function clearLocalData() {
 }
 
 async function saveSettings(showFeedback = true) {
+  const next = { ...state.calendarSettings };
+  const wouldChange = savedCalendarSettings.semester_start_date !== next.semester_start_date
+    || savedCalendarSettings.teaching_weeks !== next.teaching_weeks;
+  if (wouldChange && showFeedback) {
+    const hasWork = Boolean(state.result || state.review);
+    const warning = hasWork
+      ? "学期设置变化会让已生成的结果和已做的人工修正失效，需要重新生成空课表。继续保存吗？"
+      : "学期设置保存后，下次生成会使用新设置。继续吗？";
+    if (!window.confirm(warning)) {
+      state.calendarSettings = { ...savedCalendarSettings };
+      render();
+      return;
+    }
+  }
   try {
     const response = await client.request<{ ok: boolean; settings: CalendarSettings }>("settings.calendar.save", {
-      settings: state.calendarSettings
+      settings: next
     });
     state.calendarSettings = response.settings;
     const changed = savedCalendarSettings.semester_start_date !== response.settings.semester_start_date
@@ -444,8 +461,15 @@ async function saveSettings(showFeedback = true) {
       if (!state.busy) state.stage = "ready";
       completedJobId = "";
     }
-    if (showFeedback) setStatus(changed ? "学期设置已保存，请重新生成空课表。" : "学期设置已保存。");
+    if (showFeedback) {
+      setStatus(
+        changed
+          ? "学期设置已保存；旧结果和原人工修正已失效，请重新生成空课表。"
+          : "学期设置已保存。"
+      );
+    }
   } catch (error) {
+    state.calendarSettings = { ...savedCalendarSettings };
     setStatus(`学期设置保存失败：${formatError(error)}`);
     throw error;
   }
@@ -503,7 +527,7 @@ async function confirmIssue(issueId: string) {
 async function refreshJobOutput() {
   const jobId = state.jobId;
   if (!jobId) return;
-  const response = await client.request<JobResponse>("job.get", { job_id: jobId });
+  const response = await client.request<JobResponse>("job.get", { job_id: jobId }, 60_000);
   if (state.jobId !== jobId) return;
   state.result = response.job.output || state.result;
   if (state.result) {

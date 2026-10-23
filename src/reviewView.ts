@@ -316,7 +316,8 @@ export async function mountReview(
     const overlay = element<HTMLElement>("#pdfOverlay");
     const { width, height, rotation } = viewportMetrics;
     if (!width || !height) return;
-    const blocks = blocksForActiveSource().filter((block) => Number(block.page ?? 0) + 1 === currentPage && block.bbox);
+    const sourceBlocks = blocksForActiveSource();
+    const blocks = sourceBlocks.filter((block) => Number(block.page ?? 0) + 1 === currentPage && block.bbox);
     overlay.innerHTML = blocks.map((block) => {
       const rect = transformRect(block, width, height, rotation);
       if (!rect) return "";
@@ -325,6 +326,10 @@ export async function mountReview(
         style="left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px"
         title="${escapeHtml(blockLabel(block))}"><span>${escapeHtml(block.course || "课程")}</span></button>`;
     }).join("");
+    // 文本层布局没有格子坐标，不能伪造标记框；明确告知用户改用周次/节次核对。
+    if (!blocks.length && sourceBlocks.length && !sourceBlocks.some((block) => block.bbox)) {
+      overlay.innerHTML += `<div style="position:absolute;left:12px;top:12px;max-width:70%;padding:6px 10px;border-radius:8px;background:rgba(255,255,255,.94);color:#44504a;font-size:12px;line-height:1.5">该来源没有可用的定位坐标，请在左侧课程列表中按周次和节次核对。</div>`;
+    }
   }
 
   function selectBlock(blockId: string) {

@@ -1920,6 +1920,7 @@ def _parse_chinese_ocr_table_layout(
     if not items:
         return []
     name = _extract_chinese_name("", file_name)
+    page_width = max((float(item.get("page_width", 0) or 0) for item in items), default=0.0)
     blocks: list[dict[str, Any]] = []
     for page in sorted({int(item.get("page", 0)) for item in items}):
         page_items = [
@@ -1929,17 +1930,22 @@ def _parse_chinese_ocr_table_layout(
                 "x1": float(item.get("x1", 0)),
                 "y1": float(item.get("y1", 0)),
                 "text": _normalize_ocr_text(str(item.get("text", ""))),
+                "page": page,
             }
             for item in items
             if int(item.get("page", 0)) == page and str(item.get("text", "")).strip()
         ]
         page_height = max((float(item.get("page_height", 0)) for item in items if int(item.get("page", 0)) == page), default=0)
         if _detect_schedule_layout_profile_from_text_items("中方", "", page_items) == "cdut_undergrad_full_term_cn":
-            specialized = _parse_chinese_full_term_grid_page_items(page_items, name, page_height)
+            specialized = _parse_chinese_full_term_grid_page_items(
+                page_items, name, page_height, page=page, page_width=page_width
+            )
             if specialized:
                 blocks.extend(specialized)
                 continue
-        blocks.extend(_parse_chinese_table_page_items(page_items, name, page_height))
+        blocks.extend(
+            _parse_chinese_table_page_items(page_items, name, page_height, page=page, page_width=page_width)
+        )
     return blocks
 
 
@@ -1947,6 +1953,9 @@ def _parse_chinese_table_page_items(
     items: list[dict[str, Any]],
     name: str,
     page_height: float,
+    *,
+    page: int | None = None,
+    page_width: float = 0.0,
 ) -> list[dict[str, Any]]:
     if not items:
         return []
@@ -2033,8 +2042,28 @@ def _parse_chinese_table_page_items(
             if _looks_like_room(cell_text):
                 continue
             day = week_start + timedelta(days=WEEKDAY_INDEX.get(weekday, 0)) if week_start else _date_for_weekday(week_item["week"], weekday)
+            cell_bbox = (
+                float(band["left"]),
+                min(float(word["y0"]) for word in cell_words),
+                float(band["right"]),
+                max(float(word["y1"]) for word in cell_words),
+            )
             for period in PERIOD_GROUPS.get(label, []):
-                blocks.append(_block(name, "中方", week_item["week"], day, weekday, period, cell_text))
+                blocks.append(
+                    _block(
+                        name,
+                        "中方",
+                        week_item["week"],
+                        day,
+                        weekday,
+                        period,
+                        cell_text,
+                        page=page,
+                        bbox=cell_bbox,
+                        page_width=page_width,
+                        page_height=page_height,
+                    )
+                )
     return blocks
 
 
@@ -2042,6 +2071,9 @@ def _parse_chinese_full_term_grid_page_items(
     items: list[dict[str, Any]],
     name: str,
     page_height: float,
+    *,
+    page: int | None = None,
+    page_width: float = 0.0,
 ) -> list[dict[str, Any]]:
     if not items:
         return []
@@ -2080,8 +2112,28 @@ def _parse_chinese_full_term_grid_page_items(
                 if week_start
                 else _date_for_weekday(week_row["week"], cell["weekday"])
             )
+            cell_bbox = (
+                float(cell["left"]),
+                float(row_top),
+                float(cell["right"]),
+                float(row_bottom),
+            )
             for period in PERIOD_GROUPS.get(cell["label"], []):
-                blocks.append(_block(name, "中方", week_row["week"], day, cell["weekday"], period, cell_text))
+                blocks.append(
+                    _block(
+                        name,
+                        "中方",
+                        week_row["week"],
+                        day,
+                        cell["weekday"],
+                        period,
+                        cell_text,
+                        page=page,
+                        bbox=cell_bbox,
+                        page_width=page_width,
+                        page_height=page_height,
+                    )
+                )
     return blocks
 
 
@@ -3093,7 +3145,15 @@ def _parse_english_pdf_grid_layout(source: dict[str, Any], file_name: str) -> li
                     for column in fallback_columns
                 )
             rectangles = _english_course_rectangles(page)
-            geometric = _parse_english_grid_page_items_from_rectangles(items, rectangles, name)
+            page_rect = getattr(page, "rect", None)
+            geometric = _parse_english_grid_page_items_from_rectangles(
+                items,
+                rectangles,
+                name,
+                page=int(getattr(page, "number", 0)),
+                page_width=float(getattr(page_rect, "width", 0.0) or 0.0),
+                page_height=float(getattr(page_rect, "height", 0.0) or 0.0),
+            )
             blocks.extend(geometric or _parse_english_grid_page_items_from_pdf_words(items, name))
     finally:
         doc.close()
@@ -3119,6 +3179,10 @@ def _english_course_rectangles(page: Any) -> list[tuple[float, float, float, flo
 def _parse_english_grid_page_items_from_rectangles(
     items: list[dict[str, Any]], rectangles: list[tuple[float, float, float, float]], name: str,
     unmapped_midday: list[dict[str, Any]] | None = None,
+    *,
+    page: int | None = None,
+    page_width: float = 0.0,
+    page_height: float = 0.0,
 ) -> list[dict[str, Any]]:
     """Read occupied cells from visible timetable borders, including merged periods."""
     if not rectangles:
@@ -3181,6 +3245,10 @@ def _parse_english_grid_page_items_from_rectangles(
                 blocks.append(_block(
                     name, "英方", _week_from_date(row["date"]), row["date"],
                     WEEKDAYS[row["date"].weekday()], period, course,
+                    page=page,
+                    bbox=(float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3])),
+                    page_width=page_width,
+                    page_height=page_height,
                 ))
     return blocks
 
@@ -3739,8 +3807,29 @@ def _parse_english_text(text: str, file_name: str) -> list[dict[str, Any]]:
     return blocks
 
 
-def _block(name: str, source: str, week: int, day: date, weekday: str, period: int, course: str) -> dict[str, Any]:
-    return {
+def _block(
+    name: str,
+    source: str,
+    week: int,
+    day: date,
+    weekday: str,
+    period: int,
+    course: str,
+    *,
+    page: int | None = None,
+    bbox: tuple[float, float, float, float] | None = None,
+    page_width: float = 0.0,
+    page_height: float = 0.0,
+) -> dict[str, Any]:
+    """Build one course block.
+
+    Geometry is optional: only parsers that actually know the printed cell
+    position pass ``page``/``bbox`` so the desktop review canvas can draw the
+    matching highlight.  Text-only layouts stay without geometry instead of
+    inventing coordinates.
+    """
+
+    block: dict[str, Any] = {
         "name": name,
         "source": source,
         "week": int(week),
@@ -3750,6 +3839,15 @@ def _block(name: str, source: str, week: int, day: date, weekday: str, period: i
         "time": period_time_range(period),
         "course": course,
     }
+    if page is not None:
+        block["page"] = int(page)
+    if bbox is not None:
+        block["bbox"] = [float(value) for value in bbox]
+    if page_width:
+        block["page_width"] = float(page_width)
+    if page_height:
+        block["page_height"] = float(page_height)
+    return block
 
 
 def _clean_lines(text: str) -> list[str]:

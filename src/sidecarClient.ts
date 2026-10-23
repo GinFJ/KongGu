@@ -41,7 +41,7 @@ export class SidecarClient {
     }
   }
 
-  async request<T>(command: string, payload: Record<string, unknown> = {}): Promise<T> {
+  async request<T>(command: string, payload: Record<string, unknown> = {}, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
     if (!ALLOWED_COMMANDS.has(command)) throw new Error("不支持的本地操作。");
     await this.start();
     const child = this.child;
@@ -55,7 +55,7 @@ export class SidecarClient {
         if (!timedOut) return;
         this.pending.delete(id);
         timedOut.reject(new Error("处理等待超时，请重试。"));
-      }, REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
       this.pending.set(id, {
         resolve: resolve as (value: unknown) => void,
         reject,
