@@ -172,3 +172,81 @@ def test_saved_name_correction_replays_with_consistent_identity(tmp_path: Path):
     changed = fresh_workflow.generation_result.blocks[0]
     assert (changed["name"], changed["member_key"]) == ("成员乙", "成员乙｜办公室｜干事")
     assert fresh_workflow.process_result.quality_state == "blocked"
+
+
+def test_out_of_term_issue_is_recomputed_after_week_correction(tmp_path: Path):
+    store, job_id, _, _ = _saved_job(tmp_path)
+
+    apply_correction(
+        store=store,
+        schedule_core=schedule_core,
+        job_id=job_id,
+        block_id="block-0",
+        field="week",
+        new_value=19,
+        reason="原文核对",
+        operator_id="测试者",
+    )
+    outside = get_review_payload(store, job_id)
+    assert "WEEK_OUT_OF_SEMESTER" in {issue["code"] for issue in outside["issues"]}
+    assert outside["quality_state"] != "accepted"
+
+    apply_correction(
+        store=store,
+        schedule_core=schedule_core,
+        job_id=job_id,
+        block_id="block-0",
+        field="week",
+        new_value=1,
+        reason="原文核对",
+        operator_id="测试者",
+    )
+    back = get_review_payload(store, job_id)
+    assert "WEEK_OUT_OF_SEMESTER" not in {issue["code"] for issue in back["issues"]}
+    assert back["quality_state"] == "accepted"
+
+
+def test_noop_correction_is_not_persisted(tmp_path: Path):
+    store, job_id, _, _ = _saved_job(tmp_path)
+
+    response = apply_correction(
+        store=store,
+        schedule_core=schedule_core,
+        job_id=job_id,
+        block_id="block-0",
+        field="course",
+        new_value="示例课程0",
+        reason="拖拽到同一位置",
+        operator_id="测试者",
+    )
+
+    assert response["correction_id"] == ""
+    assert store.corrections_for_source("hash-cn", "test-signature") == []
+
+
+def test_partial_identity_correction_keeps_bare_member_key(tmp_path: Path):
+    from app.services.review_service import _apply_block_value
+
+    block = {"name": "成员甲", "member_key": "成员甲", "department": "", "role": ""}
+
+    _apply_block_value(block, "name", "成员乙")
+    assert block["member_key"] == "成员乙"
+
+    _apply_block_value(block, "department", "办公室")
+    # 仍缺角色：继续用裸姓名，不生成带空段的三段键。
+    assert block["member_key"] == "成员乙"
+
+
+def test_layout_profile_survives_snapshot_roundtrip(tmp_path: Path):
+    store, job_id, _, _ = _saved_job(tmp_path)
+    snapshot = dict(store.get_job(job_id)["result"])
+    snapshot["generation"] = dict(snapshot["generation"])
+    snapshot["generation"]["layout_profiles"] = {"hash-cn": "cdut_undergrad_full_term_cn"}
+
+    workflow = restore_workflow(snapshot, schedule_core)
+
+    profiles = {
+        str(record.source.content_hash or ""): record.layout_profile
+        for record in workflow.generation_result.file_records
+    }
+    assert profiles.get("hash-cn") == "cdut_undergrad_full_term_cn"

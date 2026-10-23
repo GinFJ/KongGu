@@ -1501,6 +1501,23 @@ def _write_ocr_text_cache_meta(cache_path: Path) -> None:
         LOGGER.warning("OCR 文本缓存元数据写入失败: %s error=%s", meta_path.name, exc)
 
 
+def _ocr_cache_signature() -> str:
+    """Cache key for OCR layout coordinates.
+
+    The coordinates depend on the PDF bytes and the OCR engine/model, not on the
+    parsing rules. Keeping the parser signature out of this key avoids re-running
+    OCR (minutes per image PDF) every time a parsing rule changes.
+    """
+
+    return "|".join(
+        [
+            f"layout-v{OCR_LAYOUT_CACHE_VERSION}",
+            str(DEFAULT_OCR_ENGINE),
+            str(DEFAULT_OCR_MODEL),
+        ]
+    )
+
+
 def _extract_pdf_ocr_items(
     source: dict[str, Any],
     *,
@@ -1510,9 +1527,15 @@ def _extract_pdf_ocr_items(
     if cache_path.exists():
         try:
             payload = json.loads(cache_path.read_text(encoding="utf-8"))
+            stored_signature = payload.get("ocr_signature")
+            # 旧格式缓存没有 ocr_signature：路径本身按内容哈希隔离，
+            # 一次性视为有效，避免升级解析器就把全部图片重新 OCR。
+            signature_ok = (
+                str(stored_signature) == _ocr_cache_signature() if stored_signature else True
+            )
             if (
                 payload.get("version") == OCR_LAYOUT_CACHE_VERSION
-                and payload.get("parser_signature") == cache_signature()
+                and signature_ok
                 and isinstance(payload.get("items"), list)
                 and payload["items"]
             ):
@@ -1561,7 +1584,7 @@ def _extract_pdf_ocr_items(
 
     payload = {
         "version": OCR_LAYOUT_CACHE_VERSION,
-        "parser_signature": cache_signature(),
+        "ocr_signature": _ocr_cache_signature(),
         "hash": _source_digest(source),
         "file_name": _source_name(source),
         "items": sorted(items, key=lambda value: (value["page"], value["y0"], value["x0"])),

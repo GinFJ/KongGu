@@ -41,6 +41,48 @@ def test_ocr_text_cache_hits_same_engine(monkeypatch, tmp_path):
     assert calls == []
 
 
+def test_ocr_layout_cache_ignores_parser_signature(monkeypatch, tmp_path):
+    """改解析规则不能让全部图片课表重新 OCR 一遍。"""
+
+    monkeypatch.setenv("KONGGU_OCR_LAYOUT_CACHE", str(tmp_path))
+    source = _source()
+    cache_path = schedule_core._ocr_layout_cache_path(source)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    items = [{"page": 0, "x0": 1.0, "y0": 2.0, "x1": 3.0, "y1": 4.0, "text": "课程"}]
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": schedule_core.OCR_LAYOUT_CACHE_VERSION,
+                "parser_signature": "old-parser-signature",
+                "items": items,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert schedule_core._extract_pdf_ocr_items(source) == items
+
+
+def test_ocr_layout_cache_uses_ocr_signature(monkeypatch, tmp_path):
+    monkeypatch.setenv("KONGGU_OCR_LAYOUT_CACHE", str(tmp_path))
+    source = _source()
+    cache_path = schedule_core._ocr_layout_cache_path(source)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    items = [{"page": 0, "x0": 1.0, "y0": 2.0, "x1": 3.0, "y1": 4.0, "text": "课程"}]
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": schedule_core.OCR_LAYOUT_CACHE_VERSION,
+                "ocr_signature": schedule_core._ocr_cache_signature(),
+                "items": items,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert schedule_core._extract_pdf_ocr_items(source) == items
+
+
 def test_ocr_text_cache_without_meta_is_treated_as_current_engine(monkeypatch, tmp_path):
     monkeypatch.setenv("KONGGU_OCR_TEXT_CACHE", str(tmp_path))
     calls = []

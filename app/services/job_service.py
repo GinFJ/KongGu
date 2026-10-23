@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 import threading
 from typing import Any, Callable
@@ -20,6 +21,7 @@ from core.signature import build_parser_signature
 
 
 EventSink = Callable[[dict[str, Any]], None]
+LOGGER = logging.getLogger(__name__)
 
 
 class JobCoordinator:
@@ -116,9 +118,11 @@ class JobCoordinator:
         return self.start(payload, background=background)
 
     def _run(self, job_id: str, payload: dict[str, Any], paths: list[str]) -> None:
-        self.store.update_job(job_id, status="running", error="", current=0, total=len(paths))
         final_status: str | None = None
         try:
+            # 首个 running 写入也放进 try：它失败时线程仍要在 finally 释放活动任务，
+            # 否则协调器会永久拒绝后续 job.start。
+            self.store.update_job(job_id, status="running", error="", current=0, total=len(paths))
             file_rows = self.store.get_job(
                 job_id,
                 include_result=False,
@@ -214,8 +218,12 @@ class JobCoordinator:
             # the 650ms UI poll must never see "completed" with files still running.
             save_workflow_result(workflow, self.store, job_id=job_id, request=payload)
             final_status = "completed"
-            self.store.clear_job_source_paths(job_id)
-            self.store.add_audit_event(job_id, "job.completed", {"quality_state": state})
+            try:
+                # 结果已落库：清理与审计失败只能记录，不能把已完成任务降级成 failed。
+                self.store.clear_job_source_paths(job_id)
+                self.store.add_audit_event(job_id, "job.completed", {"quality_state": state})
+            except Exception:
+                LOGGER.warning("job cleanup after completion failed: %s", job_id, exc_info=True)
             self._emit(
                 job_id,
                 "",
@@ -227,42 +235,48 @@ class JobCoordinator:
         except InterruptedError as exc:
             final_status = "cancelled"
             safe_error = safe_error_message(exc)
-            self.store.update_job(job_id, status="cancelled", error=safe_error)
-            for path in paths:
-                self.store.update_file(
-                    job_id,
-                    path,
-                    status="cancelled",
-                    stage="cancelled",
-                    message=safe_error,
-                )
-            self.store.clear_job_source_paths(job_id)
-            self.store.add_audit_event(job_id, "job.cancelled", {"message": safe_error})
+            self._terminal_cleanup(job_id, paths, "cancelled", safe_error)
             self._emit(job_id, "", "cancelled", 0, len(paths), safe_error)
         except Exception as exc:
             final_status = "failed"
             safe_error = safe_error_message(exc)
-            self.store.update_job(job_id, status="failed", error=safe_error)
-            for path in paths:
-                self.store.update_file(
-                    job_id,
-                    path,
-                    status="failed",
-                    stage="failed",
-                    message=safe_error,
-                )
-            self.store.clear_job_source_paths(job_id)
-            self.store.add_audit_event(job_id, "job.failed", {"error": safe_error})
+            self._terminal_cleanup(job_id, paths, "failed", safe_error)
             self._emit(job_id, "", "failed", 0, len(paths), safe_error)
         finally:
+            # 先释放活动任务，再兜底恢复终态：任一步写库失败都不能让协调器永久锁死。
             with self._lock:
                 if self._active_job_id == job_id:
-                    # A cancel() that raced with the terminal write above may have
-                    # persisted "cancelling" after the real terminal state; restore it
-                    # before releasing the coordinator so the job cannot stay stuck.
-                    if final_status is not None:
-                        self.store.update_job(job_id, status=final_status)
                     self._active_job_id = None
+            try:
+                if final_status == "completed":
+                    # 覆盖取消竞态写入的 cancelling 状态与残留 error 文本。
+                    self.store.update_job(job_id, status="completed", error="")
+                elif final_status in {"cancelled", "failed"}:
+                    self.store.update_job(job_id, status=final_status)
+            except Exception:
+                LOGGER.warning("restore terminal state failed: %s", job_id, exc_info=True)
+
+    def _terminal_cleanup(self, job_id: str, paths: list[str], status: str, error: str) -> None:
+        """Best-effort terminal writes: one failing step must not skip the rest."""
+
+        def update_job() -> None:
+            self.store.update_job(job_id, status=status, error=error)
+
+        def update_files() -> None:
+            for path in paths:
+                self.store.update_file(job_id, path, status=status, stage=status, message=error)
+
+        def clear_paths() -> None:
+            self.store.clear_job_source_paths(job_id)
+
+        def audit() -> None:
+            self.store.add_audit_event(job_id, f"job.{status}", {"error": error})
+
+        for step in (update_job, update_files, clear_paths, audit):
+            try:
+                step()
+            except Exception:
+                LOGGER.warning("terminal cleanup step failed: %s", job_id, exc_info=True)
 
     def _emit(
         self,

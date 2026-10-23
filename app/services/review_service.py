@@ -12,7 +12,7 @@ from app.services.result_view_service import build_gui_process_result
 from app.services.workflow_persistence import restore_workflow, snapshot_workflow
 from core.legacy_adapter import build_file_records, build_member_schedules, course_blocks_from_legacy
 from core.models import CorrectionRecord, MemberIdentity, ParseIssue
-from core.quality import evaluate_quality, quality_state
+from core.quality import evaluate_quality, quality_state, schedule_range_violations
 
 
 EDITABLE_BLOCK_FIELDS = {
@@ -31,6 +31,10 @@ DERIVED_ISSUE_CODES = {
     "MEMBER_SCHEDULE_INCOMPLETE",
     "MEMBER_IDENTITY_INCOMPLETE",
     "SCHEDULE_CONFLICT",
+    # 修正可能把课程改出/改回学期范围：这两类问题必须在修正后重算，
+    # 否则门禁可被绕过（改到第 19 周仍 accepted）或永久卡死（改回来仍 blocked）。
+    "WEEK_OUT_OF_SEMESTER",
+    "PRE_TERM_DATE",
 }
 
 
@@ -100,6 +104,10 @@ def apply_correction(
         raise ValueError("未找到要修正的课程块。")
     original_value = target.get(field)
     normalized = _normalize_value(field, new_value)
+    if _values_equivalent(original_value, normalized):
+        # 空操作/重复提交不落库：日历拖拽固定提交周次/星期/节次三个字段，
+        # 若不做比较会在导出“人工修正历史”里堆满 original==new 的噪声记录。
+        return {"ok": True, "correction_id": "", **get_review_payload(store, job_id)}
     _apply_block_value(target, field, normalized)
     signature = str(snapshot.get("parser_signature") or job.get("parser_signature") or "")
     source_hash = str(target.get("source_hash") or "")
@@ -244,6 +252,12 @@ def _normalize_value(field: str, value: Any) -> Any:
     return text
 
 
+def _values_equivalent(left: Any, right: Any) -> bool:
+    return json.dumps(left, ensure_ascii=False, sort_keys=True, default=str) == json.dumps(
+        right, ensure_ascii=False, sort_keys=True, default=str
+    )
+
+
 def _apply_block_value(block: dict[str, Any], field: str, value: Any) -> None:
     block[field] = value
     if field == "periods":
@@ -255,12 +269,15 @@ def _apply_block_value(block: dict[str, Any], field: str, value: Any) -> None:
     elif field in {"name", "department", "role"}:
         current_key = str(block.get("member_key") or "").split("｜")
         suffix = str(block.get("display_suffix") or (current_key[3] if len(current_key) == 4 else ""))
-        block["member_key"] = MemberIdentity(
+        identity = MemberIdentity(
             name=str(block.get("name") or ""),
             department=str(block.get("department") or ""),
             role=str(block.get("role") or ""),
             display_suffix=suffix or None,
-        ).member_key
+        )
+        # 与 CourseBlock.__post_init__ 保持一致：身份不完整时用裸姓名，
+        # 不生成 “姓名｜｜” 这类带空段的复合键。
+        block["member_key"] = str(block.get("name") or "") if identity.confirmation_required else identity.member_key
 
 
 def _refresh_derived(workflow: Any, schedule_core: Any) -> None:
@@ -347,6 +364,37 @@ def _refresh_derived(workflow: Any, schedule_core: Any) -> None:
     retained_issues = [
         issue for issue in previous_process.issues if issue.code not in DERIVED_ISSUE_CODES
     ]
+    # 修正/重放后重新计算学期范围问题，与解析路径共用同一判定。
+    calendar_weeks: set[int] = set()
+    calendar_dates: list[str] = []
+    frame = generation.calendar_df
+    if frame is not None and not frame.empty:
+        if "week" in frame:
+            for value in frame["week"]:
+                try:
+                    calendar_weeks.add(int(value))
+                except (TypeError, ValueError):
+                    continue
+        if "date" in frame:
+            calendar_dates = [str(value) for value in frame["date"] if str(value).strip()]
+    suggestions = {
+        "WEEK_OUT_OF_SEMESTER": "调整学期第 1 周和教学周数后重新生成空课表。",
+        "PRE_TERM_DATE": "确认课表属于当前学期，或调整学期第 1 周日期后重新生成。",
+    }
+    for code, message in schedule_range_violations(
+        blocks=generation.blocks,
+        calendar_weeks=calendar_weeks,
+        earliest_calendar_date=min(calendar_dates) if calendar_dates else None,
+    ):
+        retained_issues.append(
+            ParseIssue(
+                code=code,
+                message=message,
+                severity="error",
+                suggestion=suggestions.get(code, ""),
+                blocks_export=True,
+            )
+        )
     _, issues = evaluate_quality(
         file_records=generation.file_records,
         members=generation.member_schedules,

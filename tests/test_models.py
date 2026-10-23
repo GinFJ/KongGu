@@ -39,6 +39,41 @@ def test_course_block_and_availability_slot_models():
     assert slot.free_member_preview == "李四、王五"
 
 
+def test_block_id_ignores_the_source_file_name():
+    common = dict(
+        name="张三",
+        source_type="中方",
+        week=3,
+        weekday="周一",
+        periods=[1],
+        course="高等数学",
+        source_hash="a" * 64,
+    )
+
+    original = CourseBlock(source_file="张三-中方课表.pdf", **common)
+    renamed = CourseBlock(source_file="张三-中方课表-备份.pdf", **common)
+
+    # 同内容改名后人工修正仍需命中，因此文件名不能参与 block_id。
+    assert original.block_id == renamed.block_id
+
+
+def test_block_id_separates_chinese_and_english_sources():
+    common = dict(
+        name="张三",
+        week=3,
+        weekday="周一",
+        periods=[1],
+        course="课程",
+        source_hash="a" * 64,
+        source_file="sample.pdf",
+    )
+
+    chinese = CourseBlock(source_type="中方", **common)
+    english = CourseBlock(source_type="英方", **common)
+
+    assert chinese.block_id != english.block_id
+
+
 def test_process_result_can_collect_members_and_failures():
     source = PdfSource(
         file_name="办公室-张三-中方课表.pdf",

@@ -162,14 +162,16 @@ class CourseBlock:
             identity = MemberIdentity(self.name, self.department, self.role)
             self.member_key = self.name if identity.confirmation_required else identity.member_key
         if not self.block_id:
+            # 来源用内容哈希 + 方向标识，不能用文件名：同一份文件改名后
+            # 修正必须仍能重放；同一成员中英两侧也必须有不同标识。
             stable = {
                 "member_key": self.member_key,
+                "source_type": self.source_type,
                 "week": self.week,
                 "weekday": self.weekday,
                 "periods": sorted(int(period) for period in self.periods),
                 "course": self.course or "",
                 "source_hash": self.source_hash or "",
-                "source_file": self.source_file or "",
                 "page": self.page,
                 "bbox": self.bbox,
             }

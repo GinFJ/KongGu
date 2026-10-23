@@ -20,7 +20,7 @@ from app.services.result_view_service import build_gui_process_result
 from app.services.state_store import StateStore
 from app.services.workflow_persistence import restore_workflow, snapshot_workflow
 from app.privacy import safe_error_message
-from core.quality import assert_export_allowed, evaluate_quality
+from core.quality import assert_export_allowed, evaluate_quality, schedule_range_violations
 from core.signature import build_parser_signature
 from core.runtime_control import cancellation_scope
 from core.models import ParseIssue, ProcessResult
@@ -257,53 +257,9 @@ def parse_pdf_paths(
     warnings.extend(_inspection_warnings(generation.pdf_inspections))
     errors.extend(generation.errors or [])
     # 解析结果必须落在当前学期范围内：晚于教学周的课程若被静默裁剪，用户会拿到
-    # 一张缺课的空课表；早于学期的课程被钳到第 1 周同样不可信。
-    schedule_range_issues: list[ParseIssue] = []
-    calendar_weeks: set[int] = set()
-    calendar_dates: list[str] = []
-    if generation.calendar_df is not None and not generation.calendar_df.empty:
-        if "week" in generation.calendar_df:
-            for value in generation.calendar_df["week"]:
-                try:
-                    calendar_weeks.add(int(value))
-                except (TypeError, ValueError):
-                    continue
-        if "date" in generation.calendar_df:
-            calendar_dates = [
-                str(value) for value in generation.calendar_df["date"] if str(value).strip()
-            ]
-    detected_weeks = _detected_weeks(generation.blocks)
-    outside_weeks = [week for week in detected_weeks if week not in calendar_weeks]
-    if outside_weeks:
-        schedule_range_issues.append(
-            ParseIssue(
-                code="WEEK_OUT_OF_SEMESTER",
-                message=(
-                    f"课表包含第 {'、'.join(str(week) for week in outside_weeks)} 周课程，"
-                    "超出当前学期教学周设置，正式空课会缺少这些周。"
-                ),
-                severity="error",
-                suggestion="调整学期第 1 周和教学周数后重新生成空课表。",
-                blocks_export=True,
-            )
-        )
-    if calendar_dates:
-        earliest = min(calendar_dates)
-        early_blocks = [
-            block
-            for block in generation.blocks
-            if str(block.get("date") or "") and str(block.get("date")) < earliest
-        ]
-        if early_blocks:
-            schedule_range_issues.append(
-                ParseIssue(
-                    code="PRE_TERM_DATE",
-                    message="课表包含早于当前学期第 1 周的日期，可能是上一学期的课表。",
-                    severity="error",
-                    suggestion="确认课表属于当前学期，或调整学期第 1 周日期后重新生成。",
-                    blocks_export=True,
-                )
-            )
+    # 一张缺课的空课表；早于学期的课程被钳到第 1 周同样不可信。范围检查与修正
+    # 路径共用 core.quality.schedule_range_violations，避免两条路径结论相反。
+    schedule_range_issues = _schedule_range_issues(generation)
     signature = build_parser_signature()
     quality_state, issues = evaluate_quality(
         file_records=process_result.file_records,
@@ -558,6 +514,42 @@ def _detected_weeks(blocks: list[dict[str, Any]]) -> list[int]:
         except Exception:
             continue
     return sorted(weeks)
+
+
+def _schedule_range_issues(generation: Any) -> list[ParseIssue]:
+    """Build out-of-term issues from the parsed blocks and the active calendar."""
+
+    calendar_weeks: set[int] = set()
+    calendar_dates: list[str] = []
+    frame = generation.calendar_df
+    if frame is not None and not frame.empty:
+        if "week" in frame:
+            for value in frame["week"]:
+                try:
+                    calendar_weeks.add(int(value))
+                except (TypeError, ValueError):
+                    continue
+        if "date" in frame:
+            calendar_dates = [str(value) for value in frame["date"] if str(value).strip()]
+    problems = schedule_range_violations(
+        blocks=generation.blocks,
+        calendar_weeks=calendar_weeks,
+        earliest_calendar_date=min(calendar_dates) if calendar_dates else None,
+    )
+    suggestions = {
+        "WEEK_OUT_OF_SEMESTER": "调整学期第 1 周和教学周数后重新生成空课表。",
+        "PRE_TERM_DATE": "确认课表属于当前学期，或调整学期第 1 周日期后重新生成。",
+    }
+    return [
+        ParseIssue(
+            code=code,
+            message=message,
+            severity="error",
+            suggestion=suggestions.get(code, ""),
+            blocks_export=True,
+        )
+        for code, message in problems
+    ]
 
 
 def _export_weeks(default_weeks: list[int], export_week_count: int | None) -> list[int]:

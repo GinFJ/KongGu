@@ -3,8 +3,53 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 
 from .models import FileProcessRecord, MemberSchedule, ParseIssue, QualityState
+
+
+def schedule_range_violations(
+    *,
+    blocks: Iterable[dict[str, Any]],
+    calendar_weeks: Iterable[int],
+    earliest_calendar_date: str | None,
+) -> list[tuple[str, str]]:
+    """Return ``(code, message)`` pairs for blocks outside the current semester.
+
+    Shared by the parse path and the review/replay path so one edit can never
+    pass the gate while the same data fails it after a correction.
+    """
+
+    block_list = list(blocks)
+    weeks = sorted(
+        {int(block["week"]) for block in block_list if block.get("week") is not None}
+    )
+    known_weeks = {int(week) for week in calendar_weeks}
+    problems: list[tuple[str, str]] = []
+    if known_weeks:
+        outside = [week for week in weeks if week not in known_weeks]
+        if outside:
+            problems.append(
+                (
+                    "WEEK_OUT_OF_SEMESTER",
+                    f"课表包含第 {'、'.join(str(week) for week in outside)} 周课程，"
+                    "超出当前学期教学周设置，正式空课会缺少这些周。",
+                )
+            )
+    if earliest_calendar_date:
+        early = [
+            block
+            for block in block_list
+            if str(block.get("date") or "") and str(block["date"]) < earliest_calendar_date
+        ]
+        if early:
+            problems.append(
+                (
+                    "PRE_TERM_DATE",
+                    "课表包含早于当前学期第 1 周的日期，可能是上一学期的课表。",
+                )
+            )
+    return problems
 
 
 def evaluate_quality(

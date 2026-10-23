@@ -53,6 +53,13 @@ def snapshot_workflow(workflow_result: Any) -> dict[str, Any]:
                 "errors": generation.errors,
                 "elapsed_seconds": generation.elapsed_seconds,
                 "pdf_inspections": generation.pdf_inspections,
+                # 版式 profile 只在解析时计算；快照必须带上它，否则恢复后
+                # details 的该字段会从 unknown 漂移成空串。
+                "layout_profiles": {
+                    str(record.source.content_hash or ""): record.layout_profile
+                    for record in generation.file_records
+                    if record.source.content_hash and record.layout_profile
+                },
             },
             "quality_state": process.quality_state,
             "issues": [asdict(issue) for issue in process.issues],
@@ -105,6 +112,15 @@ def restore_workflow(snapshot: dict[str, Any], schedule_core: Any) -> Any:
     course_blocks = course_blocks_from_legacy(blocks)
     members = build_member_schedules(course_blocks, students)
     file_records = build_file_records(sources, course_blocks, list(data.get("errors", [])))
+    layout_profiles = {
+        str(key): str(value)
+        for key, value in (data.get("layout_profiles") or {}).items()
+        if value
+    }
+    for record in file_records:
+        profile = layout_profiles.get(str(record.source.content_hash or ""))
+        if profile:
+            record.layout_profile = profile
     generation = AvailabilityGenerationResult(
         model_sources=sources,
         blocks=blocks,

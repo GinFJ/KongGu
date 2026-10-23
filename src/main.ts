@@ -400,7 +400,8 @@ async function exportExcel() {
       result_ref: result.result_ref,
       target_path: target,
       mode: "classic",
-      export_week_count: state.calendarSettings.teaching_weeks
+      // 用已保存的学期设置：输入框改动未点保存时，导出不能提前套用未生效的周数。
+      export_week_count: savedCalendarSettings.teaching_weeks
     });
     state.statusText = `空课表已导出：${response.path}`;
     state.stage = "exported";
@@ -752,6 +753,11 @@ function bindActions() {
       }
       const chip = remove.closest<HTMLElement>(".sourceChip");
       const commit = () => {
+        // 延迟提交期间用户可能已开始生成：此时改文件列表会清掉正在跑的任务引用。
+        if (state.busy) {
+          setStatus("课表正在处理，完成后再调整文件列表。");
+          return;
+        }
         state.files = state.files.filter((path) => path !== remove.dataset.remove);
         resetForNewInput(state.files.length ? `已选择 ${state.files.length} 份课表` : "请选择课表 PDF");
       };
@@ -1287,3 +1293,10 @@ function delay(ms: number) {
 }
 
 void boot();
+
+// 处理中关闭窗口会让任务中断且结果不可续跑：至少在关闭前给用户一次确认。
+window.addEventListener("beforeunload", (event) => {
+  if (!state.busy) return;
+  event.preventDefault();
+  event.returnValue = "课表仍在处理中，关闭窗口会中断任务。";
+});

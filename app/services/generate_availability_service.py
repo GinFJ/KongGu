@@ -81,6 +81,20 @@ def generate_availability(
     if not blocks:
         raise ValueError("没有识别到可用课表时间块。请确认 PDF 清晰，且文件类型选择为中方或英方。")
 
+    # 来源哈希必须在 CourseBlock 生成之前挂到 legacy block 上：
+    # block_id 用它标识来源，晚挂会让 block_id 只依赖文件名，改名后修正失效。
+    sources_by_key: dict[str, str] = {}
+    for source in model_sources:
+        digest = source.content_hash or ""
+        if digest:
+            sources_by_key[source.file_name] = digest
+            if source.source_path:
+                sources_by_key[source.source_path] = digest
+    for legacy_block in blocks:
+        marker = legacy_block.get("source_file") or legacy_block.get("source")
+        digest = sources_by_key.get(str(marker)) if marker else None
+        if digest:
+            legacy_block["source_hash"] = digest
     course_blocks = course_blocks_from_legacy(blocks)
     for legacy_block, model_block in zip(blocks, course_blocks):
         legacy_block.setdefault("periods", list(model_block.periods))
