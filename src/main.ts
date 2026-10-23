@@ -119,6 +119,23 @@ async function boot() {
   render();
 }
 
+function resetForNewInput(message: string) {
+  // 文件列表变化后旧任务的所有引用与阶段都必须复位，否则界面会残留
+  // “处理完成/处理失败”却没有任何结果。
+  state.result = null;
+  state.review = null;
+  state.jobId = "";
+  state.failedFileCount = 0;
+  state.progress = { current: 0, total: 0 };
+  state.stage = "ready";
+  state.statusText = message;
+  availabilityPage = 0;
+  cancelRequestedJobId = "";
+  completionProbeJobId = "";
+  completedJobId = "";
+  render();
+}
+
 async function chooseFiles() {
   if (state.busy) return;
   const selected = await open({ multiple: true, filters: [{ name: "PDF", extensions: ["pdf"] }] });
@@ -126,13 +143,7 @@ async function chooseFiles() {
   // 取消选择对话框时保留当前结果与任务引用，不能因为空选择把已生成的结果清掉。
   if (!paths.length) return;
   state.files = Array.from(new Set([...state.files, ...paths]));
-  state.result = null;
-  state.failedFileCount = 0;
-  state.review = null;
-  state.jobId = "";
-  availabilityPage = 0;
-  state.statusText = state.files.length ? `已选择 ${state.files.length} 份课表` : state.statusText;
-  render();
+  resetForNewInput(state.files.length ? `已选择 ${state.files.length} 份课表` : "请选择课表 PDF");
 }
 
 async function parseSchedules() {
@@ -168,7 +179,8 @@ async function parseSchedules() {
 }
 
 async function settleCompletedJob(jobId: string) {
-  if (!state.busy || state.jobId !== jobId || completionProbeJobId === jobId || completedJobId === jobId) return;
+  // 终态事件必须能收尾，即使轮询循环已经退出（busy=false）：否则任务完成但结果永远不载入。
+  if (!state.jobId || state.jobId !== jobId || completionProbeJobId === jobId || completedJobId === jobId) return;
   completionProbeJobId = jobId;
   try {
     const response = await client.request<JobResponse>("job.get", { job_id: jobId }, 60_000);
@@ -190,12 +202,8 @@ async function finishCompletedJob(jobId: string, job: JobResponse["job"]) {
   state.failedFileCount = job.files.filter((file) => file.status === "failed").length;
   state.busy = false;
   state.stage = state.result?.can_export ? "completed" : "review";
-  if (state.result?.detected_max_week) {
-    // 检测周数只用于本次结果的展示与导出，不是用户设置。同步已保存基准，
-    // 避免下一次保存设置时被误判为“用户改了学期”而静默清空结果和人工修正。
-    state.calendarSettings.teaching_weeks = state.result.detected_max_week;
-    savedCalendarSettings = { ...state.calendarSettings };
-  }
+  // 检测周数只用于本次展示；不回写学期设置。回写会让“导出周数”被检测值收缩，
+  // 并改变解析签名，使上一轮已做的人工修正失效。
   state.activeTab = state.result?.can_export ? "availability" : "issues";
   state.statusText = state.result
     ? state.result.can_export
@@ -249,9 +257,24 @@ async function reloadReview() {
 }
 
 async function waitForJob(jobId: string) {
+  let consecutiveFailures = 0;
   while (state.jobId === jobId && completedJobId !== jobId) {
-    const response = await client.request<JobResponse>("job.get", { job_id: jobId }, 60_000);
+    let response: JobResponse;
+    try {
+      response = await client.request<JobResponse>("job.get", { job_id: jobId }, 60_000);
+      consecutiveFailures = 0;
+    } catch (error) {
+      consecutiveFailures += 1;
+      // 单次轮询失败（识别功能重启、瞬时写入失败、一次超时）不能终止整个等待：
+      // 任务可能仍在运行，结果也仍会回来。连续失败才判定为中断。
+      if (consecutiveFailures >= 3) throw error;
+      state.statusText = `正在重新连接本地识别功能（第 ${consecutiveFailures} 次重试）`;
+      render();
+      await delay(1000 * consecutiveFailures);
+      continue;
+    }
     const job = response.job;
+    if (state.jobId !== jobId) return;
     state.progress = { current: job.current, total: job.total };
     state.failedFileCount = job.files.filter((file) => file.status === "failed").length;
     if (job.status === "completed") {
@@ -396,9 +419,14 @@ async function repairResources() {
   state.busy = true;
   setStatus("正在检查并修复本地识别功能");
   try {
-    const response = await client.request<{ ok: boolean; status: ResourceStatus; copied: string[] }>("resources.repair");
+    const response = await client.request<{ ok: boolean; status: ResourceStatus; copied: string[]; failed?: unknown[] }>("resources.repair");
     state.resourceStatus = response.status;
-    state.statusText = response.status.ready ? "识别功能已恢复" : resourceRepairStatus(response.status);
+    const failed = Array.isArray(response.failed) ? response.failed.length : 0;
+    state.statusText = response.status.ready
+      ? "识别功能已恢复"
+      : failed
+        ? `识别功能仍有 ${failed} 项资源修复失败，请重试或重新安装空谷`
+        : resourceRepairStatus(response.status);
   } catch (error) {
     state.statusText = formatError(error);
   } finally {
@@ -698,7 +726,8 @@ function bindActions() {
     void saveSettings().catch(() => undefined);
   });
   document.querySelector("#clearFiles")?.addEventListener("click", () => {
-    state.files = []; state.result = null; state.review = null; state.jobId = ""; availabilityPage = 0; render();
+    state.files = [];
+    resetForNewInput("已清空文件列表，请重新导入课表");
   });
   document.querySelector<HTMLInputElement>("#semesterStart")?.addEventListener("change", (event) => {
     state.calendarSettings.semester_start_date = (event.target as HTMLInputElement).value;
@@ -724,11 +753,7 @@ function bindActions() {
       const chip = remove.closest<HTMLElement>(".sourceChip");
       const commit = () => {
         state.files = state.files.filter((path) => path !== remove.dataset.remove);
-        state.result = null;
-        state.review = null;
-        state.jobId = "";
-        availabilityPage = 0;
-        render();
+        resetForNewInput(state.files.length ? `已选择 ${state.files.length} 份课表` : "请选择课表 PDF");
       };
       chip ? commitAfterExit(chip, commit) : commit();
       return;
@@ -948,7 +973,7 @@ function ensureCalendar(result: ParseResult) {
     for (const [field, value] of Object.entries(patch)) {
       await applyReview(block.block_id, field, value, "周课表拖拽修正");
     }
-  }, initialDate);
+  }, initialDate, (message) => setStatus(message));
   calendarKey = key;
   onNextFrame(() => calendar?.updateSize());
 }
@@ -1101,9 +1126,19 @@ function fileChip(path: string) {
 }
 
 function inferKind(path: string) {
-  const text = path.toLowerCase();
-  if (path.includes("英方") || text.includes("english") || text.includes("uk")) return "英方";
-  if (path.includes("中方") || text.includes("chinese")) return "中方";
+  // 与后端 infer_pdf_kind 保持一致：文件名优先，目录只在文件名无标记时作中文回退。
+  // 否则路径里出现 uk / english / Luke 之类的片段会把明确写了“中方”的文件判成英方。
+  const name = path.split(/[\\/]/).pop() || path;
+  const nameKind = inferKindFromText(name, false);
+  if (nameKind) return nameKind;
+  const directory = path.slice(0, Math.max(0, path.length - name.length));
+  return inferKindFromText(directory, true);
+}
+
+function inferKindFromText(text: string, chineseOnly: boolean) {
+  const lowered = text.toLowerCase();
+  if (text.includes("英方") || (!chineseOnly && (lowered.includes("uk") || lowered.includes("english")))) return "英方";
+  if (text.includes("中方") || (!chineseOnly && lowered.includes("chinese"))) return "中方";
   return "";
 }
 

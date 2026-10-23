@@ -18,7 +18,8 @@ export function mountCalendar(
   courses: CourseRow[],
   settings: CalendarSettings,
   onEdit: (block: CourseRow, patch: Partial<CourseRow>) => Promise<void>,
-  initialDate?: Date
+  initialDate?: Date,
+  onError?: (message: string) => void
 ) {
   const firstWeek = courses[0]?.week || 1;
   const firstDate = dateFor(settings.semester_start_date, firstWeek, "周一");
@@ -54,8 +55,8 @@ export function mountCalendar(
         extendedProps: { block: course }
       }];
     }),
-    eventDrop: (arg) => void handleChange(arg, settings, onEdit),
-    eventResize: (arg) => void handleChange(arg, settings, onEdit)
+    eventDrop: (arg) => void handleChange(arg, settings, onEdit, onError),
+    eventResize: (arg) => void handleChange(arg, settings, onEdit, onError)
   });
   calendar.render();
   return calendar;
@@ -64,29 +65,33 @@ export function mountCalendar(
 async function handleChange(
   arg: EventDropArg | EventResizeDoneArg,
   settings: CalendarSettings,
-  onEdit: (block: CourseRow, patch: Partial<CourseRow>) => Promise<void>
+  onEdit: (block: CourseRow, patch: Partial<CourseRow>) => Promise<void>,
+  onError?: (message: string) => void
 ) {
   const start = arg.event.start;
   const end = arg.event.end;
   const block = arg.event.extendedProps.block as CourseRow;
   if (!start || !end || start.toDateString() !== end.toDateString()) {
+    onError?.("周课表拖拽只能在同一天内移动；跨天调整请使用“原文核对”。");
     revertSafely(arg);
     return;
   }
   const weekAndDay = weekAndDayFor(settings.semester_start_date, start);
   const periods = periodsFor(start, end);
-  if (
-    !weekAndDay ||
-    weekAndDay.week < 1 ||
-    weekAndDay.week > settings.teaching_weeks ||
-    !periods.length
-  ) {
+  if (!weekAndDay || weekAndDay.week < 1 || weekAndDay.week > settings.teaching_weeks) {
+    onError?.("目标日期超出当前学期教学周，请先在设置里调整第 1 周或周数。");
+    revertSafely(arg);
+    return;
+  }
+  if (!periods.length) {
+    onError?.("拖拽位置无法吸附到具体节次；请拖到节次网格上，或使用“原文核对”修改周次和节次。");
     revertSafely(arg);
     return;
   }
   try {
     await onEdit(block, { week: weekAndDay.week, weekday: weekAndDay.weekday, periods });
   } catch {
+    // 保存失败的原因由上层状态栏统一显示，这里只恢复位置。
     revertSafely(arg);
   }
 }
@@ -99,18 +104,43 @@ function revertSafely(arg: EventDropArg | EventResizeDoneArg) {
   }
 }
 
+const SNAP_TOLERANCE_MINUTES = 15;
+
 function periodsFor(start: Date, end: Date) {
-  const startText = timeText(start);
-  const endText = timeText(end);
   const ordered = Object.entries(periodTimes).map(([period, time]) => ({
     period: Number(period),
     start: time[0],
     end: time[1]
   })).sort((a, b) => a.start.localeCompare(b.start));
-  const first = ordered.findIndex((item) => item.start === startText);
-  const last = ordered.findIndex((item) => item.end === endText);
-  if (first < 0 || last < first) return [];
+  // 拖拽/缩放的落点很少正好对齐节次边界（5 分钟粒度），吸附到最近的合法边界，
+  // 避免用户看到“拖了没反应”却没有解释。
+  const first = nearestSlotIndex(ordered, timeText(start), "start");
+  const last = nearestSlotIndex(ordered, timeText(end), "end");
+  if (first < 0 || last < 0 || last < first) return [];
   return ordered.slice(first, last + 1).map((item) => item.period);
+}
+
+function nearestSlotIndex(
+  ordered: Array<{ period: number; start: string; end: string }>,
+  text: string,
+  edge: "start" | "end"
+) {
+  const target = minutesOf(text);
+  let best = -1;
+  let bestDelta = Number.POSITIVE_INFINITY;
+  ordered.forEach((item, index) => {
+    const delta = Math.abs(minutesOf(edge === "start" ? item.start : item.end) - target);
+    if (delta <= SNAP_TOLERANCE_MINUTES && delta < bestDelta) {
+      bestDelta = delta;
+      best = index;
+    }
+  });
+  return best;
+}
+
+function minutesOf(text: string) {
+  const [hours, minutes] = text.split(":").map(Number);
+  return hours * 60 + minutes;
 }
 
 function timeText(value: Date) {

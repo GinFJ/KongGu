@@ -114,6 +114,19 @@ export async function mountReview(
     if (destroyed) return;
     const meta = root.querySelector<HTMLElement>("#reviewSourceMeta");
     if (meta) meta.textContent = "原文暂时无法载入，请确认文件仍在这台电脑上";
+    // 旧页图像不能继续留在画布上：否则下拉显示新文件、画布还是上一个来源。
+    const canvas = root.querySelector<HTMLCanvasElement>("#pdfCanvas");
+    if (canvas) {
+      const context = canvas.getContext("2d");
+      context?.clearRect(0, 0, canvas.width, canvas.height);
+      canvas.width = 0;
+      canvas.height = 0;
+      canvas.style.width = "0px";
+      canvas.style.height = "0px";
+    }
+    viewportMetrics = { width: 0, height: 0, rotation: 0 };
+    const label = root.querySelector<HTMLElement>("#pageLabel");
+    if (label) label.textContent = "第 1 页";
   }
 
   function pageLabelFailure() {
@@ -387,6 +400,8 @@ export async function mountReview(
     currentPage = Math.max(1, Number(activeBlock?.page ?? 0) + 1);
     blockOptionsKey = "";
     fieldsKey = "";
+    renderSources();
+    renderInspection();
     renderBlockOptions();
     renderFields();
     void loadSource(sourceSelect.value, true).catch(reportLoadFailure);
@@ -396,11 +411,19 @@ export async function mountReview(
   blockSelect.addEventListener("change", () => selectBlock(blockSelect.value));
 
   async function applyCorrection() {
-    if (!activeBlock) return;
+    // 保存期间必须锁定目标块：首个字段落库会触发上层重渲染，若用户在 await
+    // 期间切换课程记录或来源，剩余字段会写到另一个块甚至另一个成员。
+    const targetBlock = activeBlock;
+    if (!targetBlock) return;
+    const blockId = targetBlock.block_id;
     const button = root.querySelector<HTMLButtonElement>("#applyCorrection");
     // 逐字段保存期间禁用按钮，避免重复点击写出多条相同的人工修正记录。
     if (button?.disabled) return;
     if (button) button.disabled = true;
+    const lockedSelects = [sourceSelect, blockSelect];
+    lockedSelects.forEach((select) => {
+      select.disabled = true;
+    });
     const reason = valueOf("#editReason");
     const updates: Array<[string, unknown]> = [
       ["course", valueOf("#editCourse")],
@@ -409,22 +432,26 @@ export async function mountReview(
       ["periods", valueOf("#editPeriods").split(/[,，\s]+/).filter(Boolean).map(Number)]
     ];
     const original: Record<string, unknown> = {
-      course: activeBlock.course || "",
-      week: activeBlock.week,
-      weekday: activeBlock.weekday,
-      periods: activeBlock.periods || []
+      course: targetBlock.course || "",
+      week: targetBlock.week,
+      weekday: targetBlock.weekday,
+      periods: targetBlock.periods || []
     };
     try {
       for (const [field, value] of updates) {
         if (JSON.stringify(original[field]) !== JSON.stringify(value)) {
-          await actions.apply(activeBlock.block_id, field, value, reason);
+          await actions.apply(blockId, field, value, reason);
         }
       }
-    } catch {
-      // 失败原因由上层状态栏显示，这里只避免未处理的 Promise rejection。
+    } catch (error) {
+      // 业务错误已由上层状态栏提示；内部类型错误必须暴露，不能把剩余字段静默丢掉。
+      if (error instanceof TypeError) throw error;
     } finally {
       const current = root.querySelector<HTMLButtonElement>("#applyCorrection");
       if (current) current.disabled = false;
+      lockedSelects.forEach((select) => {
+        select.disabled = false;
+      });
     }
   }
 
@@ -471,6 +498,9 @@ export async function mountReview(
   }
 
   async function destroyPdf() {
+    // 必须同时清掉 loadedPath：否则加载新文件失败后仍指向旧路径，
+    // 再切回旧文件会被误判为“已加载”，翻页与缩放会永久失效。
+    loadedPath = "";
     const current = pdf;
     pdf = null;
     if (!current) return;

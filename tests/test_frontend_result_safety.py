@@ -45,8 +45,8 @@ def test_member_schedule_choices_clear_stale_job_reference() -> None:
     main = _source("src/main.ts")
     choose = _function_body(main, "async function chooseFiles()", "async function parseSchedules()")
 
-    assert 'state.jobId = "";' in choose
-    assert "availabilityPage = 0;" in choose
+    assert "resetForNewInput(" in choose
+    assert "availabilityPage = 0;" in main
 
 
 def test_worker_restart_replaces_dead_retry_path_with_rebatch_guidance() -> None:
@@ -60,6 +60,15 @@ def test_worker_restart_replaces_dead_retry_path_with_rebatch_guidance() -> None
     assert 'state.jobId = "";' in restart
     assert "state.files" not in restart
     assert "请点击" in retry
+
+
+def test_detected_max_week_does_not_overwrite_saved_semester_settings() -> None:
+    main = _source("src/main.ts")
+    finish = _function_body(main, "async function finishCompletedJob(", "function showReviewLoadFailure(")
+
+    # 检测周数不能写回设置：否则导出周次被收缩、解析签名漂移、已做修正失效。
+    assert "state.result.detected_max_week" not in finish
+    assert "savedCalendarSettings = { ...state.calendarSettings }" not in finish
 
 
 def test_saved_correction_does_not_report_failure_or_roll_back_on_refresh_error() -> None:
@@ -78,7 +87,8 @@ def test_review_and_settings_failures_surface_to_the_user() -> None:
     assert "修正没有保存" in main
     assert "学期设置保存失败" in main
     assert "saveSettings().catch(() => undefined)" in main
-    assert "// 失败原因由上层状态栏显示，这里只避免未处理的 Promise rejection。" in review
+    # 业务错误只提示不重抛；内部类型错误必须暴露，不能被空 catch 静默吞掉。
+    assert "if (error instanceof TypeError) throw error;" in review
 
 
 def test_correction_refreshes_stage_with_result_export_state() -> None:

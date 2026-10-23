@@ -50,8 +50,8 @@ def test_removing_files_while_busy_cannot_leave_ui_without_actions() -> None:
 
     assert "if (state.busy) {" in remove_block
     assert "正在处理课表，完成后再调整文件。" in remove_block
-    # 处理中必须先拦截，不能先清 jobId（否则取消与重试入口同时失效）。
-    assert remove_block.index("if (state.busy) {") < remove_block.index('state.jobId = "";')
+    # 处理中必须先拦截；文件列表变化统一走复位函数，不能留下旧任务引用或旧阶段。
+    assert remove_block.index("if (state.busy) {") < remove_block.index("resetForNewInput(")
 
 
 def test_cancelled_file_dialog_keeps_current_result() -> None:
@@ -59,7 +59,7 @@ def test_cancelled_file_dialog_keeps_current_result() -> None:
     choose = _section(main, "async function chooseFiles()", "async function parseSchedules()")
 
     assert "if (!paths.length) return;" in choose
-    assert choose.index("if (!paths.length) return;") < choose.index("state.result = null;")
+    assert choose.index("if (!paths.length) return;") < choose.index("resetForNewInput(")
 
 
 def test_new_parse_drops_old_job_and_retry_preserves_it_until_started() -> None:
@@ -255,7 +255,9 @@ def test_review_render_failures_stay_visible_and_do_not_escape() -> None:
 
     assert review.count("pageLabelFailure();") >= 2
     assert "第 ${currentPage} 页暂时无法显示" in review
-    assert "throw error;" not in review
+    # 只允许内部类型错误重抛；业务错误必须留在本地提示，不得逃逸成未处理 rejection。
+    assert review.count("throw error;") == 1
+    assert "if (error instanceof TypeError) throw error;" in review
 
 
 def test_review_load_failure_is_reported_in_viewer() -> None:
@@ -289,5 +291,6 @@ def test_calendar_reverts_are_guarded_when_view_is_rebuilt() -> None:
     calendar = _source("src/calendarView.ts")
 
     assert "function revertSafely(arg: EventDropArg | EventResizeDoneArg)" in calendar
-    assert calendar.count("revertSafely(arg)") == 3
+    # 跨天、超出教学周、无法吸附节次、保存失败都会回滚，且回滚本身受保护。
+    assert calendar.count("revertSafely(arg)") >= 4
     assert calendar.count("arg.revert();") == 1
