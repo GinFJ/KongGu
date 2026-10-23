@@ -4,8 +4,9 @@ import json
 from pathlib import Path
 
 from app.services.desktop_workflow import load_workflow_result
-from app.services.review_service import apply_correction, get_review_payload
+from app.services.review_service import apply_correction, apply_saved_corrections, get_review_payload
 from app.services.state_store import StateStore
+from app.services.workflow_persistence import restore_workflow
 from core import schedule_core
 
 
@@ -111,6 +112,7 @@ def test_corrections_recompute_periods_weeks_members_and_quality(tmp_path: Path)
     assert set(workflow.generation_result.students) == {
         member_key, "成员乙｜办公室｜干事"
     }
+    assert workflow.generation_result.blocks[0]["name"] == "成员乙"
     assert workflow.process_result.quality_state == "blocked"
     assert any(issue.code == "MEMBER_SCHEDULE_INCOMPLETE" for issue in workflow.process_result.issues)
     assert any(issue["code"] == "MEMBER_SCHEDULE_INCOMPLETE" for issue in store.get_job(job_id)["issues"])
@@ -121,3 +123,52 @@ def test_review_paths_match_content_hash_for_same_named_files(tmp_path: Path):
 
     sources = get_review_payload(store, job_id)["sources"]
     assert [source["source_path"] for source in sources] == paths
+
+
+def test_name_correction_updates_member_key_and_blocks_incomplete_pair(tmp_path: Path):
+    store, job_id, _, _ = _saved_job(tmp_path)
+    apply_correction(
+        store=store,
+        schedule_core=schedule_core,
+        job_id=job_id,
+        block_id="block-0",
+        field="name",
+        new_value="成员乙",
+        reason="原文核对",
+        operator_id="测试者",
+    )
+
+    workflow = load_workflow_result(job_id, store, schedule_core)
+    changed = workflow.generation_result.blocks[0]
+    assert (changed["name"], changed["member_key"]) == ("成员乙", "成员乙｜办公室｜干事")
+    assert workflow.generation_result.occupancy[(1, "周一", 1)] == {"成员乙｜办公室｜干事"}
+    assert workflow.process_result.quality_state == "blocked"
+
+
+def test_restored_detail_dates_follow_saved_calendar(tmp_path: Path):
+    store, job_id, _, _ = _saved_job(tmp_path)
+    workflow = load_workflow_result(job_id, store, schedule_core)
+    matching = workflow.generation_result.all_slot_df
+    matching = matching[(matching["week"] == 1) & (matching["weekday"] == "周一")]
+    assert set(matching["date"]) == {"2026-09-07"}
+
+
+def test_saved_name_correction_replays_with_consistent_identity(tmp_path: Path):
+    store, job_id, _, _ = _saved_job(tmp_path)
+    original_snapshot = store.get_job(job_id)["result"]
+    apply_correction(
+        store=store,
+        schedule_core=schedule_core,
+        job_id=job_id,
+        block_id="block-0",
+        field="name",
+        new_value="成员乙",
+        reason="原文核对",
+        operator_id="测试者",
+    )
+
+    fresh_workflow = restore_workflow(original_snapshot, schedule_core)
+    assert apply_saved_corrections(fresh_workflow, store, schedule_core) == 1
+    changed = fresh_workflow.generation_result.blocks[0]
+    assert (changed["name"], changed["member_key"]) == ("成员乙", "成员乙｜办公室｜干事")
+    assert fresh_workflow.process_result.quality_state == "blocked"

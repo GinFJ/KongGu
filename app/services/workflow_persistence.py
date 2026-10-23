@@ -7,7 +7,7 @@ from typing import Any
 
 import pandas as pd
 
-from app.services.availability_preview_service import build_availability_preview
+from app.services.availability_preview_service import align_slot_dates, build_availability_preview
 from app.services.desktop_serialization import json_safe
 from app.services.generate_availability_service import AvailabilityGenerationResult
 from app.services.result_view_service import build_gui_process_result
@@ -92,6 +92,7 @@ def restore_workflow(snapshot: dict[str, Any], schedule_core: Any) -> Any:
     timetable, _ = schedule_core.validate_timetable(timetable)
     periods = [int(period) for period in timetable["period"]]
     all_slot_df = schedule_core.build_slot_table(occupancy, students, weeks, WEEKDAYS, periods)
+    all_slot_df = align_slot_dates(all_slot_df, calendar_df)
     blocks_df = schedule_core.blocks_to_dataframe(blocks)
     preview = build_availability_preview(
         occupancy=occupancy,

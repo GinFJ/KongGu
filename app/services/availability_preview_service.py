@@ -110,6 +110,20 @@ def build_date_map(calendar_df: pd.DataFrame) -> dict[tuple[int, str], str]:
     return mapping
 
 
+def align_slot_dates(all_slot_df: pd.DataFrame, calendar_df: pd.DataFrame) -> pd.DataFrame:
+    """Use the parsed calendar for detail rows, just as the preview does."""
+
+    if all_slot_df.empty or not {"week", "weekday", "date"}.issubset(all_slot_df.columns):
+        return all_slot_df
+    date_map = build_date_map(calendar_df)
+    aligned = all_slot_df.copy()
+    aligned["date"] = [
+        date_map.get((int(row.week), str(row.weekday)), "")
+        for row in aligned.itertuples(index=False)
+    ]
+    return aligned
+
+
 def build_period_order(timetable_df: pd.DataFrame) -> list[int]:
     """Return periods in the timetable's display order."""
 

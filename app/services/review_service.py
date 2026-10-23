@@ -7,11 +7,11 @@ import json
 from typing import Any
 
 from app.services.state_store import StateStore, utc_now
-from app.services.availability_preview_service import build_availability_preview, build_date_map
+from app.services.availability_preview_service import align_slot_dates, build_availability_preview, build_date_map
 from app.services.result_view_service import build_gui_process_result
 from app.services.workflow_persistence import restore_workflow, snapshot_workflow
 from core.legacy_adapter import build_file_records, build_member_schedules, course_blocks_from_legacy
-from core.models import CorrectionRecord, ParseIssue
+from core.models import CorrectionRecord, MemberIdentity, ParseIssue
 from core.quality import evaluate_quality, quality_state
 
 
@@ -99,9 +99,7 @@ def apply_correction(
         raise ValueError("未找到要修正的课程块。")
     original_value = target.get(field)
     normalized = _normalize_value(field, new_value)
-    target[field] = normalized
-    if field == "periods":
-        target["period"] = normalized[0] if normalized else None
+    _apply_block_value(target, field, normalized)
     signature = str(snapshot.get("parser_signature") or job.get("parser_signature") or "")
     source_hash = str(target.get("source_hash") or "")
     correction = CorrectionRecord(
@@ -201,9 +199,7 @@ def apply_saved_corrections(workflow: Any, store: StateStore, schedule_core: Any
             )
             if target is None or correction["field"] not in EDITABLE_BLOCK_FIELDS:
                 continue
-            target[correction["field"]] = correction["new_value"]
-            if correction["field"] == "periods":
-                target["period"] = correction["new_value"][0] if correction["new_value"] else None
+            _apply_block_value(target, correction["field"], correction["new_value"])
             workflow.process_result.corrections.append(
                 CorrectionRecord(
                     source_hash=correction["source_hash"],
@@ -242,7 +238,29 @@ def _normalize_value(field: str, value: Any) -> Any:
         if not periods or not set(periods).issubset(allowed):
             raise ValueError("节次必须吸附到已配置的合法节次。")
         return periods
-    return str(value).strip()
+    text = str(value).strip()
+    if field == "member_key" and (len(text.split("｜")) not in {3, 4} or not all(text.split("｜"))):
+        raise ValueError("成员标识应包含姓名、部门和角色。")
+    return text
+
+
+def _apply_block_value(block: dict[str, Any], field: str, value: Any) -> None:
+    block[field] = value
+    if field == "periods":
+        block["period"] = value[0] if value else None
+    elif field == "member_key":
+        parts = value.split("｜")
+        block["name"], block["department"], block["role"] = parts[:3]
+        block["display_suffix"] = parts[3] if len(parts) == 4 else ""
+    elif field in {"name", "department", "role"}:
+        current_key = str(block.get("member_key") or "").split("｜")
+        suffix = str(block.get("display_suffix") or (current_key[3] if len(current_key) == 4 else ""))
+        block["member_key"] = MemberIdentity(
+            name=str(block.get("name") or ""),
+            department=str(block.get("department") or ""),
+            role=str(block.get("role") or ""),
+            display_suffix=suffix or None,
+        ).member_key
 
 
 def _refresh_derived(workflow: Any, schedule_core: Any) -> None:
@@ -280,12 +298,15 @@ def _refresh_derived(workflow: Any, schedule_core: Any) -> None:
     timetable = schedule_core.default_timetable()
     timetable, _ = schedule_core.validate_timetable(timetable)
     periods = [int(period) for period in timetable["period"]]
-    generation.all_slot_df = schedule_core.build_slot_table(
-        generation.occupancy,
-        generation.students,
-        generation.weeks,
-        ["周一", "周二", "周三", "周四", "周五", "周六", "周日"],
-        periods,
+    generation.all_slot_df = align_slot_dates(
+        schedule_core.build_slot_table(
+            generation.occupancy,
+            generation.students,
+            generation.weeks,
+            ["周一", "周二", "周三", "周四", "周五", "周六", "周日"],
+            periods,
+        ),
+        generation.calendar_df,
     )
     preview = build_availability_preview(
         occupancy=generation.occupancy,

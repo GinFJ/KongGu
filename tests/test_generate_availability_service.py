@@ -108,3 +108,21 @@ def test_generate_availability_discovers_sources_from_root_dir():
     assert core.loaded_root == "D:/fake-root"
     assert result.model_sources[0].file_name == "办公室-张三-中方课表.pdf"
     assert result.occupancy[(3, "周一", 1)] == {"张三"}
+
+
+def test_generated_detail_dates_follow_parsed_calendar():
+    class WrongSlotDateCore(FakeScheduleCore):
+        def build_slot_table(self, occupancy, students, weeks, weekdays, periods):
+            table = super().build_slot_table(occupancy, students, weeks, weekdays, periods)
+            table["date"] = "2026-10-05"
+            return table
+
+    source = PdfSource("办公室-张三-中方课表.pdf", "中方", "D:/fake.pdf", bytes_data=b"pdf")
+    result = generate_availability(
+        schedule_core=WrongSlotDateCore(),
+        selected_sources=[source],
+        root_dir="",
+        weekdays=["周一"],
+    )
+
+    assert result.all_slot_df.iloc[0]["date"] == "2026-03-16"

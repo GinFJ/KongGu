@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
+from app.services.availability_preview_service import align_slot_dates
 from core.legacy_adapter import (
     build_file_records,
     build_member_schedules,
@@ -102,7 +103,10 @@ def generate_availability(
     students = sorted({str(block.get("member_key") or block["name"]) for block in blocks})
     weeks = _weeks_from_calendar(calendar_df) or sorted({int(block["week"]) for block in blocks if block.get("week") is not None})
     periods = _periods_from_timetable(schedule_core)
-    all_slot_df = schedule_core.build_slot_table(occupancy, students, weeks, weekdays, periods)
+    all_slot_df = align_slot_dates(
+        schedule_core.build_slot_table(occupancy, students, weeks, weekdays, periods),
+        calendar_df,
+    )
     blocks_df = schedule_core.blocks_to_dataframe(blocks)
     member_schedules = build_member_schedules(course_blocks, students)
     file_records = build_file_records(model_sources, course_blocks, errors or [])

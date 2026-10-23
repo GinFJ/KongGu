@@ -98,9 +98,17 @@ class JobCoordinator:
         return {"ok": True, "job_id": job_id, "status": "cancelling"}
 
     def retry_failed(self, job_id: str, *, background: bool = True) -> dict[str, Any]:
-        paths = self.store.failed_paths(job_id)
-        if not paths:
+        if not self.store.failed_paths(job_id):
+            job = self.store.get_job(job_id, include_result=False)
+            if str((job or {}).get("status") or "") in {"interrupted", "failed"}:
+                # Source paths are intentionally dropped when the worker restarts
+                # (privacy), so only a batch still held by this process can retry.
+                raise ValueError(
+                    "本地识别功能重启后没有保留本批课表的文件路径，无法自动重试；"
+                    "请重新选择这批课表再生成。"
+                )
             raise ValueError("没有需要重新处理的失败或中断文件。")
+        paths = self.store.source_paths_for_job(job_id)
         original = self.store.get_job(job_id, include_result=False)
         payload = dict((original or {}).get("request") or {})
         payload["paths"] = paths

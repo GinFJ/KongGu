@@ -124,6 +124,48 @@ def test_schedule_core_export_only_shows_member_names():
     assert all("办公室" not in value and "部长" not in value for value in values)
 
 
+def test_schedule_core_export_keeps_same_name_members_apart():
+    students = ["张三｜活动部｜干事", "张三｜办公室｜干事", "李四｜办公室｜干事"]
+    occupancy = {(6, "周一", 1): {"张三｜活动部｜干事"}}
+    data = schedule_core.build_empty_schedule_excel_bytes(
+        occupancy=occupancy,
+        students=students,
+        weeks=[6],
+        calendar_df=pd.DataFrame(),
+        timetable_df=schedule_core.default_timetable(),
+        blocks_df=pd.DataFrame(
+            [
+                {"name": "张三", "member_key": "张三｜活动部｜干事", "course": "课程A"},
+                {"name": "张三", "member_key": "张三｜办公室｜干事", "course": "课程B"},
+            ]
+        ),
+        all_slot_df=schedule_core.build_slot_table(
+            occupancy, students, [6], schedule_core.WEEKDAYS, [1, 2]
+        ),
+    )
+
+    workbook = load_workbook(BytesIO(data))
+
+    detail_rows = list(workbook["空课明细"].iter_rows(values_only=True))
+    header = list(detail_rows[0])
+    monday_first_period = next(
+        row for row in detail_rows[1:] if row[header.index("星期")] == "周一" and row[header.index("节次")] == 1
+    )
+    assert monday_first_period[header.index("空闲人数")] == 2
+    free_members = str(monday_first_period[header.index("空闲人员")])
+    assert "张三（活动部）" not in free_members
+    assert "张三（办公室）" in free_members
+    assert "李四" in free_members
+    assert str(monday_first_period[header.index("有课人员")]) == "张三（活动部）"
+
+    week_sheet = workbook["第6周"]
+    assert week_sheet["B5"].value == "张三（办公室），李四"
+
+    member_sheet = workbook["成员完整性检查"]
+    member_names = [row[0] for row in member_sheet.iter_rows(min_row=2, values_only=True) if row[0]]
+    assert member_names == ["张三（活动部）", "张三（办公室）", "李四"]
+
+
 def test_schedule_core_export_neutralizes_formula_like_imported_text():
     data = schedule_core.build_empty_schedule_excel_bytes(
         occupancy={(6, "周一", 1): {"=HYPERLINK(\"https://example.invalid\")"}},

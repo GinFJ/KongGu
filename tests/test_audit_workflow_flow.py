@@ -378,7 +378,27 @@ def test_job_progress_normalizes_mixed_parser_progress_semantics(tmp_path: Path)
     ]
 
 
-def test_retry_failed_keeps_explicit_kind_and_only_failed_paths(tmp_path: Path):
+def test_retry_after_worker_restart_explains_paths_are_gone(tmp_path: Path):
+    pdf = tmp_path / "张三-中方课表.pdf"
+    pdf.write_bytes(_pdf_bytes())
+
+    db_path = tmp_path / "state.sqlite3"
+    store = StateStore(db_path)
+    job_id = store.create_job({"paths": [str(pdf)]}, "sig", [str(pdf)])
+    store.mark_running_jobs_interrupted()
+
+    # A worker restart builds a fresh StateStore; the source paths stay out of the
+    # database by design, so the retry entry must explain the situation instead of
+    # claiming that no failed file exists.
+    restarted = StateStore(db_path)
+    coordinator = JobCoordinator(RecordingCore(), restarted)
+    assert restarted.failed_paths(job_id) == []
+
+    with pytest.raises(ValueError, match="没有保留本批课表的文件路径"):
+        coordinator.retry_failed(job_id)
+
+
+def test_retry_failed_reprocesses_the_original_batch_with_explicit_kind(tmp_path: Path):
     good = tmp_path / "张三-中方课表.pdf"
     good.write_bytes(_pdf_bytes())
     missing = tmp_path / "李四-英方课表.pdf"
@@ -392,13 +412,20 @@ def test_retry_failed_keeps_explicit_kind_and_only_failed_paths(tmp_path: Path):
     failed_paths = store.failed_paths(started["job_id"])
     assert failed_paths == [str(missing)]
 
+    missing.write_bytes(_pdf_bytes())
     retried = coordinator.retry_failed(started["job_id"], background=False)
     retried_job = store.get_job(retried["job_id"])
     assert retried_job["request"]["explicit_kind"] == "中方"
     assert retried_job["request"]["retry_of"] == started["job_id"]
-    assert retried_job["request"]["file_count"] == 1
-    assert retried_job["status"] == "failed"
-    assert [row["file_name"] for row in retried_job["files"]] == ["李四-英方课表.pdf"]
+    assert retried_job["request"]["file_count"] == 2
+    assert retried_job["status"] == "completed"
+    assert [row["file_name"] for row in retried_job["files"]] == [
+        "张三-中方课表.pdf", "李四-英方课表.pdf"
+    ]
+    assert all(row["status"] == "completed" for row in retried_job["files"])
+    assert {source["file_name"] for source in retried_job["result"]["generation"]["sources"]} == {
+        "张三-中方课表.pdf", "李四-英方课表.pdf"
+    }
 
 
 def test_safe_error_message_redacts_absolute_paths_only():

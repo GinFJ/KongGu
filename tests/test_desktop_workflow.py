@@ -2,6 +2,7 @@ from pathlib import Path
 
 import fitz
 import pandas as pd
+import pytest
 
 from app.services.desktop_workflow import export_excel, parse_pdf_paths, serialize_workflow_result
 from app.services.workflow_persistence import snapshot_workflow
@@ -97,6 +98,26 @@ def test_desktop_workflow_parse_serializes_and_exports(tmp_path: Path):
     assert exported.read_bytes() == b"xlsx"
 
 
+def test_desktop_workflow_blocks_raster_page_with_clipped_timetable(tmp_path: Path, monkeypatch):
+    pdf = tmp_path / "成员甲-中方课表.pdf"
+    pdf.write_bytes(_minimal_pdf_bytes())
+
+    class RasterClipCore(FakeDesktopCore):
+        def chinese_image_clipped_pages(self, source):
+            assert source["path"] == str(pdf)
+            return [1]
+
+    monkeypatch.setattr(
+        "app.services.desktop_workflow.inspect_pdf_sources",
+        lambda sources: [{"status": "ready", "page_count": 1, "pages_needing_ocr": [1], "clipped_pages": []}],
+    )
+
+    result = parse_pdf_paths(schedule_core=RasterClipCore(), paths=[str(pdf)])
+
+    assert result.process_result.quality_state == "blocked"
+    assert "PDF_PAGE_CONTENT_CLIPPED" in {issue.code for issue in result.process_result.issues}
+
+
 def test_desktop_workflow_export_can_override_week_count(tmp_path: Path):
     pdf = tmp_path / "张三-中方课表.pdf"
     pdf.write_bytes(_minimal_pdf_bytes())
@@ -111,6 +132,19 @@ def test_desktop_workflow_export_can_override_week_count(tmp_path: Path):
     )
 
     assert core.export_kwargs["weeks"] == [1, 2]
+
+
+def test_export_rejects_result_after_calendar_or_parser_settings_change(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("KONGGU_SEMESTER_START_DATE", "2026-03-02")
+    pdf = tmp_path / "张三-中方课表.pdf"
+    pdf.write_bytes(_minimal_pdf_bytes())
+    core = FakeDesktopCore()
+    result = parse_pdf_paths(schedule_core=core, paths=[str(pdf)])
+    monkeypatch.setenv("KONGGU_SEMESTER_START_DATE", "2026-10-05")
+
+    with pytest.raises(ValueError, match="重新生成空课表"):
+        export_excel(schedule_core=core, workflow_result=result, target_path=str(tmp_path / "stale.xlsx"))
+    assert not (tmp_path / "stale.xlsx").exists()
 
 
 def test_legacy_single_period_is_visible_in_review(tmp_path: Path):

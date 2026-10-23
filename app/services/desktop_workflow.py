@@ -117,6 +117,45 @@ def parse_pdf_paths(
     for source, inspection in zip(add_result.added, pdf_inspections):
         if inspection.get("status") == "ready":
             ready_sources.append(source)
+            if inspection.get("clipped_pages"):
+                inspection_issues.append(
+                    ParseIssue(
+                        code="PDF_PAGE_CONTENT_CLIPPED",
+                        message="课表内容超出 PDF 页面边界，页面外课程不可见，不能判为空闲。",
+                        severity="error",
+                        source_file=source.file_name,
+                        source_hash=source.content_hash,
+                        suggestion="重新导出能完整显示全部课表列和课程的 PDF。",
+                        blocks_export=True,
+                    )
+                )
+            if source.kind == "中方" and inspection.get("pages_needing_ocr"):
+                inspection_issues.append(
+                    ParseIssue(
+                        code="CHINESE_IMAGE_PAGE_REVIEW",
+                        message="中方课表含图片页，需核对表格四边、全部日期和课程是否完整显示。",
+                        severity="warning",
+                        source_file=source.file_name,
+                        source_hash=source.content_hash,
+                        suggestion="在原文核对中查看整页；若有裁切，请重新导出完整课表。",
+                        blocks_export=True,
+                    )
+                )
+            midday_check = getattr(schedule_core, "english_unmapped_midday_cell_count", None)
+            if source.kind == "英方" and callable(midday_check):
+                count = midday_check({"path": source.source_path, "bytes_data": source.bytes_data})
+                if count:
+                    inspection_issues.append(
+                        ParseIssue(
+                            code="ENGLISH_UNNUMBERED_MIDDAY",
+                            message=f"英方课表有 {count} 个午间课程格未印节次和时钟时间，现有时间轴无法可靠定位。",
+                            severity="error",
+                            source_file=source.file_name,
+                            source_hash=source.content_hash,
+                            suggestion="核对原页午间课程的准确时间后，才能生成可信空课。",
+                            blocks_export=True,
+                        )
+                    )
             continue
         source_file = source.file_name
         message = str(inspection.get("error") or "PDF 结构检查未通过，已阻止继续解析。")
@@ -156,6 +195,29 @@ def parse_pdf_paths(
             pdf_inspections=pdf_inspections,
             progress=report_ready_progress,
         )
+    raster_clipping_check = getattr(schedule_core, "chinese_image_clipped_pages", None)
+    if callable(raster_clipping_check):
+        for source, inspection in zip(add_result.added, pdf_inspections):
+            if (
+                source.kind != "中方"
+                or source not in ready_sources
+                or not inspection.get("pages_needing_ocr")
+                or inspection.get("clipped_pages")
+            ):
+                continue
+            clipped = raster_clipping_check({"path": source.source_path, "bytes_data": source.bytes_data})
+            if clipped:
+                inspection_issues.append(
+                    ParseIssue(
+                        code="PDF_PAGE_CONTENT_CLIPPED",
+                        message="图片课表的星期列或底部表格在页面边界被截断，缺失课程不可见。",
+                        severity="error",
+                        source_file=source.file_name,
+                        source_hash=source.content_hash,
+                        suggestion="重新导出能完整显示全部星期列和课程行的 PDF。",
+                        blocks_export=True,
+                    )
+                )
     if cancelled and cancelled():
         raise InterruptedError("处理已取消。")
     preview = build_availability_preview(
@@ -218,6 +280,8 @@ def export_excel(
 
     if mode != "classic":
         raise ValueError("visual 导出模式已预留，等待可视化表格样式后实现。")
+    if workflow_result.process_result.parser_signature != build_parser_signature().digest:
+        raise ValueError("学期设置或解析规则已变化，请重新生成空课表后导出。")
     assert_export_allowed(
         workflow_result.process_result.quality_state,
         workflow_result.process_result.issues,
