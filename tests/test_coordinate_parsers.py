@@ -168,6 +168,68 @@ def _item(text, x, y, w=18, h=8):
     return {"text": text, "x0": float(x), "y0": float(y), "x1": float(x + w), "y1": float(y + h)}
 
 
+def test_english_phone_grid_splits_ocr_joined_clock_and_course():
+    items = [_item("第12周", 100, 100)]
+    items.extend(_item(day, 100 + index * 30, 130) for index, day in enumerate(schedule_core.WEEKDAYS))
+    items.extend([
+        _item("8:10", 50, 150),
+        _item("10:15", 50, 200),
+        _item("14:30", 50, 250),
+        _item("16:25EIBM", 50, 300, w=70),
+        _item("19:10", 50, 350),
+    ])
+
+    blocks = schedule_core._parse_english_week_grid_page_items(items, "匿名")
+
+    assert {(block["date"], block["period"]) for block in blocks} == {
+        ("2026-05-18", 7), ("2026-05-18", 8),
+    }
+
+
+def test_english_phone_grid_keeps_side_by_side_weeks_separate_and_single_period_cell():
+    items = [_item("第10周", 100, 100), _item("第11周", 360, 100)]
+    for start in (60, 320):
+        items.extend(_item(day, start + index * 30, 130) for index, day in enumerate(schedule_core.WEEKDAYS))
+    for clock_x in (20, 280):
+        items.extend([_item("8:10", clock_x, 150), _item("10:15", clock_x, 200)])
+    items.extend([
+        _item("AFI", 320, 160), _item("6B304", 320, 166),
+        _item("FoM", 380, 160), _item("6B103", 380, 188),
+        _item("D", 380, 212),
+    ])
+
+    blocks = schedule_core._parse_english_week_grid_page_items(items, "匿名")
+
+    assert {(block["date"], block["period"], block["course"]) for block in blocks} == {
+        ("2026-05-11", 1, "AFI"),
+        ("2026-05-13", 1, "FoM"),
+        ("2026-05-13", 2, "FoM"),
+    }
+
+
+def test_english_image_grid_recovers_period_hidden_by_merged_cell():
+    import numpy as np
+
+    items = [_item(str(period), 80 + period * 40, 20) for period in range(1, 12)]
+    for weekday, day, y in (("Monday", "2026-05-11", 80), ("Tuesday", "2026-05-12", 140), ("Wednesday", "2026-05-13", 200)):
+        items.extend((_item(weekday, 5, y), _item(day, 5, y + 10, w=70)))
+    items.append(_item("BIO", 111, 198, w=48))
+    blocks = [schedule_core._block("匿名", "英方", 11, schedule_core._parse_date("2026-05-13"), "周三", 2, "BIO")]
+    gray = np.full((260, 600), 255, dtype=np.uint8)
+    days = schedule_core._find_english_day_rows(items)
+    headers = schedule_core._find_english_period_header_rows(items)
+    boundary = round((headers[0]["columns"][0]["center"] + headers[0]["columns"][1]["center"]) / 2)
+    gray[60:170, boundary] = 0  # Divider exists in other day rows, but not Wednesday's merged cell.
+
+    supplements = schedule_core._english_ocr_merged_cell_supplements_from_image(items, blocks, gray)
+
+    assert [(block["date"], block["period"], block["course"]) for block in supplements] == [
+        ("2026-05-13", 1, "BIO")
+    ]
+    gray[170:245, boundary] = 0
+    assert schedule_core._english_ocr_merged_cell_supplements_from_image(items, blocks, gray) == []
+
+
 def _synthetic_full_term_grid_image():
     cv2 = __import__("cv2")
     np = __import__("numpy")
@@ -232,6 +294,84 @@ def test_chinese_full_term_course_text_uses_legend_aliases():
     assert not schedule_core._is_chinese_full_term_course_text("请明节", aliases)
 
 
+def test_chinese_legacy_course_specs_exclude_off_campus_location():
+    lines = [
+        "课程甲", "教师甲", "11(周)[01-02-03-", "04-05-06-07节]", "校外054",
+        "---------------------",
+        "课程乙", "教师乙", "11(周)[01-02节]", "E2A104",
+    ]
+
+    specs = schedule_core._extract_legacy_course_specs(lines)
+
+    assert specs
+    assert all(week == "11" and periods == "01-02" for _course, week, periods in specs)
+
+
+def test_full_term_off_campus_day_requires_all_visible_courses_to_match_legend():
+    def item(text, x, y):
+        return {
+            "text": text, "x0": x, "x1": x + max(10, len(text) * 8),
+            "y0": y, "y1": y + 10, "page": 0,
+            "page_width": 1404, "page_height": 800,
+        }
+
+    items = [
+        item(weekday, 175 + index * 160, 105)
+        for index, weekday in enumerate(("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"))
+    ]
+    items += [item(f"{week}周", 20, 150 + 25 * (week - 1)) for week in range(1, 13)]
+    items += [item("思R39", 975, 400), item("课程甲 R39", 980, 450), item("校外106", 980, 470)]
+
+    assert schedule_core._chinese_full_term_off_campus_days(items) == {"2026-05-16"}
+
+    items.append(item("高L24", 990, 400))
+    assert schedule_core._chinese_full_term_off_campus_days(items) == set()
+
+
+def test_english_ocr_day_rows_only_fill_regular_missing_weekday():
+    days = [
+        {"date": schedule_core._parse_date(day), "y": y, "weekday_text": ""}
+        for day, y in (("2026-05-18", 100), ("2026-05-19", 153), ("2026-05-20", 206), ("2026-05-22", 312))
+    ]
+
+    filled = schedule_core._complete_english_day_rows(days)
+
+    assert [row["date"].isoformat() for row in filled] == [
+        "2026-05-18", "2026-05-19", "2026-05-20", "2026-05-21", "2026-05-22",
+    ]
+    assert filled[3]["y"] == 259
+
+
+def test_chinese_image_header_overflow_requires_large_missing_weekday_area():
+    def header(text, center, width):
+        return {"text": text, "x0": center - 10, "x1": center + 10,
+                "y0": 100, "y1": 110, "page_width": width}
+
+    clipped = [header("星期三", 476, 993), header("星期五", 830, 993)]
+    complete = [
+        header("星期二", 395, 1404), header("星期四", 733, 1404),
+        header("星期六", 1138, 1404),
+    ]
+
+    assert schedule_core._chinese_image_weekday_columns_overflow(clipped)
+    assert not schedule_core._chinese_image_weekday_columns_overflow(complete)
+
+
+def test_chinese_image_bottom_requires_unclosed_table_lines():
+    import cv2
+    import numpy as np
+
+    image = np.full((1000, 1400), 255, dtype=np.uint8)
+    for x in range(340, 1350, 125):
+        cv2.line(image, (x, 400), (x, 940), 200, 2)
+    cv2.line(image, (340, 880), (1340, 880), 200, 2)
+
+    assert schedule_core._chinese_image_table_open_at_bottom(image)
+
+    cv2.line(image, (340, 940), (1340, 940), 200, 2)
+    assert not schedule_core._chinese_image_table_open_at_bottom(image)
+
+
 def test_chinese_full_term_visual_image_detects_occupied_cell():
     image, cell = _synthetic_full_term_grid_image()
     cv2 = __import__("cv2")
@@ -242,6 +382,30 @@ def test_chinese_full_term_visual_image_detects_occupied_cell():
     occupied = {(block["week"], block["weekday"], block["period"]) for block in blocks}
     assert (2, "周一", 1) in occupied
     assert (2, "周一", 2) in occupied
+
+
+def test_chinese_visual_cells_exclude_off_campus_duplicate_alias_only():
+    image, cell = _synthetic_full_term_grid_image()
+    cv2 = __import__("cv2")
+    for left in (cell["left"], cell["left"] + 24, cell["left"] + 60):
+        cv2.rectangle(image, (left + 3, cell["top"] + 3), (left + 21, cell["bottom"] - 3), 0, -1)
+    def ocr_item(text, x, y):
+        return {"text": text, "x0": x, "x1": x + 5, "y0": y, "y1": y + 3,
+                "page_width": image.shape[1], "page_height": image.shape[0]}
+    ocr_items = [
+        ocr_item("思R36", cell["left"] + 6, cell["top"] + 3),
+        ocr_item("校外104", cell["left"] + 6, cell["top"] + 8),
+        ocr_item("思R36", cell["left"] + 30, cell["top"] + 3),
+        ocr_item("数L5", cell["left"] + 66, cell["top"] + 3),
+    ]
+
+    blocks = schedule_core._parse_chinese_full_term_visual_image(image, "匿名", ocr_items)
+
+    occupied = {(block["week"], block["weekday"], block["period"]) for block in blocks}
+    assert not any(week == 2 and weekday == "周一" and period in {1, 2, 3, 4}
+                   for week, weekday, period in occupied)
+    assert (2, "周一", 5) in occupied
+    assert (2, "周一", 6) in occupied
 
 
 def test_chinese_full_term_visual_image_ignores_non_class_ocr_cell():
@@ -286,6 +450,156 @@ def test_english_date_grid_parser_maps_courses_by_period_columns():
     assert blocks[0]["weekday"] == "周一"
     assert blocks[0]["period"] == 3
     assert blocks[0]["course"] == "Academic Writing"
+
+
+def test_english_date_grid_uses_later_repeated_header_when_first_header_is_unreadable():
+    items = [_item(str(period), 90 + period * 28, 220, w=8) for period in range(1, 12)]
+    items.extend(
+        [
+            _item("Monday", 20, 92, w=36),
+            _item("2026-03-16", 20, 104, w=58),
+            _item("Academic", 90 + 3 * 28, 96, w=34),
+            _item("Tuesday", 20, 260, w=36),
+            _item("2026-03-17", 20, 272, w=58),
+            _item("Writing", 90 + 4 * 28, 264, w=30),
+        ]
+    )
+
+    blocks = schedule_core._parse_english_grid_page_items_from_pdf_words(items, "成员甲")
+
+    assert {(block["date"], block["period"], block["course"]) for block in blocks} == {
+        ("2026-03-16", 3, "Academic"),
+        ("2026-03-17", 4, "Writing"),
+    }
+
+
+def test_english_repeated_header_does_not_prefix_next_week_course_with_rule_token():
+    items = [_item(str(period), 90 + period * 28, 48, w=8) for period in range(1, 12)]
+    items.extend(
+        [
+            _item("Friday", 20, 92, w=36),
+            _item("2026-05-08", 20, 104, w=58),
+            *[_item(str(period), 90 + period * 28, 148, w=8) for period in range(1, 12)],
+            _item("-", 90 + 3 * 28, 153, w=8),
+            _item("Monday", 20, 174, w=36),
+            _item("2026-05-11", 20, 186, w=58),
+            _item("Academic", 90 + 3 * 28, 178, w=34),
+        ]
+    )
+
+    raw = schedule_core._parse_english_grid_page_items_from_pdf_words(items, "成员甲")
+    finalized = schedule_core._finalize_parsed_blocks(raw, "示例英方课表.pdf", "英方")
+
+    assert ("2026-05-11", 3, "Academic") in {
+        (block["date"], block["period"], block["course"]) for block in finalized
+    }
+
+
+def test_english_text_pdf_continuation_page_reuses_previous_page_columns(monkeypatch):
+    first_page = [_item(str(period), 90 + period * 28, 48, w=8) for period in range(1, 12)]
+    first_page.extend(
+        [
+            _item("Monday", 20, 92, w=36),
+            _item("2026-05-25", 20, 104, w=58),
+            _item("Academic", 90 + 3 * 28, 96, w=34),
+        ]
+    )
+    continuation_page = [
+        _item("Tuesday", 20, 32, w=36),
+        _item("2026-05-26", 20, 44, w=58),
+        _item("Writing", 90 + 4 * 28, 36, w=30),
+    ]
+
+    class FakeDocument(list):
+        def close(self):
+            pass
+
+    monkeypatch.setattr(schedule_core, "_open_pdf_document", lambda _source: FakeDocument([first_page, continuation_page]))
+    monkeypatch.setattr(schedule_core, "_page_words", lambda page: list(page))
+
+    blocks = schedule_core._parse_english_pdf_grid_layout({}, "示例英方课表.pdf")
+
+    assert {(block["date"], block["period"], block["course"]) for block in blocks} == {
+        ("2026-05-25", 3, "Academic"),
+        ("2026-05-26", 4, "Writing"),
+    }
+
+
+def test_english_drawn_cell_spanning_two_periods_occupies_both():
+    items = [_item(str(period), 90 + period * 28, 48, w=8) for period in range(1, 12)]
+    items.extend([
+        _item("Monday", 20, 92, w=36),
+        _item("2026-05-25", 20, 104, w=58),
+        _item("Academic", 174, 96, w=35),
+    ])
+
+    blocks = schedule_core._parse_english_grid_page_items_from_rectangles(
+        items, [(160, 89, 219, 120)], "成员甲"
+    )
+
+    assert {(block["date"], block["period"]) for block in blocks} == {
+        ("2026-05-25", 3),
+        ("2026-05-25", 4),
+    }
+
+
+def test_english_drawn_cell_with_group_codes_still_marks_occupancy():
+    items = [_item(str(period), 90 + period * 28, 48, w=8) for period in range(1, 12)]
+    items.extend([
+        _item("Tuesday", 20, 92, w=36),
+        _item("2026-05-26", 20, 104, w=58),
+        _item("L4S-4,L4S-5", 174, 96, w=45),
+    ])
+
+    blocks = schedule_core._parse_english_grid_page_items_from_rectangles(
+        items, [(160, 89, 219, 120)], "成员甲"
+    )
+
+    assert {(block["date"], block["period"], block["course"]) for block in blocks} == {
+        ("2026-05-26", 3, "课程占用（原页仅识别到组别）"),
+        ("2026-05-26", 4, "课程占用（原页仅识别到组别）"),
+    }
+
+
+def test_english_unnumbered_midday_cell_is_flagged_without_inventing_clock_time():
+    items = [
+        _item(str(period), 90 + period * 28 + (100 if period >= 5 else 0), 48, w=8)
+        for period in range(1, 12)
+    ]
+    items.extend([
+        _item("Monday", 20, 92, w=36),
+        _item("2026-05-25", 20, 104, w=58),
+        _item("Seminar", 255, 96, w=30),
+    ])
+    unmapped = []
+
+    blocks = schedule_core._parse_english_grid_page_items_from_rectangles(
+        items, [(245, 89, 285, 120)], "成员甲", unmapped
+    )
+
+    assert blocks == []
+    assert len(unmapped) == 1
+    assert unmapped[0]["date"] == "2026-05-25"
+
+
+def test_english_date_grid_accepts_tall_ocr_weekday_date_pair_only_when_calendar_matches():
+    items = [_item(str(period), 90 + period * 28, 48, w=8) for period in range(1, 12)]
+    items.extend(
+        [
+            _item("Wednesday", 20, 92, w=54),
+            _item("2026-05-06", 20, 116, w=58),
+            _item("Academic", 90 + 3 * 28, 100, w=34),
+            _item("Thursday", 20, 172, w=54),
+            _item("2026-05-08", 20, 196, w=58),
+            _item("Writing", 90 + 4 * 28, 180, w=30),
+        ]
+    )
+
+    blocks = schedule_core._parse_english_grid_page_items_from_pdf_words(items, "成员甲")
+
+    assert {(block["date"], block["course"]) for block in blocks} == {
+        ("2026-05-06", "Academic"),
+    }
 
 
 def test_english_date_grid_parser_accepts_ocr_date_tokens():
@@ -410,6 +724,27 @@ def test_english_period_header_parser_uses_noisy_time_tokens():
     assert ("2026-05-06", 5, "EIBM") in occupied
     assert ("2026-05-06", 8, "TE") in occupied
     assert schedule_core._extract_english_period_header_numbers("L4B-4") == []
+
+
+def test_english_period_header_prefers_printed_numbers_over_nearby_time_tokens():
+    items = [_item(str(period), 90 + period * 28, 48, w=8) for period in range(1, 12)]
+    items.extend(
+        [
+            _item("16:25-17:10", 90 + 6 * 28, 54, w=28),
+            _item("17:15-18:00", 90 + 7 * 28, 54, w=28),
+        ]
+    )
+
+    headers = schedule_core._find_english_period_header_rows(items)
+    centers = {column["period"]: column["center"] for column in headers[0]["columns"]}
+
+    assert abs(centers[7] - (90 + 7 * 28 + 4)) < 1
+    assert abs(centers[8] - (90 + 8 * 28 + 4)) < 1
+
+
+def test_english_short_course_alias_is_distinct_from_room_label():
+    assert not schedule_core._is_english_grid_noise_token("L4S")
+    assert schedule_core._is_english_grid_noise_token("L4A-1")
 
 
 def test_finalize_filters_non_courses_and_recalculates_week_from_date():

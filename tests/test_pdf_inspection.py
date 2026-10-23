@@ -96,6 +96,20 @@ def test_pdf_inspection_uses_installed_firecrawl_binding(tmp_path: Path):
     assert result.pages_needing_ocr == []
 
 
+def test_pdf_inspection_flags_drawn_timetable_outside_page(tmp_path: Path):
+    pdf = tmp_path / "成员甲-中方课表.pdf"
+    document = fitz.open()
+    page = document.new_page(width=595, height=842)
+    page.insert_text((72, 72), "Timetable")
+    page.draw_rect(fitz.Rect(500, 120, 740, 150))
+    document.save(pdf)
+    document.close()
+
+    result = inspect_pdf_source(PdfSource(pdf.name, "中方", str(pdf)))
+
+    assert result.clipped_pages == [1]
+
+
 def test_pdf_inspection_skips_files_over_size_limit(tmp_path: Path, monkeypatch):
     pdf = tmp_path / "large.pdf"
     pdf.write_bytes(b"%PDF-1.4\n%%EOF")

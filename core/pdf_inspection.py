@@ -46,6 +46,7 @@ class PdfInspectionResult:
     is_complex_layout: bool = False
     pages_with_tables: list[int] = field(default_factory=list)
     pages_with_columns: list[int] = field(default_factory=list)
+    clipped_pages: list[int] = field(default_factory=list)
     processing_time_ms: int = 0
     warning: str = ""
     error: str = ""
@@ -95,12 +96,38 @@ def inspect_pdf_source(source: PdfSource) -> PdfInspectionResult:
             if source.bytes_data is not None
             else binding.detect_pdf(source.source_path)
         )
-        return _from_pdf_inspector(source, result)
+        inspection = _from_pdf_inspector(source, result)
     except Exception as exc:
-        fallback = _inspect_with_pymupdf(source)
-        if fallback.status == "ready":
-            fallback.warning = f"pdf-inspector 不可用，已回退 PyMuPDF：{type(exc).__name__}"
-        return fallback
+        inspection = _inspect_with_pymupdf(source)
+        if inspection.status == "ready":
+            inspection.warning = f"pdf-inspector 不可用，已回退 PyMuPDF：{type(exc).__name__}"
+    if inspection.status == "ready" and source.kind == "中方":
+        inspection.clipped_pages = _detect_off_page_drawings(source)
+    return inspection
+
+
+def _detect_off_page_drawings(source: PdfSource) -> list[int]:
+    """Detect vector timetable content extending beyond the exported PDF page."""
+    try:
+        import fitz
+        document = (
+            fitz.open(stream=source.bytes_data, filetype="pdf")
+            if source.bytes_data is not None else fitz.open(source.source_path)
+        )
+        try:
+            clipped: list[int] = []
+            for index, page in enumerate(document, 1):
+                width, height = float(page.rect.width), float(page.rect.height)
+                if any(
+                    drawing["rect"].x1 > width + 5 or drawing["rect"].y1 > height + 5
+                    for drawing in page.get_drawings()
+                ):
+                    clipped.append(index)
+            return clipped
+        finally:
+            document.close()
+    except Exception:
+        return []
 
 
 def _load_pdf_inspector() -> Any:

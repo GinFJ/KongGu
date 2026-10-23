@@ -330,6 +330,30 @@ def test_chinese_legacy_web_layout_closes_document(monkeypatch, tmp_path):
     assert document.closed is True
 
 
+def test_pdf_parser_reads_the_bytes_that_were_hashed(tmp_path):
+    from core.legacy_adapter import model_source_to_legacy, pdf_source_from_path
+
+    def pdf_bytes(text):
+        document = fitz.open()
+        document.new_page().insert_text((72, 72), text)
+        data = document.tobytes()
+        document.close()
+        return data
+
+    path = tmp_path / "成员甲-中方课表.pdf"
+    path.write_bytes(pdf_bytes("Captured source A"))
+    source = model_source_to_legacy(pdf_source_from_path(path, "中方"))
+    path.write_bytes(pdf_bytes("Changed source B"))
+
+    assert schedule_core._source_digest(source) == source["content_hash"]
+    document = schedule_core._open_pdf_document(source)
+    try:
+        assert "Captured source A" in document[0].get_text()
+        assert "Changed source B" not in document[0].get_text()
+    finally:
+        document.close()
+
+
 # ---------------------------------------------------------------------------
 # Cancellation: page loops of long PDF parses must honour the job cancel flag.
 # ---------------------------------------------------------------------------
