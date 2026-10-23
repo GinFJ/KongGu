@@ -17,6 +17,7 @@ from app.privacy import safe_error_message
 from app.offline_resources import clear_processing_cache, configure_offline_environment, repair_resources, resource_status
 from app.services.calendar_settings import apply_calendar_settings, load_calendar_settings, save_calendar_settings
 from app.services.desktop_workflow import (
+    MAX_INPUT_FILES,
     export_excel,
     load_workflow_result,
 )
@@ -25,6 +26,9 @@ from app.services.review_service import apply_correction, confirm_issue, get_rev
 from app.services.state_store import StateStore
 from core.models import PdfSource
 from core.pdf_inspection import inspect_pdf_sources
+
+
+MAX_REQUEST_LINE_BYTES = 2_000_000
 
 
 def _configure_stdio() -> None:
@@ -72,6 +76,15 @@ def dispatch(
     if isinstance(nested_payload, dict):
         request = {**request, **nested_payload}
     command = str(request.get("command") or "").strip()
+    # 数量上限必须在写库之前检查：否则超限请求会先落 job_files 再被拒绝。
+    if command == "job.start":
+        started_paths = [
+            str(item) for item in (request.get("paths") or []) if str(item).strip()
+        ]
+        if not started_paths:
+            raise ValueError("请先选择课表 PDF。")
+        if len(started_paths) > MAX_INPUT_FILES:
+            raise ValueError(f"一次最多处理 {MAX_INPUT_FILES} 份 PDF。")
     paths = configure_offline_environment()
 
     if command == "resources.status":
@@ -208,6 +221,16 @@ def serve() -> int:
         return 1
 
     for raw_line in sys.stdin:
+        if len(raw_line) > MAX_REQUEST_LINE_BYTES:
+            write_message(
+                {
+                    "id": "",
+                    "type": "response",
+                    "ok": False,
+                    "error": "请求内容过大，已拒绝处理。",
+                }
+            )
+            continue
         line = raw_line.lstrip("\ufeff").strip()
         if not line:
             continue

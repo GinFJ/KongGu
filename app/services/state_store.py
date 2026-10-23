@@ -21,6 +21,11 @@ def utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _is_corrupt_database_error(exc: sqlite3.DatabaseError) -> bool:
+    text = str(exc).lower()
+    return "not a database" in text or "malformed" in text or "corrupt" in text
+
+
 class StateStore:
     """Small connection-per-operation store safe for the sidecar worker thread."""
 
@@ -28,9 +33,35 @@ class StateStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._session_paths: dict[str, list[str]] = {}
-        self.migrate()
+        try:
+            self.migrate()
+        except (sqlite3.DatabaseError, RuntimeError) as exc:
+            # 损坏的数据库或来自更新版本的 schema 不能让整个应用打不开：
+            # 隔离旧文件后重建空库，旧数据仍可从 .corrupt 文件手工恢复。
+            corrupt = isinstance(exc, sqlite3.DatabaseError) and _is_corrupt_database_error(exc)
+            unsupported_schema = isinstance(exc, RuntimeError) and "schema" in str(exc).lower()
+            if not (corrupt or unsupported_schema):
+                raise
+            self._quarantine_database()
+            self.migrate()
         self.purge_expired()
         self.mark_running_jobs_interrupted()
+
+    def _quarantine_database(self) -> None:
+        """Move an unusable database aside so a fresh one can be created."""
+
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        target = self.path.with_name(f"{self.path.name}.corrupt-{stamp}")
+        try:
+            if self.path.exists():
+                self.path.replace(target)
+            for suffix in ("-wal", "-shm"):
+                sidecar = self.path.with_name(self.path.name + suffix)
+                if sidecar.exists():
+                    sidecar.unlink()
+        except OSError:
+            # 隔离失败就让原异常继续上抛，不能假装已经恢复。
+            raise
 
     @classmethod
     def from_resource_paths(cls, paths: ResourcePaths) -> "StateStore":
@@ -39,16 +70,18 @@ class StateStore:
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
-        # 删除的行必须被覆写：隐私清理不能只把行从索引里摘掉，
-        # 否则 sqlite 主文件里仍能扫出姓名、课程与路径。
-        connection.execute("PRAGMA secure_delete = ON")
         try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA journal_mode = WAL")
+            # 删除的行必须被覆写：隐私清理不能只把行从索引里摘掉，
+            # 否则 sqlite 主文件里仍能扫出姓名、课程与路径。
+            connection.execute("PRAGMA secure_delete = ON")
             yield connection
             connection.commit()
         finally:
+            # PRAGMA 本身也可能在损坏库上抛错；连接必须始终关闭，
+            # 否则后续隔离/重命名会因文件句柄占用失败。
             connection.close()
 
     def migrate(self) -> None:

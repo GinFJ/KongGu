@@ -147,6 +147,29 @@ def test_clear_all_data_overwrites_deleted_rows_on_disk(tmp_path):
         assert marker.encode("utf-8") not in path.read_bytes()
 
 
+def test_corrupt_database_is_quarantined_and_rebuilt(tmp_path):
+    db_path = tmp_path / "state.sqlite3"
+    db_path.write_bytes(b"this is definitely not a sqlite database")
+
+    store = StateStore(db_path)
+
+    assert store.path.exists()
+    assert list(tmp_path.glob("state.sqlite3.corrupt-*"))
+
+
+def test_unsupported_schema_version_is_quarantined(tmp_path):
+    db_path = tmp_path / "state.sqlite3"
+    store = StateStore(db_path)
+    with store.connect() as connection:
+        connection.execute("UPDATE schema_info SET version=99")
+
+    reopened = StateStore(db_path)
+
+    with reopened.connect() as connection:
+        assert connection.execute("SELECT version FROM schema_info").fetchone()[0] == 2
+    assert list(tmp_path.glob("state.sqlite3.corrupt-*"))
+
+
 def test_failed_schema_migration_rolls_back_and_can_retry(tmp_path, monkeypatch):
     database = tmp_path / "state.sqlite3"
     _create_v1_state_database(database)

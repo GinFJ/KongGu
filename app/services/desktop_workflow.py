@@ -175,7 +175,21 @@ def parse_pdf_paths(
     if total_pages > MAX_TOTAL_PDF_PAGES:
         raise ValueError(f"本批 PDF 总页数不能超过 {MAX_TOTAL_PDF_PAGES} 页。")
     if not ready_sources:
-        raise ValueError("没有通过 PDF 安全检查的课表，已阻止继续解析。")
+        # 逐文件原因必须留给用户：只说“没有通过安全检查”无法定位是哪个文件。
+        details = list(
+            dict.fromkeys(
+                [
+                    *errors,
+                    *[
+                        f"{item.get('source_file')}：{item.get('error') or 'PDF 结构检查未通过'}"
+                        for item in pdf_inspections
+                        if item.get("status") != "ready"
+                    ],
+                ]
+            )
+        )
+        reason = "；".join(details) if details else "未提供可解析的 PDF。"
+        raise ValueError(f"没有通过 PDF 安全检查的课表：{reason}")
     ready_positions = _selected_positions(pdf_paths, ready_sources)
 
     def report_ready_progress(stage: str, current: int, total: int, message: str) -> None:
