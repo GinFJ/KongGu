@@ -30,6 +30,7 @@ type AppState = {
   jobId: string;
   statusText: string;
   stage: string;
+  failedFileCount: number;
   progress: { current: number; total: number };
   logs: string[];
 };
@@ -46,6 +47,7 @@ const state: AppState = {
   jobId: "",
   statusText: "正在准备本地识别功能",
   stage: "boot",
+  failedFileCount: 0,
   progress: { current: 0, total: 0 },
   logs: []
 };
@@ -69,6 +71,7 @@ let cancelRequestedJobId = "";
 let completionProbeJobId = "";
 let completedJobId = "";
 let reviewReloading = false;
+let savedCalendarSettings: CalendarSettings = { ...state.calendarSettings };
 const renderedHtmlCache = new WeakMap<HTMLElement, string>();
 
 const tabs: Tab[] = ["availability", "members", "files", "issues", "review", "calendar"];
@@ -106,6 +109,7 @@ async function boot() {
     const resources = resourceRepair.status;
     state.resourceStatus = resources;
     state.calendarSettings = settings.settings;
+    savedCalendarSettings = { ...settings.settings };
     state.statusText = resources.ready ? "准备完成，可以导入课表" : "本地识别资源未能自动准备，请点击修复";
     state.stage = "ready";
   } catch (error) {
@@ -123,6 +127,7 @@ async function chooseFiles() {
   if (!paths.length) return;
   state.files = Array.from(new Set([...state.files, ...paths]));
   state.result = null;
+  state.failedFileCount = 0;
   state.review = null;
   state.jobId = "";
   availabilityPage = 0;
@@ -137,6 +142,7 @@ async function parseSchedules() {
   if (invalid.length) return setStatus(`${invalid.length} 个文件无法判断中方/英方，请先按规则改名。`);
   state.busy = true;
   state.result = null;
+  state.failedFileCount = 0;
   state.review = null;
   // 新任务开始前清掉旧任务引用：启动请求失败时不能留下可被误重试的旧 jobId。
   state.jobId = "";
@@ -181,6 +187,7 @@ async function finishCompletedJob(jobId: string, job: JobResponse["job"]) {
   cancelRequestedJobId = "";
   state.progress = { current: job.current, total: job.total };
   state.result = job.output || null;
+  state.failedFileCount = job.files.filter((file) => file.status === "failed").length;
   state.busy = false;
   state.stage = state.result?.can_export ? "completed" : "review";
   if (state.result?.detected_max_week) {
@@ -243,6 +250,7 @@ async function waitForJob(jobId: string) {
     const response = await client.request<JobResponse>("job.get", { job_id: jobId });
     const job = response.job;
     state.progress = { current: job.current, total: job.total };
+    state.failedFileCount = job.files.filter((file) => file.status === "failed").length;
     if (job.status === "completed") {
       await finishCompletedJob(jobId, job);
       return;
@@ -278,11 +286,15 @@ async function cancelJob() {
       } catch (error) {
         restartError = formatError(error);
       }
+      if (!restartError) {
+        // 重启后的 worker 不再持有本批文件路径（隐私设计），旧任务无法续跑。
+        // 直接清掉任务引用，引导用户用保留下来的文件列表重新生成，避免留下必失败的重试按钮。
+        resetJobAfterRestart("本地识别功能已重启，原来的处理无法续跑；文件列表已保留，请点击“生成空课表”重新处理。");
+        return;
+      }
       state.busy = false;
       state.stage = "interrupted";
-      state.statusText = restartError
-        ? `处理已中断；本地识别功能需要重新启动：${restartError}`
-        : "处理已中断，可点击“重新处理失败文件”。";
+      state.statusText = `处理已中断；本地识别功能需要重新启动：${restartError}`;
       cancelRequestedJobId = "";
       render();
     }
@@ -290,16 +302,30 @@ async function cancelJob() {
   await client.request("job.cancel", { job_id: jobId }).catch(() => undefined);
 }
 
+function resetJobAfterRestart(message: string) {
+  state.jobId = "";
+  state.result = null;
+  state.review = null;
+  state.failedFileCount = 0;
+  state.progress = { current: 0, total: 0 };
+  state.busy = false;
+  state.stage = "ready";
+  state.statusText = message;
+  cancelRequestedJobId = "";
+  completionProbeJobId = "";
+  completedJobId = "";
+  reviewPayload = null;
+  log(message);
+  render();
+}
+
 async function retryFailed() {
   if (!state.jobId || state.busy) return;
   const previousJobId = state.jobId;
+  const previousStage = state.stage;
   state.busy = true;
-  state.result = null;
-  state.review = null;
-  // 先松开旧任务引用，重试请求失败时不会留下指向旧任务的“重新处理”入口。
-  state.jobId = "";
   state.stage = "queued";
-  state.statusText = "正在重新处理失败文件";
+  state.statusText = "正在重新处理本批课表";
   cancelRequestedJobId = "";
   completionProbeJobId = "";
   completedJobId = "";
@@ -309,11 +335,19 @@ async function retryFailed() {
       job_id: previousJobId
     });
     state.jobId = started.job_id;
+    state.result = null;
+    state.review = null;
+    state.failedFileCount = 0;
     await waitForJob(started.job_id);
   } catch (error) {
+    const message = formatError(error);
+    if (message.includes("没有保留本批课表的文件路径")) {
+      resetJobAfterRestart("本地识别功能重启后无法自动重试；文件列表已保留，请点击“生成空课表”重新处理。");
+      return;
+    }
     state.busy = false;
-    state.stage = "failed";
-    setStatus(formatError(error));
+    state.stage = state.jobId === previousJobId ? previousStage : "failed";
+    setStatus(message);
   }
 }
 
@@ -398,7 +432,19 @@ async function saveSettings(showFeedback = true) {
       settings: state.calendarSettings
     });
     state.calendarSettings = response.settings;
-    if (showFeedback) setStatus("学期设置已保存。");
+    const changed = savedCalendarSettings.semester_start_date !== response.settings.semester_start_date
+      || savedCalendarSettings.teaching_weeks !== response.settings.teaching_weeks;
+    savedCalendarSettings = { ...response.settings };
+    if (changed) {
+      state.result = null;
+      state.review = null;
+      state.jobId = "";
+      state.failedFileCount = 0;
+      state.activeTab = "availability";
+      if (!state.busy) state.stage = "ready";
+      completedJobId = "";
+    }
+    if (showFeedback) setStatus(changed ? "学期设置已保存，请重新生成空课表。" : "学期设置已保存。");
   } catch (error) {
     setStatus(`学期设置保存失败：${formatError(error)}`);
     throw error;
@@ -421,7 +467,13 @@ async function applyReview(blockId: string, field: string, value: unknown, reaso
     // 修正响应只回填发起它的那次任务，避免切文件后把旧任务的复核结果写进新任务。
     if (state.jobId !== jobId) return;
     state.review = review;
-    await refreshJobOutput();
+    try {
+      await refreshJobOutput();
+    } catch (error) {
+      // 修正已经写入本地记录，刷新失败只是界面暂时落后；不能谎报“没有保存”，
+      // 也不能让周视图的拖拽把已经保存的修正回滚掉。
+      setStatus(`修正已保存，但结果刷新失败：${formatError(error)}`);
+    }
   } catch (error) {
     setStatus(`修正没有保存：${formatError(error)}`);
     throw error;
@@ -438,7 +490,11 @@ async function confirmIssue(issueId: string) {
     });
     if (state.jobId !== jobId) return;
     state.review = review;
-    await refreshJobOutput();
+    try {
+      await refreshJobOutput();
+    } catch (error) {
+      setStatus(`已确认，但结果刷新失败：${formatError(error)}`);
+    }
   } catch (error) {
     setStatus(`暂时无法确认：${formatError(error)}`);
   }
@@ -480,7 +536,7 @@ function mountShell() {
           <button id="chooseFiles" class="primary">＋ 导入课表</button>
           <button id="parseSchedules">生成空课表</button>
           <button id="cancelJob" class="danger" hidden>停止处理</button>
-          <button id="retryFailed">重新处理失败文件</button>
+          <button id="retryFailed">重新处理本批课表</button>
           <button id="exportExcel">导出空课表</button>
         </nav>
         <section class="railSection">
@@ -565,8 +621,9 @@ function updateShell() {
   const cancel = getElement<HTMLButtonElement>("#cancelJob");
   const retry = getElement<HTMLButtonElement>("#retryFailed");
   cancel.hidden = !state.busy || !state.jobId;
-  // 只有失败、中断或被取消的任务才给“重新处理”，成功结果不能出现误导性的重试入口。
-  const canRetry = !state.busy && Boolean(state.jobId) && ["failed", "interrupted", "cancelled"].includes(state.stage);
+  const canRetry = !state.busy && Boolean(state.jobId) && (
+    state.failedFileCount > 0 || ["failed", "interrupted", "cancelled"].includes(state.stage)
+  );
   retry.hidden = !canRetry;
   retry.disabled = !state.jobId;
   setDisabled("#exportExcel", !result?.can_export || state.busy);

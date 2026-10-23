@@ -62,7 +62,7 @@ def test_cancelled_file_dialog_keeps_current_result() -> None:
     assert choose.index("if (!paths.length) return;") < choose.index("state.result = null;")
 
 
-def test_new_parse_and_retry_drop_old_job_reference_and_reach_failed_stage() -> None:
+def test_new_parse_drops_old_job_and_retry_preserves_it_until_started() -> None:
     main = _source("src/main.ts")
     parse = _section(main, "async function parseSchedules()", "async function settleCompletedJob")
     retry = _section(main, "async function retryFailed()", "async function exportExcel()")
@@ -72,18 +72,16 @@ def test_new_parse_and_retry_drop_old_job_reference_and_reach_failed_stage() -> 
     assert 'state.stage = "failed";' in parse
 
     assert "const previousJobId = state.jobId;" in retry
-    assert 'state.jobId = "";' in retry
     assert "job_id: previousJobId" in retry
-    assert 'state.stage = "failed";' in retry
+    assert retry.index('state.jobId = started.job_id;') < retry.index('state.result = null;')
+    assert 'state.stage = state.jobId === previousJobId ? previousStage : "failed";' in retry
 
 
-def test_retry_entry_only_appears_for_failed_or_interrupted_jobs() -> None:
+def test_retry_entry_appears_for_partial_failures_too() -> None:
     main = _source("src/main.ts")
 
-    assert (
-        'const canRetry = !state.busy && Boolean(state.jobId) && ["failed", "interrupted", "cancelled"].includes(state.stage);'
-        in main
-    )
+    assert 'state.failedFileCount = job.files.filter((file) => file.status === "failed").length;' in main
+    assert 'state.failedFileCount > 0 || ["failed", "interrupted", "cancelled"].includes(state.stage)' in main
     assert "retry.hidden = !canRetry;" in main
 
 

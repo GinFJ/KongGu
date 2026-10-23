@@ -49,6 +49,28 @@ def test_member_schedule_choices_clear_stale_job_reference() -> None:
     assert "availabilityPage = 0;" in choose
 
 
+def test_worker_restart_replaces_dead_retry_path_with_rebatch_guidance() -> None:
+    main = _source("src/main.ts")
+    retry = _function_body(main, "async function retryFailed()", "async function exportExcel()")
+    restart = _function_body(main, "function resetJobAfterRestart(", "async function retryFailed()")
+
+    # 重启后 worker 不再持有文件路径：前端必须给出重新生成的出路，而不是留下必失败的重试按钮。
+    assert "没有保留本批课表的文件路径" in retry
+    assert "resetJobAfterRestart(" in retry
+    assert 'state.jobId = "";' in restart
+    assert "state.files" not in restart
+    assert "请点击" in retry
+
+
+def test_saved_correction_does_not_report_failure_or_roll_back_on_refresh_error() -> None:
+    main = _source("src/main.ts")
+    apply = _function_body(main, "async function applyReview(", "async function confirmIssue(")
+
+    assert "修正已保存，但结果刷新失败" in apply
+    # 刷新失败只提示，不能 rethrow；唯一的 rethrow 属于“修正没有保存”的外层分支。
+    assert apply.count("throw error;") == 1
+
+
 def test_review_and_settings_failures_surface_to_the_user() -> None:
     main = _source("src/main.ts")
     review = _source("src/reviewView.ts")
