@@ -52,5 +52,5 @@
 ## 五、最近一次维护
 
 - 日期：2026-10-24
-- 内容：完成第四批审查遗留的单实例与并发项（Rust 命名互斥量、worker 文件锁、`data.clear` 活动任务拒绝）与性能第一批（`period_time_range` 缓存、文件名优先取文、WAL 一次性设置）；版本升至 0.5.19，离线安装包已构建并过发布门禁。详见 `事实.md` 第四十节与 `../docs/变更记录.md` 0.5.19 节。
-- 证据状态：Python 348 passed、TypeScript、Vite、Cargo locked offline 通过；7200 块合成基准实测 `_refresh_derived` 5810→209 ms、单字段修正 3–7 秒→0.4–0.6 秒。公开仓库历史 PII 清理（用户决定转私有，待其在 GitHub 网页操作）、运行中关窗确认、结构检查失败文件进明细、剩余性能债见 `待办.md`。
+- 内容：完成第四批审查遗留的单实例与并发项（Rust 命名互斥量、worker 文件锁、`data.clear` 活动任务拒绝）与性能第一批（`period_time_range` 缓存、文件名优先取文、WAL 一次性设置）；版本升至 0.5.19，离线安装包已构建并过发布门禁。另用 `git filter-repo` 改写全部 55 个提交清除历史 PII（备份 `tmp/git-backup-before-filter/`），并新增 `tools/check_repo_privacy.py` 隐私闸门接入 `npm run build`。详见 `事实.md` 第四十、四十一节。
+- 证据状态：Python 352 passed、TypeScript、Vite、Cargo locked offline 通过；7200 块合成基准实测 `_refresh_derived` 5810→209 ms、单字段修正 3–7 秒→0.4–0.6 秒。远端强制推送被会话审批策略拦截，待用户执行；GitHub 旧对象缓存、运行中关窗确认、结构检查失败文件进明细、剩余性能债见 `待办.md`。
