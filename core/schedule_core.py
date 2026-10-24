@@ -458,8 +458,13 @@ def _page_image(
         return None
     try:
         pix = page.get_pixmap(dpi=int(dpi), alpha=False)
-    except Exception:
-        return None
+    except Exception as exc:
+        # 静默跳页会让这一页的课程占用凭空消失，而结果仍被当成“已识别”：
+        # 渲染失败必须作为文件级错误向上抛，由质量门禁把该文件判为 blocked。
+        LOGGER.warning("页面渲染失败: page=%s dpi=%s error=%s", page_number + 1, dpi, exc)
+        raise RuntimeError(
+            f"第 {page_number + 1} 页无法渲染，无法确认该页课程占用；请重新导出该课表 PDF 后重试。"
+        ) from exc
     pixels = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
     if pix.n > 3:
         pixels = pixels[:, :, :3]
@@ -576,18 +581,20 @@ def parse_actual_pdf_sources(
             return _extract_pdf_ocr_text(source, progress=ocr_progress)
 
         try:
+            # 先校验磁盘内容仍与导入时记录的哈希一致，再查解析缓存：缓存命中也
+            # 不能跳过校验，否则“文件在导入后被改动”会静默返回旧内容的结果。
+            materialize_error = _materialize_source_content(source)
+            if materialize_error:
+                LOGGER.warning("来源校验失败，已跳过: %s error=%s", file_name, materialize_error)
+                errors.append(f"{file_name}：{materialize_error}")
+                continue
+
             cached = _load_parse_cache(source, kind)
             if cached is not None:
                 LOGGER.info("命中解析缓存: %s blocks=%s", file_name, len(cached))
                 for item in cached:
                     item.setdefault("text_source", "内嵌文本")
                 blocks.extend(cached)
-                continue
-
-            materialize_error = _materialize_source_content(source)
-            if materialize_error:
-                LOGGER.warning("来源校验失败，已跳过: %s error=%s", file_name, materialize_error)
-                errors.append(f"{file_name}：{materialize_error}")
                 continue
 
             LOGGER.info("解析文件: %s kind=%s", file_name, kind)

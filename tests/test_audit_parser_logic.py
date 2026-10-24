@@ -405,6 +405,64 @@ def test_page_image_cache_reuses_identical_render(monkeypatch):
     assert counters["renders"] == 3
 
 
+def test_page_render_failure_blocks_instead_of_skipping_the_page():
+    """A page that cannot be rasterised must raise, not return None.
+
+    Silently skipping the page removes every course on it while the file still
+    counts as processed, so the export gate would never notice the missing
+    occupancy.  The parser turns the raised error into a blocked file.
+    """
+
+    class BrokenPage:
+        def get_pixmap(self, **kwargs):
+            raise RuntimeError("render exploded")
+
+    source = {"file_name": "成员甲-中方课表.pdf", "kind": "中方", "bytes": b"page-render-failure"}
+    schedule_core.clear_page_image_cache()
+
+    with pytest.raises(RuntimeError) as excinfo:
+        schedule_core._page_image(source, BrokenPage(), 1, 120)
+
+    assert "第 2 页无法渲染" in str(excinfo.value)
+    assert "无法确认该页课程占用" in str(excinfo.value)
+
+
+def test_parse_cache_hit_still_verifies_source_content(monkeypatch, tmp_path):
+    """A cached parse must not be served for bytes that changed after import.
+
+    The import record only keeps the hash; a cache hit used to return the old
+    blocks before the file was re-read, so a switched file could pass unnoticed.
+    """
+
+    from core.legacy_adapter import model_source_to_legacy, pdf_source_from_path
+
+    monkeypatch.setenv("KONGGU_PARSE_CACHE", str(tmp_path / "parse-cache"))
+
+    def pdf_bytes(text):
+        document = fitz.open()
+        document.new_page().insert_text((72, 72), text)
+        data = document.tobytes()
+        document.close()
+        return data
+
+    path = tmp_path / "成员甲-中方课表.pdf"
+    path.write_bytes(pdf_bytes("Captured source A"))
+    model = pdf_source_from_path(path, "中方")
+    source = model_source_to_legacy(model)
+
+    blocks = [dict(_typed_block(period=1), periods=[1, 2])]
+    schedule_core._write_parse_cache(source, "中方", blocks)
+    assert schedule_core._load_parse_cache(source, "中方") == blocks
+
+    path.write_bytes(pdf_bytes("Changed source B"))
+
+    parsed, _calendar, errors, _preview = schedule_core.parse_actual_pdf_sources([source])
+
+    assert parsed == []
+    assert any("导入后发生变化" in error for error in errors)
+    assert "content" not in source
+
+
 def test_clip_check_cache_skips_second_render(monkeypatch, tmp_path):
     monkeypatch.setenv("KONGGU_RASTER_CLIP_CACHE", str(tmp_path / "clip"))
     monkeypatch.setenv("KONGGU_OCR_LAYOUT_CACHE", str(tmp_path / "layout"))
