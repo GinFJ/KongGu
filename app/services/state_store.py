@@ -73,7 +73,8 @@ class StateStore:
         try:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
-            connection.execute("PRAGMA journal_mode = WAL")
+            # journal_mode is persistent in the database file and is set once in
+            # migrate(); re-setting it on every poll connection costs ~2.9ms each.
             # 删除的行必须被覆写：隐私清理不能只把行从索引里摘掉，
             # 否则 sqlite 主文件里仍能扫出姓名、课程与路径。
             connection.execute("PRAGMA secure_delete = ON")
@@ -85,6 +86,12 @@ class StateStore:
             connection.close()
 
     def migrate(self) -> None:
+        setup = sqlite3.connect(self.path, timeout=30)
+        try:
+            # WAL 是文件级持久设置，只在迁移时设置一次。
+            setup.execute("PRAGMA journal_mode = WAL")
+        finally:
+            setup.close()
         with self.connect() as connection:
             connection.executescript(
                 """

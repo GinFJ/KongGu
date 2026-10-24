@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import threading
 from pathlib import Path
@@ -93,6 +94,8 @@ def dispatch(
         return repair_resources()
     if command == "data.clear":
         store = coordinator.store if coordinator is not None else StateStore.from_resource_paths(paths)
+        if coordinator is not None and coordinator.has_active_job():
+            raise ValueError("课表正在处理中，请先停止处理，再清理本机记录。")
         # 先清缓存再清数据库：缓存被占用时中止，数据库还在，用户重试即可；
         # 反过来会出现“数据库已清但接口报错”的不可解释状态。
         cleared = clear_processing_cache(paths)
@@ -187,6 +190,55 @@ def dispatch(
     raise ValueError(f"Unsupported sidecar command: {command}")
 
 
+_WORKER_LOCK_HANDLE: Any = None
+
+
+def _acquire_worker_slot(paths: Any) -> bool:
+    """Return True when this worker owns the per-user OCR worker slot.
+
+    A page reload (Ctrl+R) or a second app instance can spawn a second worker.
+    The second worker's StateStore construction marks the first worker's running
+    jobs as interrupted and drops their paths, so only one worker may run.
+
+    Uses an OS-level file lock: the handle is kept for the process lifetime and
+    the OS releases it when the process exits (even after a crash). Do not probe
+    liveness with ``os.kill(pid, 0)`` on Windows: that calls TerminateProcess.
+    """
+
+    global _WORKER_LOCK_HANDLE
+
+    lock_path = paths.app_data_root / "worker.lock"
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+", encoding="utf-8")
+    except OSError:
+        # 锁文件不可写时不要阻止启动（只读环境仍应可用），退化为无保护。
+        return True
+    try:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write("0")
+            handle.flush()
+        handle.seek(0)
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return False
+    _WORKER_LOCK_HANDLE = handle
+    handle.seek(0)
+    handle.truncate()
+    handle.write(str(os.getpid()))
+    handle.flush()
+    return True
+
+
 def serve() -> int:
     """Serve one persistent NDJSON connection over stdin/stdout."""
 
@@ -201,6 +253,20 @@ def serve() -> int:
 
     try:
         paths = configure_offline_environment()
+        if not _acquire_worker_slot(paths):
+            write_message(
+                {
+                    "type": "event",
+                    "event": "sidecar.fatal",
+                    "job_id": "",
+                    "source_id": "",
+                    "stage": "failed",
+                    "current": 0,
+                    "total": 0,
+                    "message": "已有一个空谷识别进程在运行，请关闭其他空谷窗口后重试。",
+                }
+            )
+            return 1
         apply_calendar_settings(load_calendar_settings(paths))
         schedule_core = load_schedule_core()
         store = StateStore.from_resource_paths(paths)

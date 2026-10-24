@@ -74,6 +74,10 @@ class JobCoordinator:
             self._run(job_id, payload, paths)
         return {"ok": True, "job_id": job_id, "status": "queued"}
 
+    def has_active_job(self) -> bool:
+        with self._lock:
+            return self._active_job_id is not None
+
     def get(self, job_id: str) -> dict[str, Any]:
         job = self.store.get_job(job_id, include_result=True)
         if not job:

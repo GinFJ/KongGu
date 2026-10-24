@@ -364,6 +364,18 @@ def test_chinese_table_bbox_uses_the_matching_column_band():
     assert bbox_by_course["高等数学"][2] < bbox_by_course["大学英语"][0]
 
 
+def test_period_time_range_is_cached_for_repeated_renders():
+    schedule_core.period_time_range.cache_clear()
+
+    first = schedule_core.period_time_range(1)
+    second = schedule_core.period_time_range(1)
+
+    assert first == second
+    info = schedule_core.period_time_range.cache_info()
+    assert info.misses == 1
+    assert info.hits == 1
+
+
 def test_chinese_full_term_course_text_uses_legend_aliases():
     aliases = {"高", "中", "P"}
 

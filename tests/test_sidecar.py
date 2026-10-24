@@ -82,6 +82,7 @@ def test_sidecar_serve_emits_utf8_when_windows_stdio_uses_ansi_encoding(monkeypa
     monkeypatch.setattr(sidecar.sys, "stdout", stdout)
     monkeypatch.setattr(sidecar.sys, "stdin", io.StringIO('{"id":"request-1","command":"resources.repair"}\n'))
     monkeypatch.setattr(sidecar, "configure_offline_environment", lambda: object())
+    monkeypatch.setattr(sidecar, "_acquire_worker_slot", lambda paths: True)
     monkeypatch.setattr(sidecar, "load_calendar_settings", lambda paths: {})
     monkeypatch.setattr(sidecar, "apply_calendar_settings", lambda settings: None)
     monkeypatch.setattr(sidecar, "load_schedule_core", lambda: object())

@@ -93,6 +93,20 @@ export class SidecarClient {
     await this.start();
   }
 
+  async shutdown() {
+    // 页面刷新/关闭时必须结束当前 worker：否则重载后的新 worker 会与旧进程
+    // 争用同一个 OCR 进程槽位与 SQLite 状态。
+    this.intentionalStop = true;
+    const previous = this.child;
+    this.child = null;
+    this.command = null;
+    this.buffer = "";
+    this.rejectAll(new Error("本地识别功能已关闭。"));
+    if (previous) {
+      await previous.kill().catch(() => undefined);
+    }
+  }
+
   private async spawn() {
     this.intentionalStop = false;
     const command = Command.sidecar("binaries/konggu-worker", ["--serve"], { encoding: "utf-8" });

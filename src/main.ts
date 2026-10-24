@@ -1300,3 +1300,8 @@ window.addEventListener("beforeunload", (event) => {
   event.preventDefault();
   event.returnValue = "课表仍在处理中，关闭窗口会中断任务。";
 });
+
+// 页面刷新（Ctrl+R/F5）会重新执行脚本：先结束旧 worker，避免两个进程同时写同一份状态。
+window.addEventListener("pagehide", () => {
+  void client.shutdown();
+});

@@ -1,6 +1,6 @@
 [package]
 name = "konggu"
-version = "0.5.18"
+version = "0.5.19"
 description = "Konggu offline desktop app"
 authors = ["Konggu"]
 edition = "2021"
@@ -13,3 +13,6 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-shell = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }

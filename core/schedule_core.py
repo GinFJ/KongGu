@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import contextlib
+import functools
 import hashlib
 import json
 import logging
@@ -189,7 +190,14 @@ def validate_timetable(timetable: pd.DataFrame) -> tuple[pd.DataFrame, list[str]
     return clean.sort_values("_display_order").drop(columns="_display_order").reset_index(drop=True), []
 
 
+@functools.lru_cache(maxsize=64)
 def period_time_range(period: int) -> str:
+    """Return the clock range for one period.
+
+    Called once per course block and per correction refresh; rebuilding the
+    timetable DataFrame on every call made single-field corrections take seconds.
+    """
+
     if int(period) in NOON_PERIOD_TIMES:
         start, end = NOON_PERIOD_TIMES[int(period)]
         return f"{start}-{end}"
@@ -1890,7 +1898,11 @@ def _parse_chinese_pdf_layout(source: dict[str, Any], file_name: str) -> list[di
     if doc is None:
         return []
 
-    name = _extract_chinese_name(_extract_pdf_text(source), file_name)
+    # 文件名能给出姓名时不再整页取文：每份文本层 PDF 白读一遍全文约 0.2 秒，
+    # 占文本层总时长 20% 以上。
+    name = _extract_chinese_name("", file_name)
+    if not name:
+        name = _extract_chinese_name(_extract_pdf_text(source), file_name)
     all_blocks: list[dict[str, Any]] = []
     try:
         for page in doc:

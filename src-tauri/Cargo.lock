@@ -1629,13 +1629,14 @@ dependencies = [
 
 [[package]]
 name = "konggu"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-fs",
  "tauri-plugin-shell",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

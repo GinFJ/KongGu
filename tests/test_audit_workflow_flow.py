@@ -232,6 +232,7 @@ def test_serve_decodes_utf8_ndjson_requests_when_windows_stdio_uses_ansi(monkeyp
     monkeypatch.setattr(sidecar.sys, "stdin", stdin)
     monkeypatch.setattr(sidecar.sys, "stdout", stdout)
     monkeypatch.setattr(sidecar, "configure_offline_environment", lambda: object())
+    monkeypatch.setattr(sidecar, "_acquire_worker_slot", lambda paths: True)
     monkeypatch.setattr(sidecar, "load_calendar_settings", lambda paths: {})
     monkeypatch.setattr(sidecar, "apply_calendar_settings", lambda settings: None)
     monkeypatch.setattr(sidecar, "load_schedule_core", lambda: object())
