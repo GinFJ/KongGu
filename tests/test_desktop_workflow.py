@@ -4,7 +4,13 @@ import fitz
 import pandas as pd
 import pytest
 
-from app.services.desktop_workflow import export_excel, parse_pdf_paths, serialize_workflow_result
+from app.services.desktop_workflow import (
+    export_excel,
+    parse_pdf_paths,
+    save_workflow_result,
+    serialize_workflow_result,
+)
+from app.services.state_store import StateStore
 from app.services.workflow_persistence import snapshot_workflow
 
 
@@ -330,3 +336,36 @@ def test_week_beyond_teaching_weeks_is_reported_and_blocks_export(tmp_path: Path
     codes = {issue.code for issue in result.process_result.issues}
     assert "WEEK_OUT_OF_SEMESTER" in codes
     assert result.process_result.quality_state != "accepted"
+
+
+def test_blocked_inspection_file_stays_visible_in_details_and_counts(tmp_path: Path):
+    good = tmp_path / "张三-中方课表.pdf"
+    good.write_bytes(_minimal_pdf_bytes())
+    bad = tmp_path / "李四-英方课表.pdf"
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((72, 72), "Konggu")
+    document.save(
+        str(bad),
+        encryption=fitz.PDF_ENCRYPT_AES_256,
+        owner_pw="owner",
+        user_pw="user",
+    )
+    document.close()
+
+    result = parse_pdf_paths(schedule_core=FakeDesktopCore(), paths=[str(good), str(bad)])
+
+    process = result.process_result
+    assert process.summary.source_file_count == 2
+    assert process.summary.failed_file_count == 1
+    serialized = serialize_workflow_result(result, "job-1")
+    assert serialized["summary"]["pdf_count"] == 2
+    details = serialized["details"]
+    assert len(details) == 2
+    failed = [item for item in details if item["status"] == "解析失败"]
+    assert len(failed) == 1
+
+    store = StateStore(tmp_path / "state.sqlite3")
+    job_id = save_workflow_result(result, store, request={"paths": []})
+    job = store.get_job(job_id, include_result=False)
+    assert (job["current"], job["total"]) == (2, 2)

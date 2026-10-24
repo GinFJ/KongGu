@@ -20,10 +20,12 @@ from app.services.result_view_service import build_gui_process_result
 from app.services.state_store import StateStore
 from app.services.workflow_persistence import restore_workflow, snapshot_workflow
 from app.privacy import safe_error_message
+from core.errors import ErrorType, ProcessError
+from core.legacy_adapter import infer_member_name_from_filename
 from core.quality import assert_export_allowed, evaluate_quality, schedule_range_violations
 from core.signature import build_parser_signature
 from core.runtime_control import cancellation_scope
-from core.models import ParseIssue, ProcessResult
+from core.models import FileProcessRecord, ParseIssue, ProcessResult
 from core.pdf_inspection import MAX_PDF_BYTES, inspect_pdf_sources
 
 
@@ -256,6 +258,18 @@ def parse_pdf_paths(
     warnings = _collect_result_warnings(process_result, [*warnings, *generation.errors])
     warnings.extend(_inspection_warnings(generation.pdf_inspections))
     errors.extend(generation.errors or [])
+    # 未通过结构检查的文件也必须出现在“文件检查”明细与统计里：
+    # 它们没有进入 ready_sources，否则会从 details/pdf_count 中消失，
+    # 而 job_files 里明明还有这一行，用户无法定位是哪个文件失败。
+    blocked_records = _blocked_file_records(add_result.added, pdf_inspections)
+    if blocked_records:
+        generation.file_records.extend(blocked_records)
+        process_result.file_records = generation.file_records
+        process_result.failed_files = [
+            record for record in generation.file_records if record.status == "解析失败"
+        ]
+        process_result.summary.source_file_count = len(generation.file_records)
+        process_result.summary.failed_file_count = len(process_result.failed_files)
     # 解析结果必须落在当前学期范围内：晚于教学周的课程若被静默裁剪，用户会拿到
     # 一张缺课的空课表；早于学期的课程被钳到第 1 周同样不可信。范围检查与修正
     # 路径共用 core.quality.schedule_range_violations，避免两条路径结论相反。
@@ -412,13 +426,14 @@ def save_workflow_result(
     )
     workflow_result.process_result.job_id = result_id
     snapshot = snapshot_workflow(workflow_result)
+    file_count = len(workflow_result.generation_result.file_records)
     store.save_job_result(
         result_id,
         result_json=json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
         error="",
         quality_state=workflow_result.process_result.quality_state,
-        current=len(workflow_result.generation_result.model_sources),
-        total=len(workflow_result.generation_result.model_sources),
+        current=file_count,
+        total=file_count,
         issues=snapshot.get("issues", []),
     )
     return result_id
@@ -504,6 +519,38 @@ def _inspection_warnings(inspections: list[dict[str, Any]]) -> list[str]:
         elif inspection.get("warning"):
             warnings.append(f"{source_file}: {inspection['warning']}")
     return warnings
+
+
+def _blocked_file_records(
+    sources: list[Any],
+    pdf_inspections: list[dict[str, Any]],
+) -> list[FileProcessRecord]:
+    """Build failed records for PDFs that never reached the parser."""
+
+    records: list[FileProcessRecord] = []
+    for source, inspection in zip(sources, pdf_inspections):
+        if inspection.get("status") == "ready":
+            continue
+        message = str(inspection.get("error") or "PDF 结构检查未通过，已阻止继续解析。")
+        records.append(
+            FileProcessRecord(
+                source=source,
+                status="解析失败",
+                member_name=infer_member_name_from_filename(source.file_name) or None,
+                detected_kind=source.kind,
+                text_source="未知",
+                block_count=0,
+                result_message=f"未通过 PDF 结构检查：{message}",
+                error=ProcessError(
+                    error_type=ErrorType.FILE_READ_FAILED,
+                    message=message,
+                    source_file=source.file_name,
+                ),
+                source_hash=source.content_hash,
+                quality_state="blocked",
+            )
+        )
+    return records
 
 
 def _detected_weeks(blocks: list[dict[str, Any]]) -> list[int]:

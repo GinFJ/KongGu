@@ -16,7 +16,7 @@ from typing import Any, Callable
 
 import pandas as pd
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.styles import Alignment, Border, Font, NamedStyle, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.worksheet.worksheet import Worksheet
@@ -1286,10 +1286,42 @@ def _populate_empty_weekly_sheet(sheet: Worksheet) -> None:
     sheet["A1"] = "空课表"
 
 
+def _named_style(
+    workbook: Workbook,
+    name: str,
+    *,
+    font: Font | None = None,
+    alignment: Alignment | None = None,
+    border: Border | None = None,
+) -> str:
+    """Register (once) and return a workbook-level named style.
+
+    逐格赋值 font/alignment/border 会为每个单元格复制 StyleArray；
+    7200 块导出的数据表超过 6 万个单元格，这一步占了导出耗时的大头。
+    用命名样式后每格只写一个样式引用。
+    """
+
+    style_list = getattr(workbook, "_named_styles", None)
+    names = getattr(style_list, "names", [])
+    if name in names:
+        return name
+    style = NamedStyle(name=name)
+    if font is not None:
+        style.font = font
+    if alignment is not None:
+        style.alignment = alignment
+    if border is not None:
+        style.border = border
+    workbook.add_named_style(style)
+    return name
+
+
 def _prepare_weekly_sheet_grid(sheet: Worksheet) -> None:
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    workbook = sheet.parent
+    grid_style = _named_style(workbook, "空谷周表网格", alignment=alignment, border=border)
 
     sheet.merge_cells("A1:U2")
     title = sheet["A1"]
@@ -1303,9 +1335,7 @@ def _prepare_weekly_sheet_grid(sheet: Worksheet) -> None:
     for row in range(1, max_row + 1):
         sheet.row_dimensions[row].height = 18
         for column in range(1, 22):
-            cell = sheet.cell(row=row, column=column)
-            cell.alignment = alignment
-            cell.border = border
+            sheet.cell(row=row, column=column).style = grid_style
     sheet.row_dimensions[1].height = 24
     sheet.row_dimensions[2].height = 24
 
@@ -1329,13 +1359,21 @@ def _append_dataframe_sheet(workbook: Workbook, title: str, dataframe: pd.DataFr
     for row in dataframe_to_rows(dataframe, index=False, header=True):
         sheet.append([_excel_safe_cell(value) for value in row])
     sheet.freeze_panes = "A2"
-    header_font = Font(name="宋体", size=11, bold=True)
-    body_font = Font(name="宋体", size=11)
-    alignment = Alignment(vertical="top", wrap_text=True)
+    header_style = _named_style(
+        workbook,
+        "空谷表头",
+        font=Font(name="宋体", size=11, bold=True),
+        alignment=Alignment(vertical="top", wrap_text=True),
+    )
+    body_style = _named_style(
+        workbook,
+        "空谷表格",
+        font=Font(name="宋体", size=11),
+        alignment=Alignment(vertical="top", wrap_text=True),
+    )
     for row in sheet.iter_rows():
         for cell in row:
-            cell.font = header_font if cell.row == 1 else body_font
-            cell.alignment = alignment
+            cell.style = header_style if cell.row == 1 else body_style
     for column_cells in sheet.columns:
         values = [str(cell.value or "") for cell in column_cells]
         width = min(max(len(value) for value in values) + 2, 42)

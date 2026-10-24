@@ -35,6 +35,9 @@ class JobCoordinator:
         self._active_job_id: str | None = None
         self._cancel_event = threading.Event()
         self._thread: threading.Thread | None = None
+        # 同一任务结果被 650ms 轮询与完成事件反复拉取：按 result 内容缓存
+        # restore+serialize，避免每次都重建整份工作流（3.8MB 序列化约 1.4 秒）。
+        self._result_cache: tuple[str, Any, dict[str, Any]] | None = None
 
     def start(self, payload: dict[str, Any], *, background: bool = True) -> dict[str, Any]:
         paths = [str(Path(path)) for path in payload.get("paths", []) if str(path).strip()]
@@ -84,8 +87,14 @@ class JobCoordinator:
             raise ValueError("找不到这次处理记录。")
         payload = {key: value for key, value in job.items() if key != "result"}
         if job.get("result"):
-            workflow = restore_workflow(job["result"], self.schedule_core)
-            payload["output"] = serialize_workflow_result(workflow, job_id)
+            cache = self._result_cache
+            if cache is not None and cache[0] == job_id and cache[1] == job["result"]:
+                payload["output"] = cache[2]
+            else:
+                workflow = restore_workflow(job["result"], self.schedule_core)
+                output = serialize_workflow_result(workflow, job_id)
+                self._result_cache = (job_id, job["result"], output)
+                payload["output"] = output
         return {"ok": True, "job": payload}
 
     def cancel(self, job_id: str) -> dict[str, Any]:
