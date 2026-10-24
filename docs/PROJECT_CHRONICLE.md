@@ -940,3 +940,14 @@ PDF 结构旁路诊断
 - 性能：`period_time_range` 加进程内缓存后 0.707→0.014 ms/次；7200 块基准 `_refresh_derived` 5810→209 ms、`build_slot_table` 941→14 ms、`restore_workflow` 1186→247 ms，单字段人工修正从 3–7 秒降到 0.4–0.6 秒；文件名含姓名时不再整页取文（每份约省 0.2 秒）；SQLite WAL 改为迁移时设置一次。
 - 验证：Python 全量 348 passed（新增 2 项回归）、TypeScript、Vite、Cargo locked offline 检查通过；版本 0.5.19；离线安装包通过发布静态门禁。
 - 仍未处理：页面刷新双 worker 的桌面实测、运行中关窗确认、结构检查失败文件进明细、导出 16 秒与 `job.get` 全量 restore+serialize 等剩余性能债。
+
+## 2026-10-24｜0.5.20 明细完整性、结果缓存与导出性能
+
+**版本：** 0.5.20 / 未发布；解析签名 55（未改）
+
+**状态：** 本地提交、未推送；离线候选包待构建
+
+- 明细完整性：未通过 PDF 结构检查的文件补 `FileProcessRecord`，details、pdf_count、失败数与 job 的 current/total 都按选中文件数统计，不再“job 里有这一行、明细里没有”。
+- 结果缓存：`job.get` 按 result 内容缓存 restore+serialize（7200 块约 1.4 秒、3.8MB），轮询与完成事件重复拉取不再重复重建；修正改写结果后自动失效。
+- 导出性能：周表与数据表样式改为工作簿级命名样式，7020 块同步基准 13.24 秒 → 6.77 秒（省 49%）。
+- 验证：Python 全量 355 passed（新增 3 项回归）、TypeScript、Vite 通过；版本 0.5.20。

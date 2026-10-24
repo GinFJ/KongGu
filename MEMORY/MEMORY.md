@@ -52,5 +52,6 @@
 ## 五、最近一次维护
 
 - 日期：2026-10-24
-- 内容：完成第四批审查遗留的单实例与并发项（Rust 命名互斥量、worker 文件锁、`data.clear` 活动任务拒绝）与性能第一批（`period_time_range` 缓存、文件名优先取文、WAL 一次性设置）；版本升至 0.5.19，离线安装包已构建并过发布门禁。另用 `git filter-repo` 改写全部 55 个提交清除历史 PII（备份 `tmp/git-backup-before-filter/`），并新增 `tools/check_repo_privacy.py` 隐私闸门接入 `npm run build`。详见 `事实.md` 第四十、四十一节。
-- 证据状态：Python 352 passed、TypeScript、Vite、Cargo locked offline 通过；7200 块合成基准实测 `_refresh_derived` 5810→209 ms、单字段修正 3–7 秒→0.4–0.6 秒。远端强制推送被会话审批策略拦截，待用户执行；GitHub 旧对象缓存、运行中关窗确认、结构检查失败文件进明细、剩余性能债见 `待办.md`。
+- 内容：完成第四批审查遗留的单实例与并发项（Rust 命名互斥量、worker 文件锁、`data.clear` 活动任务拒绝）与性能第一批（`period_time_range` 缓存、文件名优先取文、WAL 一次性设置）；版本升至 0.5.19，离线安装包已构建并过发布门禁。另用 `git filter-repo` 改写全部历史清除 PII（备份 `tmp/git-backup-before-filter/`），新增 `tools/check_repo_privacy.py` 隐私闸门接入 `npm run build`，远端强推完成后仓库保持私有。详见 `事实.md` 第四十、四十一、四十二节。
+- 内容（0.5.20）：结构检查失败文件补明细记录（details/pdf_count/job 计数同口径）、`job.get` 按结果缓存 restore+serialize、导出命名样式优化（7020 块基准 13.24 s → 6.77 s）；Python 355 passed、版本 0.5.20。
+- 证据状态：Python 355 passed、TypeScript、Vite、Cargo locked offline 通过；7200 块基准 `_refresh_derived` 5810→209 ms、单字段修正 3–7 秒→0.4–0.6 秒、导出 13.24→6.77 秒。远端历史已脱敏并私有；剩余：0.5.20 离线包构建与安装验收、页面刷新双 worker 桌面实测、运行中关窗确认、大 PDF 驻留与视觉栅格重复。
