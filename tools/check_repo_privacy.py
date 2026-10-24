@@ -38,8 +38,8 @@ PATTERNS = [
     ("token", re.compile(r"(?i)\b(ghp_[a-z0-9]{20,}|github_pat_[a-z0-9_]{20,}|sk-[a-z0-9]{20,})\b")),
 ]
 SKIP_PATHS = {
+    # 只跳过模式定义自身；测试文件必须参与扫描，防止真实账户名混进测试数据。
     "tools/check_repo_privacy.py",
-    "tests/test_privacy_guard.py",
 }
 
 

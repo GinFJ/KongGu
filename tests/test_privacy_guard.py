@@ -2,18 +2,17 @@
 
 from pathlib import Path
 
-from tools.check_repo_privacy import EMAIL, iter_lines, scan
+from tools.check_repo_privacy import EMAIL, PATTERNS, iter_lines, scan
 
 
-def test_flags_local_user_path_and_account_name(tmp_path: Path):
+def test_flags_account_name_and_local_path(tmp_path: Path):
+    # 敏感模式在运行时拼接，避免本文件自身被隐私扫描命中。
+    user = "demo" + "-user"
+    local_path = "C:" + "\\Users\\" + user + "\\Documents\\a.pdf"
     sample = tmp_path / "note.md"
-    sample.write_text(
-        "| 本机 | C:\\Users\\已脱敏\\Documents\\课表.pdf |\n"
-        "| 账户 | 已脱敏 |\n",
-        encoding="utf-8",
-    )
+    sample.write_text(f"| 路径 | {local_path} |\n| 账户 | {user} |\n", encoding="utf-8")
 
-    findings = scan([sample], account="已脱敏")
+    findings = scan([sample], account=user)
 
     kinds = {kind for _, _, kind, _ in findings}
     assert "account-name" in kinds
@@ -31,14 +30,13 @@ def test_accepts_placeholders_and_clean_files(tmp_path: Path):
         encoding="utf-8",
     )
 
-    assert scan([sample], account="已脱敏") == []
+    assert scan([sample], account="demo" + "-user") == []
 
 
 def test_ignores_checksum_digits_and_version_emails():
+    phone = dict(PATTERNS)["phone"]
     line = '"sha256": "6a4253210c316f5483080ac5b5abab7d4a9e7206a8ff27051f32a16138485004"'
-    assert not any(
-        pattern.search(line) for kind, pattern in __import__("tools.check_repo_privacy", fromlist=["PATTERNS"]).PATTERNS if kind == "phone"
-    )
+    assert phone.search(line) is None
     assert EMAIL.search("tauri@2.11.5") is None
 
 
