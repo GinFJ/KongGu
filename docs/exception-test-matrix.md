@@ -33,6 +33,9 @@
 | 离线清单条目不是对象 | 启动时 AttributeError 拖垮资源修复 | `tests/test_audit_platform.py::test_manifest_entries_that_are_not_objects_fail_closed` |
 | 竖版 5 天整学期表 | 坐标解析器拒收后退化为行序启发式，大量错位 | `tests/test_coordinate_parsers.py::test_chinese_five_day_table_with_week_column_at_first_band_edge` |
 | 修正后派生字段陈旧 | 节次改了 time 不变、日历外周次日期被清空 | `tests/test_review_correction_consistency.py`、`tests/test_audit_workflow_flow.py` 修正重算回归 |
+| 双开应用或页面刷新 | 两个 worker 同时改写同一份任务状态 | Rust 命名互斥量（`src-tauri/src/main.rs`）+ `app/sidecar.py` 文件锁回归 `tests/test_sidecar_guards.py::test_worker_slot_is_exclusive_per_user` |
+| 处理中清理数据 | 清理后任务仍写审计行、状态矛盾 | `app/sidecar.py` data.clear 活动任务拒绝 + 文件锁回归 |
+| 重复渲染节次时间 | 每次修正为每块重建时间表，单字段修正 3–7 秒 | `tests/test_coordinate_parsers.py::test_period_time_range_is_cached_for_repeated_renders` |
 
 ## 已确认但尚未覆盖的异常
 
