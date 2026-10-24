@@ -331,6 +331,7 @@ def configure_audit_cache(out_dir: Path) -> None:
         "KONGGU_PARSE_CACHE": cache_root / "parsed_blocks",
         "KONGGU_OCR_TEXT_CACHE": cache_root / "pdf_text",
         "KONGGU_OCR_LAYOUT_CACHE": cache_root / "pdf_layout",
+        "KONGGU_RASTER_CLIP_CACHE": cache_root / "pdf_clip",
         "MPLCONFIGDIR": cache_root / "mplconfig",
     }
     for key, value in defaults.items():

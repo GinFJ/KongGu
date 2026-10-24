@@ -146,7 +146,14 @@ def parse_pdf_paths(
                 )
             midday_check = getattr(schedule_core, "english_unmapped_midday_cell_count", None)
             if source.kind == "英方" and callable(midday_check):
-                count = midday_check({"path": source.source_path, "bytes_data": source.bytes_data})
+                count = midday_check(
+                    {
+                        "path": source.source_path,
+                        "bytes_data": source.bytes_data,
+                        "name": source.file_name,
+                        "content_hash": source.content_hash,
+                    }
+                )
                 if count:
                     inspection_issues.append(
                         ParseIssue(
@@ -222,7 +229,14 @@ def parse_pdf_paths(
                 or inspection.get("clipped_pages")
             ):
                 continue
-            clipped = raster_clipping_check({"path": source.source_path, "bytes_data": source.bytes_data})
+            clipped = raster_clipping_check(
+                {
+                    "path": source.source_path,
+                    "bytes_data": source.bytes_data,
+                    "name": source.file_name,
+                    "content_hash": source.content_hash,
+                }
+            )
             if clipped:
                 inspection_issues.append(
                     ParseIssue(

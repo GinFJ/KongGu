@@ -29,6 +29,7 @@ def _isolate_caches(monkeypatch, tmp_path: Path) -> None:
         ("KONGGU_PARSE_CACHE", "parsed_blocks"),
         ("KONGGU_OCR_TEXT_CACHE", "pdf_text"),
         ("KONGGU_OCR_LAYOUT_CACHE", "pdf_layout"),
+        ("KONGGU_RASTER_CLIP_CACHE", "pdf_clip"),
     ):
         monkeypatch.setenv(name, str(tmp_path / "cache" / folder))
 

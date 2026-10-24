@@ -1,7 +1,16 @@
 from pathlib import Path
 
 import app.offline_resources as offline_resources
-from app.offline_resources import ResourcePaths, _target_path, build_manifest, repair_resources, resolve_resource_paths, resource_status
+from app.offline_resources import (
+    PROCESSING_CACHE_DIRS,
+    ResourcePaths,
+    _target_path,
+    build_manifest,
+    configure_offline_environment,
+    repair_resources,
+    resolve_resource_paths,
+    resource_status,
+)
 
 
 def test_resource_repair_copies_bundled_files_and_reports_ready_config(tmp_path: Path, monkeypatch):
@@ -160,3 +169,97 @@ def test_manifest_paths_cannot_escape_resource_roots(tmp_path: Path):
         except ValueError:
             continue
         raise AssertionError(f"Manifest path should have been rejected: {entry}")
+
+
+def _build_bundle(tmp_path: Path) -> tuple[Path, Path]:
+    bundled = tmp_path / "bundled"
+    app_data = tmp_path / "appdata"
+    config = bundled / "config"
+    config.mkdir(parents=True)
+    (config / "period_time.json").write_text('{"periods":[]}', encoding="utf-8")
+    (config / "school_calendar.json").write_text('{"teaching_weeks":18}', encoding="utf-8")
+    for model in ("PP-OCRv4_mobile_det", "PP-OCRv4_mobile_rec"):
+        model_dir = bundled / "resources" / "ocr_models" / model
+        model_dir.mkdir(parents=True)
+        (model_dir / "inference.yml").write_text("model: fake", encoding="utf-8")
+    manifest = build_manifest(bundled, ["config", "resources/ocr_models"])
+    manifest_path = bundled / "resources" / "offline_manifest.json"
+    manifest_path.write_text(__import__("json").dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    return bundled, app_data
+
+
+def test_repair_hashes_each_resource_once_instead_of_twice(tmp_path: Path, monkeypatch):
+    """Startup repair used to validate every entry, then call resource_status and
+    hash all entries a second time (28 entries / 26.5 MB in the bundled build)."""
+
+    bundled, app_data = _build_bundle(tmp_path)
+    monkeypatch.setenv("KONGGU_BUNDLED_RESOURCE_ROOT", str(bundled))
+    monkeypatch.setenv("KONGGU_APP_DATA_ROOT", str(app_data))
+    monkeypatch.setattr(
+        offline_resources,
+        "_ocr_runtime_status",
+        lambda: {"ready": True, "stage": "ready", "error": ""},
+    )
+    first = repair_resources()
+    assert first["ready"] is True
+    entry_count = len(
+        __import__("json").loads(
+            (bundled / "resources" / "offline_manifest.json").read_text(encoding="utf-8")
+        )["entries"]
+    )
+
+    calls: list[str] = []
+    original = offline_resources._sha256
+
+    def counting(path: Path) -> str:
+        calls.append(str(path))
+        return original(path)
+
+    monkeypatch.setattr(offline_resources, "_sha256", counting)
+    repaired = repair_resources()
+
+    assert repaired["ready"] is True
+    assert repaired["copied"] == []
+    assert len(calls) == entry_count, f"expected one hash per entry, got {len(calls)} for {entry_count}"
+
+    calls.clear()
+    status = resource_status()
+    assert status["ready"] is True
+    assert len(calls) == entry_count
+
+
+def test_repair_rehashes_a_corrupted_target_and_recovers(tmp_path: Path, monkeypatch):
+    bundled, app_data = _build_bundle(tmp_path)
+    monkeypatch.setenv("KONGGU_BUNDLED_RESOURCE_ROOT", str(bundled))
+    monkeypatch.setenv("KONGGU_APP_DATA_ROOT", str(app_data))
+    monkeypatch.setattr(
+        offline_resources,
+        "_ocr_runtime_status",
+        lambda: {"ready": True, "stage": "ready", "error": ""},
+    )
+    assert repair_resources()["ready"] is True
+
+    corrupted = app_data / "resources" / "config" / "period_time.json"
+    corrupted.write_text('{"periods":[1]}', encoding="utf-8")
+
+    repaired = repair_resources()
+
+    assert repaired["ready"] is True
+    assert repaired["copied"] == ["resources/config/period_time.json"]
+    assert repaired["failed"] == []
+
+
+def test_processing_cache_dirs_cover_raster_clip_cache():
+    assert "pdf_clip" in PROCESSING_CACHE_DIRS
+    assert "pdf_layout" in PROCESSING_CACHE_DIRS
+
+
+def test_offline_environment_points_raster_clip_cache_into_app_data(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("KONGGU_APP_DATA_ROOT", str(tmp_path / "appdata"))
+    monkeypatch.setenv("KONGGU_BUNDLED_RESOURCE_ROOT", str(tmp_path / "bundled"))
+    monkeypatch.delenv("KONGGU_RASTER_CLIP_CACHE", raising=False)
+    monkeypatch.delenv("KONGGU_OCR_MODEL_DIR", raising=False)
+
+    paths = configure_offline_environment()
+
+    assert offline_resources.os.environ["KONGGU_RASTER_CLIP_CACHE"] == str(paths.cache_root / "pdf_clip")

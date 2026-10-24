@@ -44,17 +44,33 @@ def hash_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def hash_file(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
+    """Hash a local file without reading it entirely into memory."""
+
+    hasher = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(chunk_size), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
 def pdf_source_from_path(path: str | Path, kind: ScheduleSourceType) -> PdfSource:
-    """Build a PdfSource from a selected local PDF path."""
+    """Build a PdfSource from a selected local PDF path.
+
+    The source keeps the content hash, not the PDF bytes: a full batch may hold
+    up to 200 MB of selected PDFs, and freezing every file in memory kept that
+    whole budget resident for the entire job.  The parser re-reads one file at a
+    time and verifies it still hashes to ``content_hash`` before parsing
+    (``core.schedule_core._materialize_source_content``).
+    """
 
     pdf_path = Path(path)
-    data = pdf_path.read_bytes()
     return PdfSource(
         file_name=pdf_path.name,
         kind=kind,
         source_path=str(pdf_path.resolve()),
-        content_hash=hash_bytes(data),
-        bytes_data=data,
+        content_hash=hash_file(pdf_path),
+        bytes_data=None,
     )
 
 

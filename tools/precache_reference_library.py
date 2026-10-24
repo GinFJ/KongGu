@@ -33,6 +33,7 @@ def _configure_cache() -> None:
         "KONGGU_OCR_TEXT_CACHE": cache_root / "pdf_text",
         "KONGGU_OCR_LAYOUT_CACHE": cache_root / "pdf_layout",
         "KONGGU_PARSE_CACHE": cache_root / "parsed_blocks",
+        "KONGGU_RASTER_CLIP_CACHE": cache_root / "pdf_clip",
         "MPLCONFIGDIR": cache_root / "matplotlib",
     }
     for key, path in env_paths.items():

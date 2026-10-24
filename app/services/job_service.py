@@ -260,6 +260,12 @@ class JobCoordinator:
             with self._lock:
                 if self._active_job_id == job_id:
                     self._active_job_id = None
+            clear_page_cache = getattr(self.schedule_core, "clear_page_image_cache", None)
+            if callable(clear_page_cache):
+                try:
+                    clear_page_cache()
+                except Exception:
+                    LOGGER.warning("clear page image cache failed: %s", job_id, exc_info=True)
             try:
                 if final_status == "completed":
                     # 覆盖取消竞态写入的 cancelling 状态与残留 error 文本。

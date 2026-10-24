@@ -54,6 +54,7 @@ def configure_runtime_environment() -> None:
         "KONGGU_OCR_TEXT_CACHE": cache_root / "pdf_text",
         "KONGGU_OCR_LAYOUT_CACHE": cache_root / "pdf_layout",
         "KONGGU_PARSE_CACHE": cache_root / "parsed_blocks",
+        "KONGGU_RASTER_CLIP_CACHE": cache_root / "pdf_clip",
         "KONGGU_OCR_MODEL_DIR": resource_paths.ocr_models_root,
     }
     for env_name, path in cache_paths.items():

@@ -1,7 +1,17 @@
+import pytest
+
 from core import schedule_core
 from core.errors import ErrorType
 from core.legacy_adapter import build_file_records, course_blocks_from_legacy
 from core.models import PdfSource
+
+
+@pytest.fixture(autouse=True)
+def _fake_sources_skip_file_verification(monkeypatch):
+    """These cases drive the parser flow with fake source paths and stubbed
+    PDF/OCR functions; source materialization is covered in test_audit_parser_logic."""
+
+    monkeypatch.setattr(schedule_core, "_materialize_source_content", lambda source: "")
 
 
 def test_image_only_pdf_uses_ocr_text(monkeypatch):

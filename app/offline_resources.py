@@ -27,6 +27,8 @@ _DLL_DIRECTORY_HANDLES: list[Any] = []
 _PADDLE_DLL_CONFIGURED = False
 _LAST_CACHE_PURGE_AT = 0.0
 CACHE_PURGE_INTERVAL_SECONDS = 3600.0
+# Konggu-generated processing caches; shared by cleanup, retention purge and data.clear.
+PROCESSING_CACHE_DIRS = ("pdf_text", "pdf_layout", "parsed_blocks", "pdf_clip")
 
 
 class OfflineManifestError(RuntimeError):
@@ -82,6 +84,7 @@ def configure_offline_environment() -> ResourcePaths:
     os.environ.setdefault("KONGGU_OCR_TEXT_CACHE", str(paths.cache_root / "pdf_text"))
     os.environ.setdefault("KONGGU_OCR_LAYOUT_CACHE", str(paths.cache_root / "pdf_layout"))
     os.environ.setdefault("KONGGU_PARSE_CACHE", str(paths.cache_root / "parsed_blocks"))
+    os.environ.setdefault("KONGGU_RASTER_CLIP_CACHE", str(paths.cache_root / "pdf_clip"))
     os.environ.setdefault("PADDLE_PDX_CACHE_HOME", str(paths.ocr_models_root.parent))
     os.environ.setdefault("PADDLE_HOME", str(paths.cache_root / "paddle"))
     os.environ.setdefault("PADDLEOCR_HOME", str(paths.cache_root / "paddleocr"))
@@ -96,10 +99,27 @@ def resource_status(*, check_runtime: bool = False) -> dict[str, Any]:
 
     paths = configure_offline_environment()
     manifest, manifest_issue, manifest_error = _load_manifest_for_status(paths.bundled_root)
+    missing, invalid = _validate_manifest_entries(paths, manifest)
+    return _build_status(
+        paths,
+        manifest,
+        manifest_issue,
+        manifest_error,
+        missing,
+        invalid,
+        check_runtime=check_runtime,
+    )
+
+
+def _validate_manifest_entries(
+    paths: ResourcePaths,
+    manifest: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Validate every manifest entry exactly once (one hash per existing file)."""
+
     missing: list[dict[str, Any]] = []
     invalid: list[dict[str, Any]] = []
-    entries = manifest.get("entries", [])
-    for entry in entries:
+    for entry in manifest.get("entries", []):
         try:
             target = _target_path(paths, entry)
         except ValueError:
@@ -110,7 +130,27 @@ def resource_status(*, check_runtime: bool = False) -> dict[str, Any]:
             missing.append(_entry_status(entry, target, issue))
         elif issue:
             invalid.append(_entry_status(entry, target, issue))
+    return missing, invalid
 
+
+def _build_status(
+    paths: ResourcePaths,
+    manifest: dict[str, Any],
+    manifest_issue: str,
+    manifest_error: str,
+    missing: list[dict[str, Any]],
+    invalid: list[dict[str, Any]],
+    *,
+    check_runtime: bool = False,
+) -> dict[str, Any]:
+    """Assemble the public status payload from already-validated entries.
+
+    ``repair_resources`` reuses its own validation pass instead of calling
+    ``resource_status`` again: the second pass hashed all 28 bundled files
+    (26.5 MB) a second time on every startup.
+    """
+
+    entries = manifest.get("entries", [])
     ocr = _ocr_status(paths.ocr_models_root)
     if check_runtime and ocr["ready"]:
         ocr["runtime"] = _ocr_runtime_status()
@@ -168,11 +208,14 @@ def repair_resources() -> dict[str, Any]:
         }
     copied: list[str] = []
     failed: list[dict[str, str]] = []
+    missing: list[dict[str, Any]] = []
+    invalid: list[dict[str, Any]] = []
     for entry in manifest.get("entries", []):
         try:
             target = _target_path(paths, entry)
             source = _safe_child(paths.bundled_root, entry.get("source"), "source")
         except ValueError as exc:
+            invalid.append(_entry_status(entry, None, "invalid-manifest-path"))
             failed.append(
                 {
                     "source": safe_error_message(entry.get("source"), "未知资源"),
@@ -186,6 +229,7 @@ def repair_resources() -> dict[str, Any]:
             continue
         if issue == "invalid-manifest-entry":
             # Never copy over a target the manifest cannot describe; report it instead.
+            invalid.append(_entry_status(entry, target, issue))
             failed.append(
                 {
                     "source": safe_error_message(entry.get("source"), "未知资源"),
@@ -205,8 +249,26 @@ def repair_resources() -> dict[str, Any]:
                     "error": type(exc).__name__,
                 }
             )
+            # The target may still be missing or unreadable; the final status must
+            # describe what the user actually has, not the optimistic intent.
+        # Validate the copy that was just written instead of hashing every file a
+        # second time from resource_status().  Already-valid entries were hashed
+        # once above and are not re-checked.
+        final_issue = _validate_entry(target, entry)
+        if final_issue == "missing":
+            missing.append(_entry_status(entry, target, final_issue))
+        elif final_issue:
+            invalid.append(_entry_status(entry, target, final_issue))
 
-    status = resource_status(check_runtime=True)
+    status = _build_status(
+        paths,
+        manifest,
+        "",
+        "",
+        missing,
+        invalid,
+        check_runtime=True,
+    )
     # 部分失败属于“修复已执行但资源未就绪”：调用方需要拿到失败条目与状态，
     # 而不是被当成一次通用请求错误吞掉诊断信息。
     return {
@@ -231,7 +293,7 @@ def clear_processing_cache(paths: ResourcePaths | None = None) -> list[str]:
     roots = [resolved.cache_root, Path(__file__).resolve().parents[1] / "cache"]
     cleared: list[str] = []
     for root in roots:
-        for name in ("pdf_text", "pdf_layout", "parsed_blocks"):
+        for name in PROCESSING_CACHE_DIRS:
             try:
                 target = _safe_child(root, name, "cache")
             except ValueError:
@@ -245,7 +307,7 @@ def clear_processing_cache(paths: ResourcePaths | None = None) -> list[str]:
 
 def _purge_expired_processing_cache(paths: ResourcePaths, retention_days: int = 30) -> None:
     cutoff = datetime.now(UTC).timestamp() - timedelta(days=max(1, retention_days)).total_seconds()
-    for name in ("pdf_text", "pdf_layout", "parsed_blocks"):
+    for name in PROCESSING_CACHE_DIRS:
         root = _safe_child(paths.cache_root, name, "cache")
         if not root.exists():
             continue

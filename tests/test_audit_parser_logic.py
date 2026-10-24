@@ -333,7 +333,11 @@ def test_chinese_legacy_web_layout_closes_document(monkeypatch, tmp_path):
     assert document.closed is True
 
 
-def test_pdf_parser_reads_the_bytes_that_were_hashed(tmp_path):
+def test_pdf_source_keeps_hash_not_bytes_and_verifies_before_parsing(tmp_path, monkeypatch):
+    """A 200 MB batch must not stay resident: files are re-read and verified one
+    at a time, and a file that changed after import is refused instead of parsed
+    with a mismatching source hash."""
+
     from core.legacy_adapter import model_source_to_legacy, pdf_source_from_path
 
     def pdf_bytes(text):
@@ -345,16 +349,125 @@ def test_pdf_parser_reads_the_bytes_that_were_hashed(tmp_path):
 
     path = tmp_path / "成员甲-中方课表.pdf"
     path.write_bytes(pdf_bytes("Captured source A"))
-    source = model_source_to_legacy(pdf_source_from_path(path, "中方"))
-    path.write_bytes(pdf_bytes("Changed source B"))
+    model = pdf_source_from_path(path, "中方")
+    source = model_source_to_legacy(model)
 
+    # The model keeps the hash but not the bytes.
+    assert model.bytes_data is None
+    assert model.content_hash == schedule_core._file_digest(str(path))
+    assert source["bytes"] is None
     assert schedule_core._source_digest(source) == source["content_hash"]
-    document = schedule_core._open_pdf_document(source)
-    try:
-        assert "Captured source A" in document[0].get_text()
-        assert "Changed source B" not in document[0].get_text()
-    finally:
-        document.close()
+
+    # Parsing one file materializes and releases its bytes.
+    assert schedule_core._materialize_source_content(source) == ""
+    assert source["content"] == path.read_bytes()
+    source.pop("content", None)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("解析入口已桩化")
+
+    monkeypatch.setattr(schedule_core, "_parse_chinese_pdf_layout", boom)
+    blocks, _calendar, errors, _preview = schedule_core.parse_actual_pdf_sources([source])
+    assert blocks == []
+    assert any("解析入口已桩化" in error for error in errors)
+    assert "content" not in source
+
+    # The same import record must refuse a file that changed on disk afterwards.
+    path.write_bytes(pdf_bytes("Changed source B"))
+    changed_blocks, _calendar, changed_errors, _preview = schedule_core.parse_actual_pdf_sources([source])
+    assert changed_blocks == []
+    assert any("导入后发生变化" in error for error in changed_errors)
+    assert "content" not in source
+
+
+def test_page_image_cache_reuses_identical_render(monkeypatch):
+    counters = {"renders": 0}
+
+    class FakePage:
+        def get_pixmap(self, **kwargs):
+            counters["renders"] += 1
+            return _FakePixmap()
+
+    source = {"file_name": "成员甲-中方课表.pdf", "kind": "中方", "bytes": b"page-cache-source"}
+    page = FakePage()
+    schedule_core.clear_page_image_cache()
+
+    first = schedule_core._page_image(source, page, 0, 120)
+    second = schedule_core._page_image(source, page, 0, 120)
+    other_dpi = schedule_core._page_image(source, page, 0, 180)
+
+    assert counters["renders"] == 2
+    assert first is second
+    assert other_dpi is not first
+
+    schedule_core.clear_page_image_cache()
+    schedule_core._page_image(source, page, 0, 120)
+    assert counters["renders"] == 3
+
+
+def test_clip_check_cache_skips_second_render(monkeypatch, tmp_path):
+    monkeypatch.setenv("KONGGU_RASTER_CLIP_CACHE", str(tmp_path / "clip"))
+    monkeypatch.setenv("KONGGU_OCR_LAYOUT_CACHE", str(tmp_path / "layout"))
+    header = {
+        "page": 0,
+        "text": "星期一",
+        "x0": 100,
+        "x1": 140,
+        "y0": 10,
+        "y1": 20,
+        "page_width": 1000,
+        "page_height": 1400,
+    }
+    monkeypatch.setattr(schedule_core, "_extract_pdf_ocr_items", lambda source, **kwargs: [dict(header)])
+    counters = {"opens": 0, "renders": 0}
+
+    class FakePage:
+        def get_pixmap(self, **kwargs):
+            counters["renders"] += 1
+            return _FakePixmap()
+
+    class FakeDoc:
+        page_count = 1
+
+        def __iter__(self):
+            return iter([FakePage()])
+
+        def close(self):
+            pass
+
+    def fake_open(source):
+        counters["opens"] += 1
+        return FakeDoc()
+
+    monkeypatch.setattr(schedule_core, "_open_pdf_document", fake_open)
+    schedule_core.clear_page_image_cache()
+    source = {"file_name": "成员甲-中方课表.pdf", "kind": "中方", "bytes": b"clip-cache-source"}
+
+    first = schedule_core.chinese_image_clipped_pages(source)
+    second = schedule_core.chinese_image_clipped_pages(source)
+
+    assert first == second == []
+    assert counters["opens"] == 1
+    assert counters["renders"] == 1
+
+
+def test_semester_start_date_and_weeks_follow_environment(monkeypatch):
+    from datetime import date
+
+    monkeypatch.setenv("KONGGU_SEMESTER_START_DATE", "2026-09-07")
+    monkeypatch.setenv("KONGGU_TEACHING_WEEKS", "20")
+    assert schedule_core._semester_start_date() == date(2026, 9, 7)
+    assert schedule_core._teaching_weeks() == 20
+
+    monkeypatch.setenv("KONGGU_SEMESTER_START_DATE", "2027-03-01")
+    monkeypatch.setenv("KONGGU_TEACHING_WEEKS", "18")
+    assert schedule_core._semester_start_date() == date(2027, 3, 1)
+    assert schedule_core._teaching_weeks() == 18
+
+    monkeypatch.delenv("KONGGU_SEMESTER_START_DATE")
+    monkeypatch.delenv("KONGGU_TEACHING_WEEKS")
+    assert schedule_core._semester_start_date() == date(2026, 3, 2)
+    assert schedule_core._teaching_weeks() == 18
 
 
 # ---------------------------------------------------------------------------

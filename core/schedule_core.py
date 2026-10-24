@@ -9,7 +9,7 @@ import logging
 import os
 import re
 import unicodedata
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -93,6 +93,12 @@ LOGGER = logging.getLogger("konggu")
 PARSE_CACHE_VERSION = 34
 OCR_LAYOUT_CACHE_VERSION = 3
 OCR_TEXT_CACHE_VERSION = 1
+RASTER_CLIP_CACHE_VERSION = 1
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+# 同一文件在一次任务里会被多次问内容哈希（解析缓存、OCR 缓存、页面缓存键），
+# 按 (路径, mtime, 大小) 记住结果，避免对大 PDF 反复整文件重算。
+_FILE_DIGEST_CACHE: dict[tuple[str, int, int], str] = {}
+_FILE_DIGEST_CACHE_LIMIT = 128
 NAME_STOPWORDS = {
     "办公室",
     "外联部",
@@ -147,17 +153,77 @@ def _source_kind(source: dict[str, Any]) -> str:
 
 
 def _source_digest(source: dict[str, Any]) -> str:
+    """Content hash for cache keys.
+
+    Sources selected from disk deliberately keep only the hash captured at import
+    time (a full batch may hold up to 200 MB of PDFs); recomputing it from the
+    path on every cache lookup would re-read the whole file.  The recorded hash is
+    only trusted after ``_materialize_source_content`` verified the file still
+    matches it for the file that is actually parsed.
+    """
+
     data = _source_bytes(source)
     if data:
         return hashlib.sha256(data).hexdigest()
+    recorded = str(source.get("content_hash") or "").strip().lower()
+    if _DIGEST_RE.fullmatch(recorded):
+        return recorded
     path = _source_path(source)
     if path and Path(path).exists():
-        hasher = hashlib.sha256()
-        with Path(path).open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                hasher.update(chunk)
-        return hasher.hexdigest()
+        return _file_digest(path)
     return hashlib.sha256(_source_name(source).encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _file_digest(path: str) -> str:
+    """Streaming SHA-256 for a local file, memoized on (path, mtime, size)."""
+
+    try:
+        stat = Path(path).stat()
+        key = (str(Path(path).resolve()), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        key = None
+    if key is not None:
+        cached = _FILE_DIGEST_CACHE.get(key)
+        if cached:
+            return cached
+    hasher = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    digest = hasher.hexdigest()
+    if key is not None:
+        if len(_FILE_DIGEST_CACHE) >= _FILE_DIGEST_CACHE_LIMIT:
+            _FILE_DIGEST_CACHE.clear()
+        _FILE_DIGEST_CACHE[key] = digest
+    return digest
+
+
+def _materialize_source_content(source: dict[str, Any]) -> str:
+    """Load the bytes to parse and prove they are the bytes that were hashed.
+
+    Returns "" on success (``source['content']`` now holds the PDF bytes) or a
+    user-facing error message.  ``parse_actual_pdf_sources`` removes the bytes
+    again after the file finishes so a 200 MB batch never stays resident.
+    """
+
+    if _source_bytes(source):
+        return ""
+    path = _source_path(source)
+    if not path:
+        return ""
+    try:
+        with Path(path).open("rb") as handle:
+            data = handle.read()
+    except OSError:
+        return "PDF 文件已无法读取，请重新选择该课表。"
+    digest = hashlib.sha256(data).hexdigest()
+    recorded = str(source.get("content_hash") or "").strip().lower()
+    if _DIGEST_RE.fullmatch(recorded) and recorded != digest:
+        return "PDF 文件在导入后发生变化，已停止解析该文件；请重新选择课表 PDF。"
+    if not _DIGEST_RE.fullmatch(recorded):
+        source["content_hash"] = digest
+    source["content"] = data
+    return ""
 
 
 def default_timetable() -> pd.DataFrame:
@@ -334,6 +400,81 @@ def _open_pdf_document(source: dict[str, Any]) -> Any | None:
     return None
 
 
+# 同一任务里同一页会被 OCR、视觉表格、裁切检查分别栅格化：
+# 按 (内容哈希, 页码, dpi) 缓存原始 RGB 像素，命中时省掉一次 PDF 渲染。
+_PAGE_IMAGE_CACHE: OrderedDict[tuple[str, int, int], Any] = OrderedDict()
+_PAGE_IMAGE_CACHE_BYTES = 0
+PAGE_IMAGE_CACHE_LIMIT_BYTES = 64 * 1024 * 1024
+_PAGE_IMAGE_CACHE_MAX_ITEM_BYTES = 24 * 1024 * 1024
+
+
+def clear_page_image_cache() -> None:
+    """Drop cached page pixmaps (called when a job finishes to release memory)."""
+
+    global _PAGE_IMAGE_CACHE_BYTES
+    _PAGE_IMAGE_CACHE.clear()
+    _PAGE_IMAGE_CACHE_BYTES = 0
+
+
+def _page_cache_identity(source: dict[str, Any]) -> str:
+    identity = source.get("_page_cache_identity")
+    if isinstance(identity, str):
+        return identity
+    identity = _source_digest(source)
+    source["_page_cache_identity"] = identity
+    return identity
+
+
+def _cached_page_image(
+    cache_identity: str,
+    page_number: int,
+    dpi: int,
+) -> Any | None:
+    key = (cache_identity, int(page_number), int(dpi))
+    image = _PAGE_IMAGE_CACHE.get(key)
+    if image is None:
+        return None
+    _PAGE_IMAGE_CACHE.move_to_end(key)
+    return image
+
+
+def _page_image(
+    source: dict[str, Any],
+    page: Any,
+    page_number: int,
+    dpi: int,
+) -> Any | None:
+    """Return the RGB pixels of one page, reusing an identical earlier render."""
+
+    global _PAGE_IMAGE_CACHE_BYTES
+
+    cache_identity = _page_cache_identity(source)
+    cached = _cached_page_image(cache_identity, page_number, dpi)
+    if cached is not None:
+        return cached
+    try:
+        import numpy as np
+    except Exception:
+        return None
+    try:
+        pix = page.get_pixmap(dpi=int(dpi), alpha=False)
+    except Exception:
+        return None
+    pixels = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+    if pix.n > 3:
+        pixels = pixels[:, :, :3]
+    image = np.ascontiguousarray(pixels)
+    size = int(image.nbytes)
+    if size <= _PAGE_IMAGE_CACHE_MAX_ITEM_BYTES:
+        key = (cache_identity, int(page_number), int(dpi))
+        while _PAGE_IMAGE_CACHE and _PAGE_IMAGE_CACHE_BYTES + size > PAGE_IMAGE_CACHE_LIMIT_BYTES:
+            _old_key, evicted = _PAGE_IMAGE_CACHE.popitem(last=False)
+            _PAGE_IMAGE_CACHE_BYTES -= int(evicted.nbytes)
+        _PAGE_IMAGE_CACHE[key] = image
+        _PAGE_IMAGE_CACHE_BYTES += size
+    return image
+
+
 def _page_words(page: Any) -> list[dict[str, Any]]:
     return [
         {
@@ -416,6 +557,8 @@ def parse_actual_pdf_sources(
         kind = _source_kind(source)
         image_only_pdf = False
         used_ocr = False
+        # 入参可能已经带字节（测试/旧调用）；只有自己装载的字节才在文件处理完后释放。
+        had_content = bool(_source_bytes(source))
 
         def report_ocr_progress(current_page: int, total_pages: int) -> None:
             if progress:
@@ -439,6 +582,12 @@ def parse_actual_pdf_sources(
                 for item in cached:
                     item.setdefault("text_source", "内嵌文本")
                 blocks.extend(cached)
+                continue
+
+            materialize_error = _materialize_source_content(source)
+            if materialize_error:
+                LOGGER.warning("来源校验失败，已跳过: %s error=%s", file_name, materialize_error)
+                errors.append(f"{file_name}：{materialize_error}")
                 continue
 
             LOGGER.info("解析文件: %s kind=%s", file_name, kind)
@@ -617,6 +766,9 @@ def parse_actual_pdf_sources(
         except Exception as exc:
             errors.append(f"{file_name}：{exc}")
         finally:
+            if not had_content:
+                # 释放本文件字节：一批 200 MB 的 PDF 不能在整个任务里常驻内存。
+                source.pop("content", None)
             completed += 1
             if progress:
                 progress(completed, len(sources), f"已完成 {completed}/{len(sources)} 份课表")
@@ -1604,10 +1756,11 @@ def _extract_pdf_ocr_items(
         ocr = _build_ocr_engine()
         total_pages = max(1, int(doc.page_count))
         for page_number, page in enumerate(doc):
-            pix = page.get_pixmap(dpi=120, alpha=False)
-            image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
-            if pix.n > 3:
-                image = image[:, :, :3]
+            image = _page_image(source, page, page_number, 120)
+            if image is None:
+                continue
+            width = int(image.shape[1])
+            height = int(image.shape[0])
             try:
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     result = ocr.ocr(image) if hasattr(ocr, "ocr") else ocr.predict(image)
@@ -1616,7 +1769,7 @@ def _extract_pdf_ocr_items(
                     result = ocr.predict(image)
             except Exception as exc:
                 raise OCRConfigurationError(_ocr_error_message(exc)) from exc
-            items.extend(_extract_ocr_items_from_result(result, page_number, pix.width, pix.height))
+            items.extend(_extract_ocr_items_from_result(result, page_number, width, height))
             raise_if_cancelled()
             if progress:
                 progress(page_number + 1, total_pages)
@@ -1774,6 +1927,56 @@ def _ocr_layout_cache_path(source: dict[str, Any]) -> Path:
         else Path(__file__).resolve().parents[1] / "cache" / "pdf_layout"
     )
     return cache_root / f"{digest}.json"
+
+
+def _raster_clip_cache_path(source: dict[str, Any]) -> Path:
+    """Persist the clipping check so repeated batches do not re-render every page."""
+
+    digest = _source_digest(source)
+    cache_root = (
+        Path(os.environ.get("KONGGU_RASTER_CLIP_CACHE", ""))
+        if os.environ.get("KONGGU_RASTER_CLIP_CACHE")
+        else Path(__file__).resolve().parents[1] / "cache" / "pdf_clip"
+    )
+    return cache_root / f"{digest}.json"
+
+
+def _load_raster_clip_cache(source: dict[str, Any]) -> list[int] | None:
+    path = _raster_clip_cache_path(source)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        LOGGER.warning("裁切检查缓存读取失败: %s error=%s", path.name, exc)
+        return None
+    clipped = payload.get("clipped_pages")
+    if (
+        payload.get("version") != RASTER_CLIP_CACHE_VERSION
+        or payload.get("ocr_signature") != _ocr_cache_signature()
+        or not isinstance(clipped, list)
+    ):
+        return None
+    try:
+        return sorted(int(page) for page in clipped)
+    except (TypeError, ValueError):
+        return None
+
+
+def _write_raster_clip_cache(source: dict[str, Any], clipped_pages: list[int]) -> None:
+    path = _raster_clip_cache_path(source)
+    payload = {
+        "version": RASTER_CLIP_CACHE_VERSION,
+        "ocr_signature": _ocr_cache_signature(),
+        "hash": _source_digest(source),
+        "file_name": _source_name(source),
+        "clipped_pages": sorted(int(page) for page in clipped_pages),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:
+        LOGGER.warning("裁切检查缓存写入失败: %s error=%s", path.name, exc)
 
 
 def _find_ocr_model_dir(model_name: str) -> Path | None:
@@ -2313,10 +2516,9 @@ def _parse_chinese_full_term_visual_occupancy(source: dict[str, Any], file_name:
         blocks: list[dict[str, Any]] = []
         for page_number, page in enumerate(doc):
             raise_if_cancelled()
-            pix = page.get_pixmap(dpi=180, alpha=False)
-            image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
-            if pix.n > 3:
-                image = image[:, :, :3]
+            image = _page_image(source, page, page_number, 180)
+            if image is None:
+                continue
             gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY) if image.ndim == 3 else image
             blocks.extend(_parse_chinese_full_term_visual_image(gray, name, ocr_items_by_page.get(page_number, [])))
         return blocks
@@ -2365,21 +2567,27 @@ def _parse_chinese_full_term_visual_image(gray: Any, name: str, ocr_items: list[
 
     ocr_items = ocr_items or []
     x_scale, y_scale = _ocr_to_visual_scale(ocr_items, width, height)
+    # 每个 OCR 项的中心点/归一化文本只算一次：逐格扫描曾对 389×735 项重复求中心，
+    # 单页因此多花约 0.4 秒。entries = (原始x, 原始y, 缩放x, 缩放y, 文本, 可忽略)。
+    entries = _prepare_visual_entries(ocr_items, x_scale, y_scale)
     blocks: list[dict[str, Any]] = []
     slot_units = [("1-2", 2), ("3-4", 2), ("午", 1), ("5-6", 2), ("7-8", 2), ("9-11", 3)]
     unit_total = sum(unit for _label, unit in slot_units)
     day_width = (day_right - day_left) / 7
+    alias_pattern = re.compile(r"[一-鿿]{0,4}[A-Z]\d{1,3}")
 
     for week in range(1, 22):
         row_top = week_bounds[week - 1] + 2
         row_bottom = week_bounds[week] - 2
         if row_bottom <= row_top:
             continue
+        row_entries = [entry for entry in entries if row_top <= entry[3] < row_bottom]
         for day_index, weekday in enumerate(WEEKDAYS):
             day_start = day_left + day_index * day_width
             day_end = day_left + (day_index + 1) * day_width
-            cursor = day_start
             unit_width = (day_end - day_start) / unit_total
+            day_entries = [entry for entry in row_entries if day_start <= entry[2] < day_end]
+            cursor = day_start
             occupied_cells: list[tuple[str, list[str], float]] = []
             for label, units in slot_units:
                 next_cursor = cursor + unit_width * units
@@ -2389,46 +2597,47 @@ def _parse_chinese_full_term_visual_image(gray: Any, name: str, ocr_items: list[
                     int(row_top),
                     int(next_cursor),
                     int(row_bottom),
-                    ocr_items,
-                    x_scale,
-                    y_scale,
+                    day_entries,
                 ):
-                    texts = [
-                        _normalize_ocr_text(str(item.get("text") or ""))
-                        for item in ocr_items
-                        if cursor <= _item_center(item)[0] * x_scale < next_cursor
-                        and row_top <= _item_center(item)[1] * y_scale < row_bottom
-                    ]
+                    texts = [entry[4] for entry in day_entries if cursor <= entry[2] < next_cursor]
                     occupied_cells.append((label, texts, (cursor + next_cursor) / 2))
                 cursor = next_cursor
-            day_items = [
-                item for item in ocr_items
-                if day_start <= _item_center(item)[0] * x_scale < day_end
-                and row_top <= _item_center(item)[1] * y_scale < row_bottom
-            ]
-            aliases = [
-                item for item in day_items
-                if re.fullmatch(r"[一-鿿]{0,4}[A-Z]\d{1,3}", _normalize_ocr_text(str(item.get("text") or "")))
-            ]
-            off_campus_aliases = {
-                _normalize_ocr_text(str(nearest.get("text") or ""))
-                for item in day_items
-                if _normalize_ocr_text(str(item.get("text") or "")).startswith("校外") and aliases
-                for nearest in [min(aliases, key=lambda alias: abs(_item_center(alias)[0] - _item_center(item)[0]))]
-                if abs(_item_center(nearest)[0] - _item_center(item)[0]) * x_scale <= unit_width * 2
-            }
+            aliases = [entry for entry in day_entries if alias_pattern.fullmatch(entry[4])]
+            off_campus_aliases: set[str] = set()
+            if aliases:
+                for entry in day_entries:
+                    if not entry[4].startswith("校外"):
+                        continue
+                    nearest = min(aliases, key=lambda alias: abs(alias[0] - entry[0]))
+                    if abs(nearest[0] - entry[0]) * x_scale <= unit_width * 2:
+                        off_campus_aliases.add(nearest[4])
             for label, texts, center in occupied_cells:
                 if any(token.startswith("校外") for token in texts):
                     continue
                 if off_campus_aliases and aliases:
-                    nearest = min(aliases, key=lambda item: abs(_item_center(item)[0] * x_scale - center))
-                    nearest_text = _normalize_ocr_text(str(nearest.get("text") or ""))
-                    if nearest_text in off_campus_aliases and abs(_item_center(nearest)[0] * x_scale - center) <= unit_width * 2:
+                    nearest = min(aliases, key=lambda entry: abs(entry[2] - center))
+                    if nearest[4] in off_campus_aliases and abs(nearest[2] - center) <= unit_width * 2:
                         continue
                 day = _date_for_weekday(week, weekday)
                 for period in PERIOD_GROUPS.get(label, []):
                     blocks.append(_block(name, "中方", week, day, weekday, period, "视觉表格占用"))
     return blocks
+
+
+def _prepare_visual_entries(
+    ocr_items: list[dict[str, Any]],
+    x_scale: float,
+    y_scale: float,
+) -> list[tuple[float, float, float, float, str, bool]]:
+    """Precompute per-OCR-item geometry shared by every visual cell check."""
+
+    entries: list[tuple[float, float, float, float, str, bool]] = []
+    for item in ocr_items:
+        center_x, center_y = _item_center(item)
+        text = _normalize_ocr_text(str(item.get("text") or ""))
+        skippable = _is_empty_or_non_class(text) or _is_chinese_full_term_axis_token(text)
+        entries.append((center_x, center_y, center_x * x_scale, center_y * y_scale, text, skippable))
+    return entries
 
 
 def _cluster_int_positions(values: Any, gap: int = 5) -> list[tuple[int, int, int]]:
@@ -2462,18 +2671,16 @@ def _visual_cell_has_occupancy(
     top: int,
     right: int,
     bottom: int,
-    ocr_items: list[dict[str, Any]],
-    x_scale: float,
-    y_scale: float,
+    entries: list[tuple[float, float, float, float, str, bool]],
 ) -> bool:
     if right - left < 6 or bottom - top < 6:
         return False
-    cell_texts = [
-        _normalize_ocr_text(str(item.get("text") or ""))
-        for item in ocr_items
-        if left <= _item_center(item)[0] * x_scale < right and top <= _item_center(item)[1] * y_scale < bottom
+    matched = [
+        entry
+        for entry in entries
+        if left <= entry[2] < right and top <= entry[3] < bottom
     ]
-    if cell_texts and all(_is_empty_or_non_class(text) or _is_chinese_full_term_axis_token(text) for text in cell_texts):
+    if matched and all(entry[5] for entry in matched):
         return False
 
     crop = text_mask[top + 2 : bottom - 2, left + 3 : right - 3]
@@ -2591,7 +2798,17 @@ def _chinese_full_term_off_campus_days(items: list[dict[str, Any]]) -> set[str]:
 
 
 def chinese_image_clipped_pages(source: dict[str, Any]) -> list[int]:
-    """Find raster timetable columns or bottom rows visibly cut by the page."""
+    """Find raster timetable columns or bottom rows visibly cut by the page.
+
+    The result is persisted by content hash because the workflow calls this on
+    every batch: without the cache each repeated batch re-rendered every image
+    page just to re-detect the same clipping.
+    """
+
+    cached = _load_raster_clip_cache(source)
+    if cached is not None:
+        LOGGER.info("命中裁切检查缓存: %s", _source_name(source))
+        return cached
     items = _extract_pdf_ocr_items(source)
     if not items:
         return []
@@ -2600,22 +2817,39 @@ def chinese_image_clipped_pages(source: dict[str, Any]) -> list[int]:
         by_page[int(item.get("page", 0))].append(item)
 
     clipped = {page + 1 for page, page_items in by_page.items() if _chinese_image_weekday_columns_overflow(page_items)}
-    document = _open_pdf_document(source)
-    if document is None:
-        return sorted(clipped)
-    try:
-        import numpy as np
-
-        for page in by_page:
-            if page + 1 in clipped or not (0 <= page < len(document)):
-                continue
-            pix = document[page].get_pixmap(dpi=120, alpha=False)
-            pixels = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
-            gray = pixels[:, :, :3].mean(axis=2).astype(np.uint8)
+    cache_identity = _page_cache_identity(source)
+    page_images: dict[int, Any] = {}
+    missing_pages: list[int] = []
+    for page in by_page:
+        if page + 1 in clipped:
+            continue
+        image = _cached_page_image(cache_identity, page, 120)
+        if image is None:
+            missing_pages.append(page)
+        else:
+            page_images[page] = image
+    if missing_pages:
+        document = _open_pdf_document(source)
+        if document is None:
+            return sorted(clipped)
+        try:
+            wanted = set(missing_pages)
+            for page_number, page in enumerate(document):
+                if page_number in wanted:
+                    image = _page_image(source, page, page_number, 120)
+                    if image is not None:
+                        page_images[page_number] = image
+        finally:
+            document.close()
+    for page, image in page_images.items():
+        if page in by_page and page + 1 not in clipped:
+            gray = image[:, :, :3].mean(axis=2).astype("uint8")
             if _chinese_image_table_open_at_bottom(gray):
                 clipped.add(page + 1)
-    finally:
-        document.close()
+    if all(page in page_images for page in by_page if page + 1 not in clipped):
+        # Only cache a complete check: a failed page render must not freeze an
+        # empty result for this source forever.
+        _write_raster_clip_cache(source, sorted(clipped))
     return sorted(clipped)
 
 
@@ -3190,11 +3424,11 @@ def _english_ocr_merged_cell_supplements(
     if doc is None:
         return []
     try:
-        import numpy as np
-
-        pix = doc[page_number].get_pixmap(dpi=120, alpha=False)
-        pixels = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
-        gray = pixels[:, :, :3].mean(axis=2)
+        page = doc[page_number]
+        image = _page_image(source, page, page_number, 120)
+        if image is None:
+            return []
+        gray = image[:, :, :3].mean(axis=2)
     finally:
         doc.close()
     return _english_ocr_merged_cell_supplements_from_image(items, blocks, gray)
@@ -4098,22 +4332,41 @@ def _date_for_weekday(week: int, weekday: str) -> date:
     return _semester_start_date() + timedelta(days=(week - 1) * 7 + WEEKDAY_INDEX.get(weekday, 0))
 
 
-def _school_calendar_config() -> dict[str, Any]:
-    path = Path(__file__).resolve().parents[1] / "config" / "school_calendar.json"
+_SCHOOL_CALENDAR_PATH = Path(__file__).resolve().parents[1] / "config" / "school_calendar.json"
+
+
+def _calendar_config_signature() -> tuple[int, int]:
+    """Cheap change detector for the bundled school calendar config."""
+
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        stat = _SCHOOL_CALENDAR_PATH.stat()
+    except OSError:
+        return (0, 0)
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+@functools.lru_cache(maxsize=8)
+def _read_school_calendar_config(mtime_ns: int, size: int) -> dict[str, Any]:
+    try:
+        payload = json.loads(_SCHOOL_CALENDAR_PATH.read_text(encoding="utf-8"))
     except Exception:
         return {}
+    return payload if isinstance(payload, dict) else {}
 
 
-def _semester_start_date() -> date:
-    configured = os.environ.get("KONGGU_SEMESTER_START_DATE")
+def _school_calendar_config() -> dict[str, Any]:
+    mtime_ns, size = _calendar_config_signature()
+    return dict(_read_school_calendar_config(mtime_ns, size))
+
+
+@functools.lru_cache(maxsize=16)
+def _resolved_semester_start(configured: str, mtime_ns: int, size: int) -> date:
     if configured:
         try:
             return date.fromisoformat(configured)
         except Exception:
             pass
-    value = _school_calendar_config().get("semester_start_date")
+    value = _read_school_calendar_config(mtime_ns, size).get("semester_start_date")
     if value:
         try:
             return date.fromisoformat(str(value))
@@ -4122,8 +4375,14 @@ def _semester_start_date() -> date:
     return SEMESTER_START
 
 
-def _teaching_weeks() -> int:
-    configured = os.environ.get("KONGGU_TEACHING_WEEKS")
+def _semester_start_date() -> date:
+    configured = str(os.environ.get("KONGGU_SEMESTER_START_DATE") or "").strip()
+    mtime_ns, size = _calendar_config_signature()
+    return _resolved_semester_start(configured, mtime_ns, size)
+
+
+@functools.lru_cache(maxsize=16)
+def _resolved_teaching_weeks(configured: str, mtime_ns: int, size: int) -> int:
     if configured:
         try:
             weeks = int(configured)
@@ -4131,12 +4390,18 @@ def _teaching_weeks() -> int:
                 return weeks
         except Exception:
             pass
-    value = _school_calendar_config().get("teaching_weeks")
+    value = _read_school_calendar_config(mtime_ns, size).get("teaching_weeks")
     try:
         weeks = int(value)
     except Exception:
         return TEACHING_WEEKS
     return weeks if weeks > 0 else TEACHING_WEEKS
+
+
+def _teaching_weeks() -> int:
+    configured = str(os.environ.get("KONGGU_TEACHING_WEEKS") or "").strip()
+    mtime_ns, size = _calendar_config_signature()
+    return _resolved_teaching_weeks(configured, mtime_ns, size)
 
 
 def _is_empty_or_non_class(token: str) -> bool:

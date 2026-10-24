@@ -146,6 +146,30 @@ def test_add_pdf_sources_records_missing_paths(tmp_path: Path):
     assert "文件不存在" in str(result.errors[0][1])
 
 
+def test_add_pdf_sources_keeps_content_hash_without_resident_bytes(tmp_path: Path):
+    """A 200 MB batch must not be frozen in memory; the hash is enough to dedupe."""
+
+    import hashlib
+
+    data = b"%PDF-1.4 not a real pdf but content-stable"
+    first = tmp_path / "办公室-张三-中方课表.pdf"
+    duplicate = tmp_path / "办公室-张三-中方课表-副本.pdf"
+    first.write_bytes(data)
+    duplicate.write_bytes(data)
+
+    result = add_pdf_sources(
+        paths=[str(first), str(duplicate)],
+        explicit_kind=None,
+        existing_sources=[],
+        schedule_core=FakeKindCore(),
+    )
+
+    assert len(result.added) == 1
+    assert result.skipped == [str(duplicate)]
+    assert result.added[0].bytes_data is None
+    assert result.added[0].content_hash == hashlib.sha256(data).hexdigest()
+
+
 def test_load_reference_library_summary_counts_pdfs(tmp_path: Path):
     (tmp_path / "a.pdf").write_bytes(b"a")
     nested = tmp_path / "nested"
