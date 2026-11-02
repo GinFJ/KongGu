@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 import json
+import hashlib
 import os
 
 import pandas as pd
@@ -219,6 +221,58 @@ def parse_pdf_paths(
             pdf_inspections=pdf_inspections,
             progress=report_ready_progress,
         )
+    notice_evidence = getattr(schedule_core, "visual_notice_consensus_evidence", None)
+    for source, inspection in zip(add_result.added, pdf_inspections):
+        if source not in ready_sources:
+            continue
+        if "nonclass_consensus" in inspection:
+            # Generation retains in-memory evidence when a parse-cache write
+            # fails. A fresh source dict must not erase it with an empty read.
+            notes = deepcopy(inspection["nonclass_consensus"])
+        elif callable(notice_evidence):
+            notes = deepcopy(notice_evidence({
+                "file_name": source.file_name,
+                "kind": source.kind,
+                "source_path": source.source_path,
+                "bytes_data": source.bytes_data,
+                "content_hash": source.content_hash,
+            }))
+        else:
+            continue
+        if not notes:
+            continue
+        if any(note.get("source_hash") != source.content_hash for note in notes):
+            raise ValueError("非课标记推断证据与课表来源不一致，请重新解析。")
+        inspection["nonclass_consensus"] = notes
+        inspection_issues.extend(
+            _notice_consensus_issue(source.file_name, source.content_hash, note)
+            for note in notes
+        )
+        previous = str(inspection.get("warning") or "").strip()
+        labels = "、".join(sorted({str(note.get("canonical_label") or "非课标记") for note in notes}))
+        excluded = sum(note.get('action') == 'excluded_from_preview_occupancy' for note in notes)
+        notice_warning = (f"有 {len(notes)} 处“{labels}”标记需要核对，其中 {excluded} 处预览已按非课程排除。"
+                          if excluded else f"有 {len(notes)} 处疑似“{labels}”的标记，预览仍保留原占用，请核对原页。")
+        inspection["warning"] = "；".join(part for part in [previous, notice_warning] if part)
+    english_ocr_files = {
+        block.source_file for block in generation.course_blocks
+        if block.source_type == "英方" and block.text_source == "OCR"
+    }
+    for source, inspection in zip(add_result.added, pdf_inspections):
+        if source.kind == "英方" and source in ready_sources and (
+            inspection.get("pages_needing_ocr") or source.file_name in english_ocr_files
+        ):
+            inspection_issues.append(
+                ParseIssue(
+                    code="ENGLISH_IMAGE_PAGE_REVIEW",
+                    message="英方课表使用了图片/OCR解析，课程格和跨节占用仍需核对。",
+                    severity="warning",
+                    source_file=source.file_name,
+                    source_hash=source.content_hash,
+                    suggestion="在原文核对中检查日期、节次列、合并课程格及全部续页，再确认解析结果。",
+                    blocks_export=True,
+                )
+            )
     raster_clipping_check = getattr(schedule_core, "chinese_image_clipped_pages", None)
     if callable(raster_clipping_check):
         for source, inspection in zip(add_result.added, pdf_inspections):
@@ -463,13 +517,22 @@ def load_workflow_result(result_ref: str, store: StateStore, schedule_core: Any)
 
 
 def serialize_workflow_result(workflow_result: DesktopWorkflowResult, result_ref: str) -> dict[str, Any]:
+    signature_current = workflow_result.process_result.parser_signature == build_parser_signature().digest
+    warnings = list(workflow_result.warnings)
+    if not signature_current:
+        warning = "此结果与当前学期设置或解析规则不一致，请重新解析课表并生成空课表后导出。"
+        if warning not in warnings:
+            warnings.append(warning)
     payload = serialize_process_result(
         result=workflow_result.process_result,
         preview_df=workflow_result.preview_df,
-        warnings=workflow_result.warnings,
+        warnings=warnings,
         errors=workflow_result.errors,
         result_ref=result_ref,
     )
+    # Keep the result's historical quality state, but mirror the live export
+    # guard so an old accepted snapshot does not advertise export readiness.
+    payload["can_export"] = payload["can_export"] and signature_current
     detected_weeks = _detected_weeks(workflow_result.generation_result.blocks)
     payload["detected_weeks"] = detected_weeks
     payload["detected_week_count"] = len(detected_weeks)
@@ -485,6 +548,21 @@ def serialize_workflow_result(workflow_result: DesktopWorkflowResult, result_ref
         if item.get("source_file")
     }
     for detail in payload.get("details", []):
+        active_issues = [
+            issue for issue in workflow_result.process_result.issues
+            if issue.blocks_export and not issue.confirmed and (
+                issue.source_hash == detail.get("source_hash") if issue.source_hash
+                else bool(issue.source_file) and issue.source_file == detail.get("filename")
+            )
+        ]
+        if active_issues:
+            detail["quality_state"] = (
+                "blocked" if any(issue.severity == "error" for issue in active_issues) else "needs_review"
+            )
+            detail["warning"] = "；".join(dict.fromkeys(
+                str(message) for message in [detail.get("warning"), *[issue.message for issue in active_issues]]
+                if message
+            ))
         inspection = inspection_by_hash.get(str(detail.get("source_hash") or "")) or inspection_by_name.get(
             str(detail.get("filename") or "")
         )
@@ -500,7 +578,38 @@ def serialize_workflow_result(workflow_result: DesktopWorkflowResult, result_ref
                 "inspection_status": inspection.get("status", "unavailable"),
             }
         )
+        if "nonclass_consensus" in inspection:
+            detail["nonclass_consensus"] = deepcopy(inspection["nonclass_consensus"])
     return payload
+
+
+def _notice_consensus_issue(source_file: str, source_hash: str | None, note: dict[str, Any]) -> ParseIssue:
+    original = note.get("original_ocr") or []
+    if isinstance(original, list):
+        original_text = "、".join(str(item.get("text", "") if isinstance(item, dict) else item) for item in original)
+    else:
+        original_text = str(original)
+    page = int(note["page"]) + 1
+    periods = "、".join(str(period) for period in note.get("periods", [])) or "待定位"
+    location = f"第{page}页，第{note.get('week', '待定位')}周{note.get('weekday', '')}第{periods}节"
+    label = str(note.get("canonical_label") or "非课标记")
+    evidence_id = hashlib.sha256(json.dumps(note, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    excluded = note.get('action') == 'excluded_from_preview_occupancy'
+    message = (f"{location}：原OCR“{original_text or '未提取到文字'}”按同页规范字形判断为“{label}”；预览已按非课程排除，请核对原页。"
+               if excluded else f"{location}：原OCR“{original_text or '未提取到文字'}”与同页规范标记字形相似，疑似“{label}”；预览仍保留原占用，请核对原页。")
+    suggestion = (f"请对照同页两处规范“{label}”标记核对上述周次与节次；若判断有误，请保留待复核，修复后重新解析。"
+                  if excluded else "确认此提示只记录核对，不会自动排除原占用。若确为非课程，请保留待复核，修复后重新解析；若确为课程，可确认此提示。")
+    return ParseIssue(
+        code="VISUAL_NOTICE_CONSENSUS_REVIEW",
+        message=message,
+        severity="warning",
+        source_file=source_file,
+        source_hash=source_hash,
+        field=f"nonclass_consensus:{evidence_id}",
+        suggestion=suggestion,
+        blocks_export=True,
+        confirmed=False,
+    )
 
 
 def _load_default_timetable(schedule_core: Any) -> pd.DataFrame:

@@ -359,12 +359,35 @@ def _load_parse_cache(source: dict[str, Any], kind: str) -> list[dict[str, Any]]
         or not isinstance(payload.get("blocks"), list)
     ):
         return None
+    notes = payload.get('source_evidence', [])
+    if not isinstance(notes, list) or any(
+        not isinstance(note, dict) or note.get('source_hash') != _source_digest(source)
+        or note.get('parser_signature') != cache_signature()
+        or note.get('ocr_signature') != _ocr_cache_signature() for note in notes
+    ):
+        return None
+    source['_visual_notice_evidence'] = notes
     return payload["blocks"]
+
+
+def visual_notice_consensus_evidence(source: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return source-bound inference evidence, including on a parse-cache hit."""
+    if '_visual_notice_evidence' not in source:
+        _load_parse_cache(source, str(source.get('kind') or infer_pdf_kind(_source_name(source)) or '中方'))
+    notes = source.get('_visual_notice_evidence', [])
+    if not isinstance(notes, list):
+        return []
+    valid = [note for note in notes if isinstance(note, dict)
+             and note.get('source_hash') == _source_digest(source)
+             and note.get('parser_signature') == cache_signature()
+             and note.get('ocr_signature') == _ocr_cache_signature()]
+    return json.loads(json.dumps(valid, ensure_ascii=False))
 
 
 def _write_parse_cache(source: dict[str, Any], kind: str, blocks: list[dict[str, Any]]) -> None:
     if not blocks:
         return
+    source.setdefault('_visual_notice_evidence', [])
     cache_path = _parse_cache_path(source, kind)
     payload = {
         "version": PARSE_CACHE_VERSION,
@@ -374,6 +397,7 @@ def _write_parse_cache(source: dict[str, Any], kind: str, blocks: list[dict[str,
         "file_name": _source_name(source),
         "block_count": len(blocks),
         "blocks": blocks,
+        "source_evidence": visual_notice_consensus_evidence(source),
     }
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -598,6 +622,7 @@ def parse_actual_pdf_sources(
                 continue
 
             LOGGER.info("解析文件: %s kind=%s", file_name, kind)
+            source['_visual_notice_evidence'] = []
             parsed: list[dict[str, Any]] = []
             if kind == "中方":
                 parsed = _parse_chinese_pdf_layout(source, file_name)
@@ -679,9 +704,15 @@ def parse_actual_pdf_sources(
                 )
             elif kind == "中方" and used_ocr and image_only_pdf:
                 profile = detect_schedule_layout_profile(source, kind)
-                if profile == "cdut_undergrad_full_term_cn":
+                if profile == "cdut_undergrad_full_term_cn" or _is_low_confidence_chinese_ocr_result(parsed, used_ocr=True):
                     table_parsed = _parse_chinese_ocr_table_layout(source, file_name, progress=ocr_progress)
                     parsed = _choose_chinese_ocr_parse_candidate(parsed, table_parsed, file_name)
+            elif kind == "英方" and used_ocr:
+                # Flattened OCR text loses cell spans and may still produce 8+
+                # plausible blocks. Prefer the dated coordinate grid, not size.
+                grid_parsed = _parse_english_ocr_week_grid(source, file_name, progress=ocr_progress)
+                if grid_parsed:
+                    parsed = grid_parsed
             if kind != "中方" and parsed and len(parsed) < 8:
                 try:
                     ocr_parsed = _parse_english_ocr_week_grid(source, file_name, progress=ocr_progress)
@@ -1004,6 +1035,8 @@ def _choose_chinese_ocr_parse_candidate(
     table_parsed: list[dict[str, Any]],
     file_name: str,
 ) -> list[dict[str, Any]]:
+    if table_parsed and all(item.get("bordered_grid") for item in table_parsed):
+        return table_parsed
     if not text_parsed or not table_parsed:
         return text_parsed or table_parsed
 
@@ -1741,6 +1774,7 @@ def _extract_pdf_ocr_items(
             if (
                 payload.get("version") == OCR_LAYOUT_CACHE_VERSION
                 and signature_ok
+                and ("hash" not in payload or payload["hash"] == _source_digest(source))
                 and isinstance(payload.get("items"), list)
                 and payload["items"]
             ):
@@ -1821,6 +1855,7 @@ def _build_ocr_engine():
         "use_textline_orientation": False,
         "enable_mkldnn": False,
         "enable_hpi": False,
+        "cpu_threads": 1,
         "device": "cpu",
         "ocr_version": "PP-OCRv4",
         "lang": "ch",
@@ -2274,6 +2309,9 @@ def _parse_chinese_ocr_table_layout(
     items = _extract_pdf_ocr_items(source, progress=progress)
     if not items:
         return []
+    bordered = _parse_chinese_full_term_visual_occupancy(source, file_name, strict_borders_only=True)
+    if bordered:
+        return bordered
     name = _extract_chinese_name("", file_name)
     page_width = max((float(item.get("page_width", 0) or 0) for item in items), default=0.0)
     blocks: list[dict[str, Any]] = []
@@ -2500,7 +2538,9 @@ def _parse_chinese_full_term_grid_page_items(
     return blocks
 
 
-def _parse_chinese_full_term_visual_occupancy(source: dict[str, Any], file_name: str) -> list[dict[str, Any]]:
+def _parse_chinese_full_term_visual_occupancy(
+    source: dict[str, Any], file_name: str, *, strict_borders_only: bool = False,
+) -> list[dict[str, Any]]:
     doc = _open_pdf_document(source)
     if doc is None:
         return []
@@ -2527,7 +2567,24 @@ def _parse_chinese_full_term_visual_occupancy(source: dict[str, Any], file_name:
             if image is None:
                 continue
             gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY) if image.ndim == 3 else image
-            blocks.extend(_parse_chinese_full_term_visual_image(gray, name, ocr_items_by_page.get(page_number, [])))
+            from core.bordered_timetables import parse_chinese_bordered_image
+            evidence: list[dict[str, Any]] = []
+            bounded = parse_chinese_bordered_image(gray, name, ocr_items_by_page.get(page_number, []),
+                                                   page=page_number, evidence_out=evidence,
+                                                   vector_page=page, vector_dpi=180)
+            if bounded:
+                blocks.extend(bounded)
+                existing = source.setdefault('_visual_notice_evidence', [])
+                for note in evidence:
+                    note.update(source_hash=_source_digest(source), parser_signature=cache_signature(),
+                                ocr_signature=_ocr_cache_signature(), dpi=180)
+                    key = (note['page'], note['bbox'], note['canonical_label'])
+                    if not any(isinstance(old, dict) and
+                               (old.get('page'), old.get('bbox'), old.get('canonical_label')) == key
+                               for old in existing):
+                        existing.append(note)
+            elif not strict_borders_only:
+                blocks.extend(_parse_chinese_full_term_visual_image(gray, name, ocr_items_by_page.get(page_number, [])))
         return blocks
     finally:
         doc.close()
@@ -2566,6 +2623,8 @@ def _parse_chinese_full_term_visual_image(gray: Any, name: str, ocr_items: list[
     week_bounds = [row_centers[2], *row_centers[3:24]]
     if len(week_bounds) < 22:
         return []
+    from core.bordered_timetables import uniform_row_height
+    scale_height = uniform_row_height(week_bounds)
 
     day_left = col_centers[1]
     day_right = col_centers[-1]
@@ -2605,6 +2664,7 @@ def _parse_chinese_full_term_visual_image(gray: Any, name: str, ocr_items: list[
                     int(next_cursor),
                     int(row_bottom),
                     day_entries,
+                    scale_height=scale_height,
                 ):
                     texts = [entry[4] for entry in day_entries if cursor <= entry[2] < next_cursor]
                     occupied_cells.append((label, texts, (cursor + next_cursor) / 2))
@@ -2679,6 +2739,7 @@ def _visual_cell_has_occupancy(
     right: int,
     bottom: int,
     entries: list[tuple[float, float, float, float, str, bool]],
+    *, scale_height: float | None = None,
 ) -> bool:
     if right - left < 6 or bottom - top < 6:
         return False
@@ -2690,12 +2751,20 @@ def _visual_cell_has_occupancy(
     if matched and all(entry[5] for entry in matched):
         return False
 
-    crop = text_mask[top + 2 : bottom - 2, left + 3 : right - 3]
+    # The reference rule used a 30-pixel row. Scale both border exclusion and
+    # minimum ink area down for small cells. A taller row need not contain a
+    # larger font, so never raise the original thresholds just from row height.
+    # Uniform-grid callers supply the original, untrimmed body-row height.
+    # Sharing it avoids 1px row-boundary rounding changing the ink threshold.
+    scale = min(1.0, (scale_height if scale_height is not None else bottom - top) / 30.0)
+    pad_y = max(1, round(2 * scale))
+    pad_x = max(1, round(3 * scale))
+    crop = text_mask[top + pad_y : bottom - pad_y, left + pad_x : right - pad_x]
     if crop.size <= 0:
         return False
     dark_pixels = int((crop > 0).sum())
     ratio = dark_pixels / max(1, crop.size)
-    return dark_pixels >= 35 and ratio >= 0.035
+    return dark_pixels >= 35 * scale * scale and ratio >= 0.035
 
 
 def _find_chinese_full_term_week_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -3052,7 +3121,7 @@ def _is_chinese_full_term_course_text(token: str, legend_aliases: set[str] | Non
     compact = re.sub(r"\s+", "", text)
     if _is_empty_or_non_class(compact) or _looks_like_room(compact):
         return False
-    if re.search(r"(报到注册|运动会|运动食|清明节|请明节|劳动节|劳功节|劳助节|端午节|烯午节|考试周|全国英语四六级|不排|教研|教妍|微研|教好)", compact):
+    if re.search(r"(报到注册|运动会|运动食|清明节|请明节|劳动节|劳功节|劳助节|端午节|烯午节|考试周|不排|教研|教妍|微研|教好)", compact):
         return False
     if len(compact) <= 1:
         return False
@@ -3362,9 +3431,40 @@ def _parse_english_ocr_week_grid(
     items = _extract_pdf_ocr_items(source, progress=progress)
     if not items:
         return []
+    items = sorted(items, key=lambda item: (
+        int(item.get("page", 0)), float(item.get("y0", 0)),
+        float(item.get("x0", 0)), str(item.get("text", "")),
+    ))
     name = _extract_chinese_name("", file_name)
     date_grid_blocks: list[dict[str, Any]] = []
     fallback_columns: list[dict[str, Any]] | None = None
+    template_candidates: list[dict[str, Any]] = []
+    # A continuation may precede the page containing its header after a PDF
+    # reorder. Discover a visible template before processing any dated rows.
+    for template_page in sorted({int(item.get("page", 0)) for item in items}):
+        template_items = [item for item in items if int(item.get("page", 0)) == template_page]
+        template_doc = _open_pdf_document(source)
+        if template_doc is not None:
+            try:
+                template_image = _page_image(source, template_doc[template_page], template_page, 120)
+                if template_image is not None:
+                    from core.bordered_timetables import english_header_items
+                    visible = english_header_items(template_image[:, :, :3].mean(axis=2).astype('uint8'))
+                    if visible:
+                        template_items = visible
+            finally:
+                template_doc.close()
+        template_rows = _find_english_period_header_rows(template_items)
+        template_candidates.extend(template_rows)
+    if template_candidates:
+        # Prefer observed borders and fuller labels. Coordinate tie breaking is
+        # deterministic even when complete pages are reordered.
+        best_template = max(template_candidates, key=lambda row: (
+            sum("cell_left" in column for column in row["columns"]),
+            row.get("direct_count", 0),
+            tuple((int(column["period"]), float(column["center"])) for column in row["columns"]),
+        ))
+        fallback_columns = best_template["columns"]
     for page in sorted({int(item.get("page", 0)) for item in items}):
         page_items = [
             {
@@ -3377,10 +3477,36 @@ def _parse_english_ocr_week_grid(
             for item in items
             if int(item.get("page", 0)) == page and str(item.get("text", "")).strip()
         ]
+        doc = _open_pdf_document(source)
+        if doc is not None:
+            try:
+                image = _page_image(source, doc[page], page, 120)
+                if image is not None:
+                    from core.bordered_timetables import english_header_items, english_course_row_items
+                    page_items = english_course_row_items(
+                        image[:, :, :3].mean(axis=2).astype('uint8'), page_items,
+                    )
+                    border_headers = english_header_items(image[:, :, :3].mean(axis=2).astype('uint8'))
+                    if border_headers:
+                        header_ys = {_item_center(item)[1] for item in border_headers}
+                        header_bands = {
+                            (item["header_top"], item["header_bottom"])
+                            for item in border_headers if "header_top" in item and "header_bottom" in item
+                        }
+                        page_items = [
+                            item for item in page_items
+                            if not (
+                                any(top <= _item_center(item)[1] <= bottom for top, bottom in header_bands)
+                                or (not header_bands
+                                    and any(abs(_item_center(item)[1]-y)<20 for y in header_ys)
+                                    and _extract_english_period_header_numbers(str(item.get("text", ""))))
+                            )
+                        ]
+                        page_items.extend(border_headers)
+            finally:
+                doc.close()
         headers = _find_english_period_header_rows(page_items)
-        if headers:
-            fallback_columns = headers[-1]["columns"]
-        elif fallback_columns and _find_english_day_rows(page_items):
+        if not headers and fallback_columns and _find_english_day_rows(page_items):
             page_items.extend(
                 {
                     "x0": float(column["center"]) - 2,
@@ -3424,7 +3550,7 @@ def _english_ocr_merged_cell_supplements(
 ) -> list[dict[str, Any]]:
     """Recover adjacent periods when a raster grid visibly omits their divider."""
     headers = _find_english_period_header_rows(items)
-    days = _find_english_day_rows(items)
+    days = _complete_english_day_rows(_find_english_day_rows(items))
     if not headers or len(days) < 3:
         return []
     doc = _open_pdf_document(source)
@@ -3445,12 +3571,17 @@ def _english_ocr_merged_cell_supplements_from_image(
     items: list[dict[str, Any]], blocks: list[dict[str, Any]], gray: Any,
 ) -> list[dict[str, Any]]:
     headers = _find_english_period_header_rows(items)
-    days = _find_english_day_rows(items)
+    days = _complete_english_day_rows(_find_english_day_rows(items))
     if not headers or len(days) < 3:
         return []
     by_slot = {(str(block["date"]), int(block["period"])): block for block in blocks}
     supplements: list[dict[str, Any]] = []
     height, width = gray.shape[:2]
+    from core.bordered_timetables import vertical_grid_lines
+    row_gaps = sorted(float(right["y"])-float(left["y"]) for left, right in zip(days, days[1:])
+                      if float(right["y"]) > float(left["y"]))
+    row_gap = row_gaps[len(row_gaps)//2] if row_gaps else 50.0
+    line_mask = vertical_grid_lines(gray, row_gap)
 
     def band(index: int) -> tuple[int, int]:
         y = float(days[index]["y"])
@@ -3462,37 +3593,39 @@ def _english_ocr_merged_cell_supplements_from_image(
         top, bottom = band(index)
         if bottom - top < 12 or not (0 <= x < width):
             return 0.0
-        return float((gray[top:bottom, x] < 150).mean())
+        strip = line_mask[top:bottom, max(0, x-1):min(width, x+2)]
+        return float((strip.max(axis=1) > 0).mean())
 
     for index, day in enumerate(days):
         row_y = float(day["y"])
-        header = max((h for h in headers if h["y"] < row_y), key=lambda h: h["y"], default=None)
-        if header is None:
-            continue
+        # Match the main dated-grid parser: a continuation may precede its
+        # first surviving header, which still establishes these columns.
+        header = max((h for h in headers if h["y"] < row_y), key=lambda h: h["y"], default=headers[0])
         columns = header["columns"]
         gaps = [float(right["center"]) - float(left["center"]) for left, right in zip(columns, columns[1:])]
         if not gaps:
             continue
-        normal_gap = min(gaps)
+        # One OCR-compressed label pair must not redefine every other period's
+        # spacing. Normal adjacent periods are the majority in this grid.
+        normal_gap = sorted(gaps)[len(gaps) // 2]
         row_top, row_bottom = band(index)
         day_key = day["date"].isoformat()
         for left, right, gap in zip(columns, columns[1:], gaps):
             first, second = int(left["period"]), int(right["period"])
             if second != first + 1 or gap > normal_gap * 1.7:
                 continue
+            if "cell_right" in left and "cell_left" in right:
+                if abs(float(left["cell_right"])-float(right["cell_left"])) > 2:
+                    continue
+            elif gap > normal_gap * 1.25:
+                # Without observed edges, do not bridge an unlabelled spacer.
+                continue
             existing = by_slot.get((day_key, first)) or by_slot.get((day_key, second))
             if existing is None or ((day_key, first) in by_slot and (day_key, second) in by_slot):
                 continue
             midpoint = (float(left["center"]) + float(right["center"])) / 2
-            crossing = any(
-                row_top <= _item_center(item)[1] <= row_bottom
-                and float(item["x0"]) < midpoint - 5
-                and float(item["x1"]) > midpoint + 5
-                and not _is_english_grid_noise_token(str(item["text"]))
-                for item in items
-            )
-            if not crossing:
-                continue
+            # A short course code can be wholly inside one half of a merged
+            # cell. Its span is established by the missing visible divider.
             candidates = range(max(0, round(midpoint) - 8), min(width, round(midpoint) + 9))
             reference = [
                 (max(dark_fraction(other, x) for other in range(len(days))), x)
@@ -3500,8 +3633,11 @@ def _english_ocr_merged_cell_supplements_from_image(
             ]
             if not reference:
                 continue
-            reference_score, divider_x = max(reference)
-            if reference_score < 0.7 or dark_fraction(index, divider_x) > 0.5:
+            reference_score, _ = max(reference)
+            # Each row may rasterize the same edge into a neighbouring pixel.
+            # Search this row's boundary neighbourhood instead of borrowing
+            # the single pixel that happened to be strongest on another row.
+            if reference_score < 0.7 or max(dark_fraction(index, x) for x in candidates) > 0.5:
                 continue
             missing = second if (day_key, first) in by_slot else first
             supplement = {**existing, "period": missing, "time": period_time_range(missing)}
@@ -3707,7 +3843,7 @@ def _parse_english_grid_page_items_from_pdf_words(items: list[dict[str, Any]], n
         previous_day_y = day_rows[index - 1]["y"] if index else None
         next_day_y = day_rows[index + 1]["y"] if index + 1 < len(day_rows) else None
         next_header_y = min((row["y"] for row in header_rows if row["y"] > row_y), default=row_y + 80)
-        row_top = (previous_day_y + row_y) / 2 if previous_day_y is not None else row_y - 8
+        row_top = (previous_day_y + row_y) / 2 if previous_day_y is not None else row_y - ordinary_gap / 2
         if header["y"] < row_y:
             # A repeated header between weeks can fall inside the midpoint
             # band for the next Monday. Its leftover line tokens then prefix
@@ -3784,10 +3920,22 @@ def _find_english_period_header_rows(items: list[dict[str, Any]]) -> list[dict[s
         by_period: dict[int, dict[str, Any]] = {}
         for item in group:
             period = int(item["text"])
-            if period not in by_period or (item["direct_number"] and not by_period[period]["direct_number"]):
+            if (
+                period not in by_period
+                or item.get("border_header")
+                or (not by_period[period].get("border_header") and item["direct_number"] and not by_period[period]["direct_number"])
+            ):
                 by_period[period] = item
         columns = _complete_english_period_columns(by_period)
+        for column in columns:
+            observed = by_period.get(int(column["period"]), {})
+            for edge in ("cell_left", "cell_right"):
+                if edge in observed:
+                    column[edge] = observed[edge]
         if len(columns) < 8 or not {1, 2, 3, 4}.issubset({int(column["period"]) for column in columns}):
+            continue
+        if any(float(right["center"]) <= float(left["center"])
+               for left, right in zip(columns, columns[1:])):
             continue
         rows.append(
             {
@@ -3912,18 +4060,19 @@ def _find_english_day_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     weekday_items = [
         item
         for item in items
-        if item["text"] in ENGLISH_WEEKDAY_MAP and item["x0"] < 95
+        if item["text"] in ENGLISH_WEEKDAY_MAP
     ]
     date_items = [
         item
         for item in items
-        if _is_english_date_token(item["text"]) and item["x0"] < 105
+        if _is_english_date_token(item["text"])
     ]
     for weekday in weekday_items:
         candidates = [
             item
             for item in date_items
-            if -4 <= item["y0"] - weekday["y0"] <= 28
+            if -0.4 * max(10, weekday["y1"] - weekday["y0"]) <= item["y0"] - weekday["y0"] <= 2.8 * max(10, weekday["y1"] - weekday["y0"])
+            and abs(item["x0"] - weekday["x0"]) <= max(20, weekday["x1"] - weekday["x0"])
         ]
         if not candidates:
             continue
@@ -3944,8 +4093,6 @@ def _find_english_day_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     date_pattern = r"(?:20\d{2}[-/]?\d{2}[-/]?\d{2}|20\d{4}-\d{2}|\d{2}/\d{2})"
     weekday_pattern = r"Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday"
     for item in items:
-        if item["x0"] >= 115:
-            continue
         match = re.search(rf"({weekday_pattern}).*?({date_pattern})", item["text"])
         if not match:
             match = re.search(rf"({date_pattern}).*?({weekday_pattern})", item["text"])
@@ -4275,7 +4422,8 @@ def _extract_chinese_name(text: str, file_name: str) -> str:
 
 
 def _extract_chinese_name_from_text(text: str) -> str:
-    match = re.search(r"姓名\s*[:：]?\s*([\u4e00-\u9fff]{2,4})", text)
+    # OCR often joins adjacent labels: 姓名张三班级... is not a four-character name.
+    match = re.search(r"姓名\s*[:：]?\s*([\u4e00-\u9fff]{2,4}?)(?=[^\u4e00-\u9fff]|班级|学号|学院|专业|年级|性别|民族|$)", text)
     if not match:
         return ""
     candidate = match.group(1)
@@ -4414,7 +4562,16 @@ def _teaching_weeks() -> int:
 def _is_empty_or_non_class(token: str) -> bool:
     text = str(token or "").strip()
     compact = re.sub(r"[\s:：;；,，。|｜/\\]+", "", text)
-    if text in NON_CLASS_KEYWORDS or compact in {"", "午", "无", "空", "不排课", "暂无", "None", "N/A", "-", "校外", "教研"}:
+    # Exact calendar notices, not arbitrary course titles containing a holiday
+    # or examination name. Merged notice cells are handled by their real edges.
+    if compact in {"元旦", "元旦节", "中秋节", "国庆节", "研究生考试"}:
+        return True
+    if (
+        not any(word in compact for word in ("培训", "辅导", "课程", "教学", "专题"))
+        and re.fullmatch(r"全国[^\d]{0,4}四六级(?:考试)?", compact)
+    ):
+        return True
+    if text in NON_CLASS_KEYWORDS or compact in {"", "午", "无", "空", "不排课", "暂无", "None", "N/A", "-", "校外", "教研", "救研", "数研"}:
         return True
     if any(
         keyword in compact
@@ -4439,7 +4596,6 @@ def _is_empty_or_non_class(token: str) -> bool:
             "运动食",
             "期末周",
             "考试周",
-            "全国英语四六级",
         )
     ):
         return True

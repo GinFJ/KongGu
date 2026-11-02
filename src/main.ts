@@ -33,6 +33,7 @@ type AppState = {
   failedFileCount: number;
   progress: { current: number; total: number };
   logs: string[];
+  startupDiagnostic: string;
 };
 
 const client = new SidecarClient();
@@ -49,7 +50,8 @@ const state: AppState = {
   stage: "boot",
   failedFileCount: 0,
   progress: { current: 0, total: 0 },
-  logs: []
+  logs: [],
+  startupDiagnostic: ""
 };
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -71,14 +73,17 @@ let cancelRequestedJobId = "";
 let completionProbeJobId = "";
 let completedJobId = "";
 let reviewReloading = false;
+let emptyPanelKey = "";
 let savedCalendarSettings: CalendarSettings = { ...state.calendarSettings };
 const renderedHtmlCache = new WeakMap<HTMLElement, string>();
 
 const tabs: Tab[] = ["availability", "members", "files", "issues", "review", "calendar"];
+const INSTALLATION_STARTUP_MESSAGE = "安装组件未能启动，请使用完整安装包重新安装；仍无法启动时请联系维护者。";
 
 client.onEvent((event) => {
   if (event.event === "sidecar.fatal") {
-    state.statusText = `本地识别功能启动失败：${friendlyMessage(event.message)}`;
+    const message = formatError(event.message, true);
+    state.statusText = state.startupDiagnostic ? message : `本地识别功能启动失败：${message}`;
     state.stage = "failed";
     state.busy = false;
     render();
@@ -110,11 +115,12 @@ async function boot() {
     state.resourceStatus = resources;
     state.calendarSettings = settings.settings;
     savedCalendarSettings = { ...settings.settings };
+    state.startupDiagnostic = "";
     state.statusText = resources.ready ? "准备完成，可以导入课表" : "本地识别资源未能自动准备，请点击修复";
     state.stage = "ready";
   } catch (error) {
     state.stage = "failed";
-    state.statusText = formatError(error);
+    state.statusText = formatError(error, true);
   }
   render();
 }
@@ -416,6 +422,7 @@ async function exportExcel() {
 }
 
 async function repairResources() {
+  if (state.startupDiagnostic) return setStatus(INSTALLATION_STARTUP_MESSAGE);
   if (state.busy) return;
   state.busy = true;
   setStatus("正在检查并修复本地识别功能");
@@ -584,13 +591,15 @@ function mountShell() {
         </div>
       </section>
       <aside class="rail">
-        <div class="brand"><img src="${wordmarkUrl}" alt="空谷" /></div>
+        <div class="brand"><img src="${wordmarkUrl}" alt="空谷" /><span>青禾计划孵化的课表协作产品</span></div>
         <nav class="primaryActions" aria-label="主要操作">
-          <button id="chooseFiles" class="primary">＋ 导入课表</button>
-          <button id="parseSchedules">生成空课表</button>
+          <div class="sectionLabel">本次排班</div>
+          <button id="chooseFiles" class="primary" data-step="01">＋ 导入课表</button>
+          <button id="parseSchedules" data-step="02">生成空课表</button>
           <button id="cancelJob" class="danger" hidden>停止处理</button>
           <button id="retryFailed">重新处理本批课表</button>
-          <button id="exportExcel">导出空课表</button>
+          <button id="exportExcel" data-step="03">导出空课表</button>
+          <p id="actionGuide" class="actionGuide">准备每位成员的中方、英方课表。</p>
         </nav>
         <section class="railSection">
           <div class="sectionLabel">学期设置</div>
@@ -605,11 +614,12 @@ function mountShell() {
           <button id="repairResources">修复识别功能</button>
           <button id="clearLocalData" class="quiet">清除本机记录</button>
         </section>
+        <p class="railFootnote">离线运行 · 文件留在本机</p>
       </aside>
       <section class="workbench">
         <header class="masthead">
           <div>
-            <h1>青心如禾，向阳而生</h1>
+            <h1>课表协作工作台</h1>
             <p id="statusText" aria-live="polite"></p>
           </div>
           <div id="qualitySeal" class="qualitySeal pending">
@@ -619,7 +629,14 @@ function mountShell() {
         </header>
         <section class="runStrip" aria-label="处理进度">
           <div class="runMeta"><b id="stageLabel"></b><span id="runHint"></span></div>
-          <div id="progressTrack" class="progressTrack" role="progressbar" aria-valuemin="0" aria-valuemax="100"><i id="progressFill"></i></div>
+          <div class="workflowTrack">
+            <ol class="workflowSteps" aria-label="排班处理步骤">
+              <li id="workflow-import"><i>1</i><span>导入课表</span></li>
+              <li id="workflow-review"><i>2</i><span>处理与核对</span></li>
+              <li id="workflow-export"><i>3</i><span>导出结果</span></li>
+            </ol>
+            <div id="progressTrack" class="progressTrack" role="progressbar" aria-valuemin="0" aria-valuemax="100"><i id="progressFill"></i></div>
+          </div>
           <div class="runCounts"><strong id="fileCount">0</strong><span>文件</span><strong id="memberCount">0</strong><span>成员</span><strong id="issueCount">0</strong><span>待处理</span></div>
           <div id="runAguSlot"></div>
         </section>
@@ -631,6 +648,10 @@ function mountShell() {
           <div id="sourceChips" class="sourceChips" role="list" aria-label="已选择的课表文件"></div>
         </section>
         <section class="contentCard">
+          <div id="resultNotice" class="resultNotice" hidden>
+            <div><b id="resultNoticeTitle"></b><span id="resultNoticeDetail"></span></div>
+            <button id="nextStepAction">查看待处理</button>
+          </div>
           <div class="tabs" role="tablist" aria-label="结果视图">
             ${tabButton("availability", "共同空闲")}
             ${tabButton("members", "成员课表", 0)}
@@ -659,6 +680,9 @@ function updateShell() {
   const result = state.result;
   const quality = result?.quality_state || "pending";
   const invalidCount = state.files.filter((path) => !inferKind(path)).length;
+  const desktopUnavailable = state.stage === "failed" && state.statusText.includes("桌面运行环境未连接");
+  const installationUnavailable = Boolean(state.startupDiagnostic);
+  const nativeUnavailable = desktopUnavailable || installationUnavailable;
   const canParse = state.files.length > 0 && invalidCount === 0 && !state.busy;
   const progressPercent = state.progress.total
     ? Math.min(100, Math.round((state.progress.current / state.progress.total) * 100))
@@ -669,36 +693,47 @@ function updateShell() {
   launch.setAttribute("aria-hidden", String(state.stage !== "boot"));
   setText("#launchStatus", state.statusText);
 
-  setDisabled("#chooseFiles", state.busy);
-  setDisabled("#parseSchedules", !canParse);
+  setDisabled("#chooseFiles", state.busy || nativeUnavailable);
+  setDisabled("#parseSchedules", !canParse || nativeUnavailable);
   const cancel = getElement<HTMLButtonElement>("#cancelJob");
   const retry = getElement<HTMLButtonElement>("#retryFailed");
   cancel.hidden = !state.busy || !state.jobId;
-  const canRetry = !state.busy && Boolean(state.jobId) && (
+  const canRetry = !state.busy && !nativeUnavailable && Boolean(state.jobId) && (
     state.failedFileCount > 0 || ["failed", "interrupted", "cancelled"].includes(state.stage)
   );
   retry.hidden = !canRetry;
-  retry.disabled = !state.jobId;
-  setDisabled("#exportExcel", !result?.can_export || state.busy);
-  setDisabled("#saveSettings", state.busy);
-  setDisabled("#repairResources", state.busy);
-  setDisabled("#clearLocalData", state.busy);
+  retry.disabled = !state.jobId || nativeUnavailable;
+  setDisabled("#exportExcel", !result?.can_export || state.busy || nativeUnavailable);
+  getElement<HTMLButtonElement>("#chooseFiles").classList.toggle("primary", !state.files.length && !state.busy && !result && !nativeUnavailable);
+  getElement<HTMLButtonElement>("#parseSchedules").classList.toggle("primary", canParse && !result && !nativeUnavailable);
+  getElement<HTMLButtonElement>("#exportExcel").classList.toggle("primary", Boolean(result?.can_export) && !state.busy && !nativeUnavailable);
+  setText("#actionGuide", installationUnavailable ? "请使用完整安装包重新安装，或联系维护者。" : desktopUnavailable ? "请在空谷桌面端中完成导入与处理。" : state.busy ? "正在整理课表。完成后先核对，再导出。"
+    : result?.can_export ? "核对已完成，可以导出本次空课表。"
+      : result?.quality_state === "accepted" ? "当前结果暂不可导出，请重新生成。"
+        : result ? "预览供核对使用，处理完标记内容后再导出。"
+        : state.files.length ? "确认学期设置后，点击“生成空课表”。" : "每位成员需要中方、英方两份课表。");
+  setDisabled("#saveSettings", state.busy || nativeUnavailable);
+  setDisabled("#semesterStart", state.busy || nativeUnavailable);
+  setDisabled("#teachingWeeks", state.busy || nativeUnavailable);
+  setDisabled("#repairResources", state.busy || nativeUnavailable);
+  setDisabled("#clearLocalData", state.busy || nativeUnavailable);
   setDisabled("#clearFiles", state.busy || !state.files.length);
   setInputValue("#semesterStart", state.calendarSettings.semester_start_date);
   setInputValue("#teachingWeeks", String(state.calendarSettings.teaching_weeks));
 
   const resourceTitle = getElement<HTMLElement>("#resourceTitle");
-  resourceTitle.className = state.resourceStatus?.ready ? "good" : "warning";
-  resourceTitle.textContent = state.resourceStatus?.ready ? "已就绪" : "需要修复";
-  setText("#resourceDetail", resourceDetail(state.resourceStatus));
+  resourceTitle.className = state.resourceStatus?.ready && !nativeUnavailable ? "good" : "warning";
+  resourceTitle.textContent = installationUnavailable ? "安装组件异常" : desktopUnavailable ? "仅桌面端可用" : state.resourceStatus?.ready ? "已就绪" : "需要修复";
+  setText("#resourceDetail", installationUnavailable ? "此问题无法通过识别资源修复解决，请重新安装或联系维护者。" : desktopUnavailable ? "普通浏览器无法运行本地识别，请打开空谷桌面端。" : resourceDetail(state.resourceStatus));
   setText("#statusText", state.statusText);
 
   const seal = getElement<HTMLElement>("#qualitySeal");
-  seal.className = `qualitySeal ${quality}`;
-  setText("#qualityTitle", result ? resultStatusLabel(quality) : "等待生成结果");
-  setText("#qualityDetail", result ? resultStatusDetail(result) : "导入课表后查看");
-  setText("#stageLabel", stageLabel(state.stage));
-  setText("#runHint", runHint(result));
+  const resultNeedsRefresh = Boolean(result && quality === "accepted" && !result.can_export);
+  seal.className = `qualitySeal ${resultNeedsRefresh ? "needs_review" : quality}`;
+  setText("#qualityTitle", installationUnavailable ? "安装组件未能启动" : desktopUnavailable ? "桌面环境未连接" : resultNeedsRefresh ? "需要重新生成" : result ? resultStatusLabel(quality) : "等待生成结果");
+  setText("#qualityDetail", installationUnavailable ? "请使用完整安装包重新安装" : desktopUnavailable ? "请在桌面端继续" : resultNeedsRefresh ? "请使用当前设置重新生成" : result ? resultStatusDetail(result) : "导入课表后查看");
+  setText("#stageLabel", installationUnavailable ? "需要重新安装" : desktopUnavailable ? "请打开桌面端" : stageLabel(state.stage));
+  setText("#runHint", installationUnavailable ? "识别资源修复无法解决此问题" : desktopUnavailable ? "浏览器仅支持界面预览" : runHint(result));
   setText("#fileCount", String(result?.summary.pdf_count || state.files.length));
   setText("#memberCount", String(result?.summary.member_count || 0));
   setText("#issueCount", String(result?.issues.filter((issue) => !issue.confirmed).length || 0));
@@ -706,9 +741,29 @@ function updateShell() {
   progress.classList.toggle("indeterminate", state.busy && !state.progress.total);
   progress.setAttribute("aria-valuenow", String(progressPercent));
   getElement<HTMLElement>("#progressFill").style.setProperty("--progress-scale", String(progressPercent / 100));
+  progress.hidden = !state.busy;
+  getElement<HTMLElement>(".runStrip").dataset.state = state.stage;
+  const workflowStep = result?.can_export ? 2 : (state.busy || result || state.files.length) ? 1 : 0;
+  ["import", "review", "export"].forEach((step, index) => {
+    const item = getElement<HTMLElement>(`#workflow-${step}`);
+    item.classList.toggle("is-current", index === workflowStep);
+    item.classList.toggle("is-done", index < workflowStep);
+    if (index === workflowStep) item.setAttribute("aria-current", "step");
+    else item.removeAttribute("aria-current");
+  });
+  const notice = getElement<HTMLElement>("#resultNotice");
+  notice.hidden = !result || result.can_export;
+  notice.dataset.quality = quality;
+  const hasIssues = !resultNeedsRefresh && unresolvedIssueCount(result) > 0;
+  setText("#resultNoticeTitle", quality === "blocked" ? "先修正标记内容，再使用结果" : hasIssues ? "还有内容需要核对，当前为预览" : "结果需要重新生成");
+  setText("#resultNoticeDetail", hasIssues ? `${unresolvedIssueCount(result)} 项待处理，请对照原文核实。未处理前不能导出。`
+    : friendlyMessage(result?.errors[0] || result?.warnings[0] || "当前结果暂不可导出，请核对来源和学期设置后重新生成。"));
+  setText("#nextStepAction", hasIssues ? "查看待处理 →" : state.files.length ? "重新生成" : "重新导入课表");
+  setDisabled("#nextStepAction", state.busy || nativeUnavailable);
 
   updateRunAgu(result);
   updateSources(invalidCount);
+  document.querySelectorAll<HTMLButtonElement>("[data-remove]").forEach((button) => { button.disabled = state.busy; });
   updateTabs(result);
   updateActivity();
   updatePanels(result);
@@ -720,6 +775,15 @@ function bindActions() {
   document.querySelector("#cancelJob")?.addEventListener("click", cancelJob);
   document.querySelector("#retryFailed")?.addEventListener("click", retryFailed);
   document.querySelector("#exportExcel")?.addEventListener("click", exportExcel);
+  document.querySelector("#nextStepAction")?.addEventListener("click", () => {
+    if (state.busy || state.startupDiagnostic) return;
+    if (state.result?.quality_state !== "accepted" && unresolvedIssueCount(state.result)) {
+      state.activeTab = "issues";
+      render();
+      onNextFrame(() => document.querySelector<HTMLButtonElement>('[data-tab="issues"]')?.focus());
+    } else if (state.files.length) void parseSchedules();
+    else void chooseFiles();
+  });
   document.querySelector("#repairResources")?.addEventListener("click", repairResources);
   document.querySelector("#clearLocalData")?.addEventListener("click", clearLocalData);
   document.querySelector("#saveSettings")?.addEventListener("click", () => {
@@ -841,6 +905,7 @@ function updateRunAgu(result: ParseResult | null) {
 
 let sourceKey: string | null = null;
 function updateSources(invalidCount: number) {
+  getElement<HTMLElement>(".sourceRibbon").classList.toggle("is-empty", !state.files.length);
   setText("#sourceSummary", state.files.length
     ? `${state.files.length} 份 PDF · ${invalidCount ? `${invalidCount} 份无法判断课表类型` : "文件名检查通过"}`
     : "尚未选择文件");
@@ -924,6 +989,14 @@ function updatePanels(result: ParseResult | null) {
     }
     if (scrollPositions) restoreTableScroll(scrollPositions);
   }
+
+  if (!result) {
+    const nextEmptyKey = `${state.stage === "failed" ? state.statusText : ""}:${state.busy}:${state.files.length > 0}`;
+    if (nextEmptyKey !== emptyPanelKey) {
+      emptyPanelKey = nextEmptyKey;
+      setHtmlIfChanged(getPanel("availability"), renderWelcome(state.stage !== "failed"));
+    }
+  } else emptyPanelKey = "";
 
   if (reviewController && state.review && reviewPayload !== state.review) {
     reviewPayload = state.review;
@@ -1028,12 +1101,19 @@ function getPanel(tab: Tab) {
 }
 
 function renderWelcome(showAgu = true) {
+  if (!showAgu) return `<div class="emptyPanel taskEmpty taskEmpty--failed"><span class="taskMarker" aria-hidden="true">!</span>
+    <b>暂时无法完成处理</b><span>${escapeHtml(state.statusText)}</span>
+    <p>${state.startupDiagnostic ? "请关闭当前程序，使用完整安装包重新安装。若仍无法启动，请将下方脱敏技术详情提供给维护者。" : state.statusText.includes("桌面运行环境") ? "请回到空谷桌面端继续，本地功能无法在普通浏览器中运行。" : "请根据上述原因处理后重新生成。识别功能异常时，可在左侧尝试修复。"}</p>
+    ${state.startupDiagnostic ? `<details><summary>查看脱敏技术详情</summary><pre style="max-width:560px;white-space:pre-wrap;overflow-wrap:anywhere;text-align:left;font-size:11px">${escapeHtml(state.startupDiagnostic)}</pre></details>` : ""}</div>`;
+  if (state.busy) return `<div class="emptyPanel taskEmpty"><span class="loadingDot" aria-hidden="true"></span>
+    <b>正在整理本批课表</b><span>可以在上方查看处理进度。完成后，空谷会列出需要核对的内容。</span><p>处理期间请保留原文件，暂勿调整本批课表。</p></div>`;
   return `<div class="emptyPanel welcomePanel">
     <div class="welcomeCopy">
-      <span class="welcomeKicker">先导入课表</span>
+      <span class="welcomeKicker">青心如禾，向阳而生</span>
       <b>把大家的课表放在一起，看看什么时候都有空。</b>
       <p>请导入同一批成员的中方和英方课表。空谷会整理每个人的上课时间，把不确定的内容列出来核对，然后生成共同空闲时段。</p>
       <div class="welcomeSteps"><span><i>1</i>导入课表</span><span><i>2</i>生成空课表</span><span><i>3</i>核对并导出</span></div>
+      <div class="inputTip"><b>导入前，确认这两件事</b><span>每位成员的中方、英方课表齐全；左侧学期开始日期和周数与原件一致。</span></div>
     </div>
     ${showAgu ? renderAguMotion("welcome") : ""}
   </div>`;
@@ -1066,7 +1146,7 @@ function renderPanel(tab: Tab, result: ParseResult) {
   if (tab === "issues") {
     if (!unresolvedIssueCount(result)) return `<div class="emptyPanel"><b>没有待处理问题</b><span>本次结果已检查完成，可以导出空课表。</span></div>`;
     return `<div class="issueTable">${result.issues.map((issue) => `<article class="${escapeHtml(issue.confirmed ? "confirmed" : issue.severity)}">
-      <div><b>${issueStateLabel(issue)}</b></div>
+      <div class="issueHeading"><b>${issueStateLabel(issue)}</b><span>${escapeHtml((issue.source_file || "本批课表").split(/[\\/]/).pop() || "本批课表")}</span></div>
       <h3>${escapeHtml(friendlyMessage(issue.message))}</h3><p>${escapeHtml(friendlyMessage(issue.suggestion || "请在“原文核对”中对照课表。"))}</p>
       ${issueAction(issue)}
     </article>`).join("")}</div>`;
@@ -1109,8 +1189,10 @@ type TableColumn = { key: string; label: string };
 function table(rows: Array<Record<string, unknown>>, columns: Array<string | TableColumn>) {
   if (!rows.length) return `<div class="emptyPanel">暂无数据。</div>`;
   const normalized = columns.map((column) => typeof column === "string" ? { key: column, label: column } : column);
-  return `<div class="tableWrap"><table><thead><tr>${normalized.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("")}</tr></thead>
-    <tbody>${rows.map((row) => `<tr>${normalized.map((column) => `<td>${escapeHtml(tableCell(row[column.key]))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+  const cellClass = (key: string) => ["周次", "空闲人数", "占用人数", "page_count", "course_block_count"].includes(key)
+    ? "numberCell" : ["日期", "星期", "节次", "时间", "source_type"].includes(key) ? "nowrapCell" : "";
+  return `<div class="tableWrap"><table><thead><tr>${normalized.map((column) => `<th scope="col" class="${cellClass(column.key)}">${escapeHtml(column.label)}</th>`).join("")}</tr></thead>
+    <tbody>${rows.map((row) => `<tr>${normalized.map((column) => `<td class="${cellClass(column.key)}">${column.key === "status" ? `<span class="tableStatus" data-status="${escapeHtml(String(row[column.key] || ""))}">${escapeHtml(tableCell(row[column.key]))}</span>` : escapeHtml(tableCell(row[column.key]))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
 
 function tableCell(value: unknown) {
@@ -1167,6 +1249,7 @@ function resultStatusLabel(stateValue: string) {
 function resultActionText(stateValue: string) {
   if (stateValue === "needs_review") return "课表已处理，请先核对标记内容";
   if (stateValue === "blocked") return "发现影响结果的问题，请先修正";
+  if (state.result && !state.result.can_export) return "当前结果暂不可导出，请重新生成";
   return "空课表已生成，可以导出";
 }
 
@@ -1249,8 +1332,28 @@ function log(message: string, rerender = true) {
   if (rerender) render();
 }
 
-function formatError(error: unknown) {
+function isInstallationStartupError(message: string, startup: boolean) {
+  if (/not configured[\s\S]*tauri\.conf\.json[\s\S]*externalBin/i.test(message)) return true;
+  const component = /sidecar|konggu-worker|binaries[\\/]konggu-worker/i.test(message);
+  const missing = /not found|no such file|cannot find|failed to spawn|os error (?:2|3|193)\b|系统找不到|无法找到|未找到/i.test(message);
+  const bareMissing = /^(?:Error:\s*)?(?:No such file or directory|program not found|系统找不到指定的文件)[。.]?\s*(?:\(os error [23]\))?\s*$/i.test(message);
+  return (component && missing) || (startup && bareMissing);
+}
+
+function redactStartupDiagnostic(message: string) {
+  const codes = message.match(/(?:os error\s*\d+|WinError\s*\d+|ENOENT)/gi) || [];
+  let detail = message.replace(/(?:[A-Za-z]:[\\/]|\\\\)[^\r\n"'<>]+/g, "<本地路径>")
+    .replace(/Bearer\s+[^\s]+|(?:token|password|secret)\s*[=:]\s*[^\s,;]+/gi, "<已隐藏>");
+  for (const code of codes) if (!detail.includes(code)) detail += ` (${code})`;
+  return detail.slice(0, 900);
+}
+
+function formatError(error: unknown, startup = false) {
   const message = error instanceof Error ? error.message : String(error);
+  if (isInstallationStartupError(message, startup)) {
+    state.startupDiagnostic = redactStartupDiagnostic(message);
+    return INSTALLATION_STARTUP_MESSAGE;
+  }
   if (message.includes("__TAURI") || message.includes("invoke") || message.includes("Command") || message.includes("transformCallback")) {
     return "桌面运行环境未连接，请在 Konggu 桌面端中使用该功能。";
   }

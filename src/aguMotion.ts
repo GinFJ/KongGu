@@ -1,6 +1,6 @@
 import aguCompleteUrl from "../assets/brand/agu/agu-complete-v1.webp";
 import aguDynamicUrl from "../assets/brand/agu/agu-dynamic-v1.webp";
-import aguStandardUrl from "../assets/brand/agu/agu-standard-v1.webp";
+import aguStandardUrl from "../assets/brand/agu/agu-standard-v1.1.png";
 
 export type AguMotionMode = "welcome" | "working" | "complete";
 

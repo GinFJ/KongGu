@@ -11,7 +11,11 @@ import os
 import sys
 from pathlib import Path
 
-import sitecustomize  # noqa: F401  # Keep local/user site-package ordering stable before pandas imports.
+if not getattr(sys, "frozen", False):
+    # This development helper creates caches next to its own file and reorders
+    # user/base site-packages. Frozen builds must use bundled dependencies and
+    # the writable resource paths configured below instead.
+    import sitecustomize  # noqa: F401
 
 from app.offline_resources import configure_offline_environment
 
@@ -42,7 +46,7 @@ def load_reference_library_config() -> dict:
 
 
 def configure_runtime_environment() -> None:
-    """Keep third-party caches inside the project or bundle directory."""
+    """Keep third-party caches in the selected local writable data directory."""
 
     resource_paths = configure_offline_environment()
     cache_root = resource_paths.cache_root
@@ -104,4 +108,8 @@ def load_schedule_core():
             spec.loader.exec_module(module)
         return module
 
+    if getattr(sys, "frozen", False):
+        raise RuntimeError(
+            "本地识别组件加载失败。请使用完整离线安装包重新安装；无需另装 Python 或联网下载模型。"
+        ) from source_error
     raise RuntimeError("源码版课表核心加载失败，请检查 core/schedule_core.py。") from source_error

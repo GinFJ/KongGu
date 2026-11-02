@@ -1,32 +1,24 @@
 @echo off
 setlocal EnableExtensions
-title Konggu OCR Diagnostic
-
-cd /d "%~dp0"
-echo.
-echo ========================================
-echo   Konggu OCR diagnostic is starting...
-echo ========================================
-echo.
-
+title Konggu Offline Diagnostic
+set "diagDir=%TEMP%\KongguDiagnostics"
+if not exist "%diagDir%" mkdir "%diagDir%"
+set "bootLog=%diagDir%\launch-%RANDOM%-%RANDOM%.txt"
+>"%bootLog%" echo STARTED - Konggu diagnostic launcher
+echo Konggu offline check is starting. No Python installation is required.
+echo Keep this window open until the result appears.
 if not exist "%~dp0diagnose_konggu_ocr.ps1" (
-    echo ERROR: diagnose_konggu_ocr.ps1 was not found in this folder.
-    echo Please put this CMD file and the PS1 file in the same folder.
-    echo.
+    >>"%bootLog%" echo FAILED - The PS1 helper is missing. Extract the full ZIP first.
+    type "%bootLog%"
     pause
-    exit /b 1
+    exit /b 2
 )
-
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0diagnose_konggu_ocr.ps1"
-set "exitCode=%ERRORLEVEL%"
-
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0diagnose_konggu_ocr.ps1" -OutputDirectory "%diagDir%" -NoPause >>"%bootLog%" 2>&1
+set "diagExit=%ERRORLEVEL%"
+type "%bootLog%"
 echo.
-if exist "%USERPROFILE%\Desktop\Konggu_OCR_Diagnostic_Result.txt" (
-    echo Result file: %USERPROFILE%\Desktop\Konggu_OCR_Diagnostic_Result.txt
-) else (
-    echo WARNING: the result file was not found on the desktop.
-)
-echo PowerShell exit code: %exitCode%
-echo.
+echo Exit code: %diagExit%
+echo Reports: %diagDir%
+echo If it failed, keep the report and send it to the project maintainer.
 pause
-exit /b %exitCode%
+exit /b %diagExit%

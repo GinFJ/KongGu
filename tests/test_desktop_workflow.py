@@ -77,6 +77,26 @@ def _minimal_pdf_bytes() -> bytes:
     return data
 
 
+@pytest.mark.parametrize('ocr_pages', [[], [1]])
+def test_english_image_page_requires_review_even_when_parser_returns_blocks(tmp_path, monkeypatch, ocr_pages):
+    pdf = tmp_path / "张三-英方课表.pdf"
+    pdf.write_bytes(_minimal_pdf_bytes())
+    monkeypatch.setattr(
+        "app.services.desktop_workflow.inspect_pdf_sources",
+        lambda sources: [{"status": "ready", "page_count": 1,
+                          "pages_needing_ocr": ocr_pages, "clipped_pages": []}],
+    )
+    class FallbackCore(FakeDesktopCore):
+        def parse_actual_pdf_sources(self, *args, **kwargs):
+            blocks, calendar, errors, frame = super().parse_actual_pdf_sources(*args, **kwargs)
+            blocks[0].update(source='英方', source_type='英方', kind='英方', text_source='OCR')
+            return blocks, calendar, errors, pd.DataFrame(blocks)
+    result = parse_pdf_paths(schedule_core=FallbackCore(), paths=[str(pdf)])
+    issues = [i for i in result.process_result.issues if i.code == "ENGLISH_IMAGE_PAGE_REVIEW"]
+    assert len(issues) == 1 and issues[0].blocks_export
+    assert result.process_result.quality_state != "accepted"
+
+
 def test_desktop_workflow_parse_serializes_and_exports(tmp_path: Path):
     pdf = tmp_path / "张三-中方课表.pdf"
     pdf.write_bytes(_minimal_pdf_bytes())

@@ -12,6 +12,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 import shutil
 import sys
 import time
+import uuid
 from typing import Any
 
 from app.privacy import safe_error_message
@@ -340,19 +341,23 @@ def load_manifest(bundled_root: Path | None = None) -> dict[str, Any]:
         try:
             payload = json.loads(candidate.read_text(encoding="utf-8"))
         except Exception as exc:
-            raise OfflineManifestError("离线资源清单无法解析，已停止资源校验。") from exc
+            raise OfflineManifestError(
+                "离线资源清单无法解析，已停止资源校验。请使用完整离线安装包重新安装，无需联网下载模型。"
+            ) from exc
         if not isinstance(payload, dict) or not isinstance(payload.get("entries"), list):
-            raise OfflineManifestError("离线资源清单格式不正确，已停止资源校验。")
+            raise OfflineManifestError(
+                "离线资源清单格式不正确，已停止资源校验。请使用完整离线安装包重新安装，无需联网下载模型。"
+            )
         entries = payload.get("entries") or []
         if any(not isinstance(entry, dict) for entry in entries):
             # 非对象条目会让后续 entry.get(...) 抛 AttributeError 并把整个启动拖垮。
             raise OfflineManifestError(
-                "离线资源清单包含无效条目，已停止资源校验。",
+                "离线资源清单包含无效条目，已停止资源校验。请使用完整离线安装包重新安装，无需联网下载模型。",
                 issue="invalid-manifest-entry",
             )
         return payload
     raise OfflineManifestError(
-        "未找到离线资源清单，无法校验随包资源。",
+        "未找到离线资源清单，无法校验随包资源。请使用完整离线安装包重新安装，无需联网下载模型。",
         issue="missing-manifest",
     )
 
@@ -410,9 +415,12 @@ def _ocr_models_root(app_data_root: Path) -> Path:
     configured = Path(configured_value) if configured_value else None
     default_root = app_data_root / "ocr_models"
 
-    if configured is not None and (not _requires_ascii_path() or _is_ascii_path(configured)):
+    if (configured is not None
+            and (not _requires_ascii_path() or _is_ascii_path(configured))
+            and _usable_directory(configured)):
         return configured
-    if not _requires_ascii_path() or _is_ascii_path(default_root):
+    if ((not _requires_ascii_path() or _is_ascii_path(default_root))
+            and _usable_directory(default_root)):
         return default_root
 
     candidates: list[Path] = []
@@ -433,10 +441,23 @@ def _ocr_models_root(app_data_root: Path) -> Path:
 
 
 def _usable_directory(path: Path) -> bool:
-    if path.is_dir():
-        return True
     try:
         path.mkdir(parents=True, exist_ok=True)
+        # An existing ProgramData directory may belong to another Windows
+        # account. Existence and mkdir(exist_ok=True) do not prove that this
+        # standard user can repair its models. Only remove our own probe file.
+        # Use one exclusive create attempt. Windows tempfile retries access
+        # denials when os.access cannot describe the actual ACL, which can
+        # otherwise stall startup thousands of times on a protected folder.
+        probe = path / f".konggu-write-{uuid.uuid4().hex}"
+        descriptor = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            os.write(descriptor, b"1")
+        finally:
+            try:
+                os.close(descriptor)
+            finally:
+                probe.unlink()
     except OSError:
         return False
     return True
@@ -552,13 +573,16 @@ def _ocr_status(root: Path) -> dict[str, Any]:
     path_compatible = not _requires_ascii_path() or _is_ascii_path(root)
     if not path_compatible:
         issue = "path-incompatible"
-        error = "OCR 模型目录包含非 ASCII 字符，当前识别引擎无法读取。"
+        error = (
+            "OCR 模型目录包含非 ASCII 字符，当前识别引擎无法读取。"
+            "请检查公共模型目录的写入权限，或配置可写的纯英文 KONGGU_OCR_MODEL_DIR 后重试修复；无需联网下载模型。"
+        )
     elif any(not item["exists"] for item in models):
         issue = "missing"
-        error = "OCR 模型文件缺失。"
+        error = "OCR 模型文件缺失。请点击修复从安装包恢复；仍未恢复时，请使用完整离线安装包重新安装。"
     elif any(not item["valid"] for item in models):
         issue = "invalid"
-        error = "OCR 模型文件未通过校验。"
+        error = "OCR 模型文件未通过校验。请点击修复从安装包恢复；仍未恢复时，请使用完整离线安装包重新安装。"
     else:
         issue = ""
         error = ""

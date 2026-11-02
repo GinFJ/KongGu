@@ -1,14 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+import sys
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, copy_metadata
 
-ROOT = Path.cwd()
-datas = [
-    (str(ROOT / "config"), "config"),
-    (str(ROOT / "assets"), "assets"),
-    (str(ROOT / "resources"), "resources"),
-]
+ROOT = Path(SPECPATH).resolve()
+sys.path.insert(0, str(ROOT))
+from tools.worker_bundle import runtime_datas, write_worker_build_metadata
+
+datas = runtime_datas(ROOT)
+build_metadata = write_worker_build_metadata(ROOT, Path(workpath) / "provenance")
+datas.append((str(build_metadata), "resources"))
 datas += collect_data_files("paddlex", includes=["configs/**/*.yaml", "configs/**/*.yml"])
 datas += collect_data_files("paddleocr", includes=["**/*.yaml", "**/*.yml"])
 datas += copy_metadata("pdf-inspector")
@@ -28,7 +30,7 @@ binaries = collect_dynamic_libs("paddle")
 binaries += collect_dynamic_libs("pdf_inspector")
 
 a = Analysis(
-    ["app/sidecar.py"],
+    [str(ROOT / "app" / "sidecar.py")],
     pathex=[str(ROOT)],
     binaries=binaries,
     datas=datas,

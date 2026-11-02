@@ -56,7 +56,8 @@ def test_blocking_issues_do_not_render_confirm_only_actions() -> None:
 def test_welcome_copy_uses_confirmed_slogan_and_concrete_language() -> None:
     main = _source("src/main.ts")
 
-    assert "<h1>青心如禾，向阳而生</h1>" in main
+    assert "<h1>课表协作工作台</h1>" in main
+    assert '<span class="welcomeKicker">青心如禾，向阳而生</span>' in main
     assert "把大家的课表放在一起，看看什么时候都有空。" in main
     for rejected_copy in (
         "多人课表协作工具",
@@ -68,11 +69,12 @@ def test_welcome_copy_uses_confirmed_slogan_and_concrete_language() -> None:
         assert rejected_copy not in main
 
 
-def test_brand_header_keeps_only_green_zhong_song_slogan() -> None:
+def test_workbench_header_prioritizes_the_task_with_offline_chinese_fonts() -> None:
     main = _source("src/main.ts")
     styles = _source("src/styles.css")
 
     assert "青禾计划 · 空谷" not in main
+    assert "<h1>课表协作工作台</h1>" in main
     assert 'color: var(--green); font: 700 25px/1.1 "STZhongsong", "华文中宋"' in styles
 
 

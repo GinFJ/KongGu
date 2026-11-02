@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Iterable
 
 
-PARSER_VERSION = "55"
+PARSER_VERSION = "65"
 PROFILE_VERSION = "1"
 CONFIG_VERSION = "1"
 DEFAULT_OCR_ENGINE = "paddle_v4"

@@ -174,7 +174,7 @@ def test_export_button_disabled_state_matches_export_gate() -> None:
     main = _source("src/main.ts")
     export_body = _section(main, "async function exportExcel()", "async function repairResources()")
 
-    assert 'setDisabled("#exportExcel", !result?.can_export || state.busy);' in main
+    assert 'setDisabled("#exportExcel", !result?.can_export || state.busy || nativeUnavailable);' in main
     assert "if (!result.can_export) {" in export_body
     assert 'state.activeTab = "issues";' in export_body
     assert "当前结果还不能导出，请先核对或修正“待处理”中的内容。" in export_body

@@ -74,6 +74,21 @@ def generate_availability(
         uploaded_calendar_df=None,
         progress=report_parse_progress,
     )
+    # Inference evidence belongs to the parsed source, not a surviving course
+    # block. Carry it in memory too: a failed optional cache write must never
+    # make a review suggestion disappear from the result.
+    notice_getter = getattr(schedule_core, 'visual_notice_consensus_evidence', None)
+    if callable(notice_getter):
+        for source, legacy in zip(model_sources, legacy_sources):
+            notes = notice_getter(legacy)
+            if not notes:
+                continue
+            inspection = next((item for item in inspections
+                               if item.get('source_hash') == source.content_hash), None)
+            if inspection is None:
+                inspection = dict(source_hash=source.content_hash, file_name=source.file_name)
+                inspections.append(inspection)
+            inspection['nonclass_consensus'] = notes
 
     if calendar_df is None or calendar_df.empty:
         calendar_df = schedule_core.synthesize_calendar_from_blocks(blocks)

@@ -1,17 +1,17 @@
 {
   "name": "konggu-desktop",
   "private": true,
-  "version": "0.5.21",
+  "version": "0.6.0",
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
     "dev:frontend": "vite --host 127.0.0.1",
-    "build": "npm run check:privacy && npm run build:sidecar && tauri build",
+    "build": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-candidate.ps1",
     "check:privacy": ".venv\\Scripts\\python.exe tools\\check_repo_privacy.py",
     "check:privacy:history": ".venv\\Scripts\\python.exe tools\\check_repo_privacy.py --all-history",
     "build:release:signed": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build-release-signed.ps1",
     "build:frontend": "vite build",
-    "build:sidecar": ".venv\\Scripts\\python.exe -m PyInstaller --clean KongguWorker.spec && node scripts/rename-sidecar.mjs",
+    "build:sidecar": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-candidate.ps1 -WorkerOnly",
     "prepare:offline": "python tools/prepare_offline_resources.py --download-ocr",
     "prepare:offline:dev": "python tools/prepare_offline_resources.py --allow-missing-ocr"
   },
