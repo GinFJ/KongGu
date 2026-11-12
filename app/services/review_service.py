@@ -12,7 +12,7 @@ from app.services.result_view_service import build_gui_process_result
 from app.services.workflow_persistence import restore_workflow, snapshot_workflow
 from core.legacy_adapter import build_file_records, build_member_schedules, course_blocks_from_legacy
 from core.models import CorrectionRecord, MemberIdentity, ParseIssue
-from core.quality import evaluate_quality, quality_state, schedule_range_violations
+from core.quality import SCHEDULE_RANGE_SUGGESTION, evaluate_quality, quality_state, schedule_range_violations
 
 
 EDITABLE_BLOCK_FIELDS = {
@@ -377,10 +377,6 @@ def _refresh_derived(workflow: Any, schedule_core: Any) -> None:
                     continue
         if "date" in frame:
             calendar_dates = [str(value) for value in frame["date"] if str(value).strip()]
-    suggestions = {
-        "WEEK_OUT_OF_SEMESTER": "调整学期第 1 周和教学周数后重新生成空课表。",
-        "PRE_TERM_DATE": "确认课表属于当前学期，或调整学期第 1 周日期后重新生成。",
-    }
     for code, message in schedule_range_violations(
         blocks=generation.blocks,
         calendar_weeks=calendar_weeks,
@@ -391,7 +387,7 @@ def _refresh_derived(workflow: Any, schedule_core: Any) -> None:
                 code=code,
                 message=message,
                 severity="error",
-                suggestion=suggestions.get(code, ""),
+                suggestion=SCHEDULE_RANGE_SUGGESTION,
                 blocks_export=True,
             )
         )

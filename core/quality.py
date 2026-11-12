@@ -3,9 +3,27 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import date
 from typing import Any
 
 from .models import FileProcessRecord, MemberSchedule, ParseIssue, QualityState
+
+
+SCHEDULE_RANGE_SUGGESTION = "请对照原课表核对左侧的第一周开始日期和教学周数，保存设置后重新生成空课表。"
+
+
+def _parsed_date_range(blocks: Iterable[dict[str, Any]]) -> str:
+    dates = set()
+    for block in blocks:
+        try:
+            dates.add(date.fromisoformat(str(block.get("date"))))
+        except ValueError:
+            continue
+    if not dates:
+        return ""
+    first, last = min(dates), max(dates)
+    span = first.isoformat() if first == last else f"{first} 至 {last}"
+    return f"按当前设置解析的越界课程日期为 {span}。"
 
 
 def schedule_range_violations(
@@ -21,19 +39,22 @@ def schedule_range_violations(
     """
 
     block_list = list(blocks)
-    weeks = sorted(
-        {int(block["week"]) for block in block_list if block.get("week") is not None}
-    )
     known_weeks = {int(week) for week in calendar_weeks}
     problems: list[tuple[str, str]] = []
     if known_weeks:
-        outside = [week for week in weeks if week not in known_weeks]
+        outside = [
+            block for block in block_list
+            if block.get("week") is not None and int(block["week"]) not in known_weeks
+        ]
         if outside:
+            weeks = sorted({int(block["week"]) for block in outside})
+            start = f"从 {earliest_calendar_date} 开始，" if earliest_calendar_date else ""
             problems.append(
                 (
                     "WEEK_OUT_OF_SEMESTER",
-                    f"课表包含第 {'、'.join(str(week) for week in outside)} 周课程，"
-                    "超出当前学期教学周设置，正式空课会缺少这些周。",
+                    f"课表包含第 {'、'.join(map(str, weeks))} 周课程，超出当前学期教学周设置。"
+                    f"当前日历{start}覆盖第 {min(known_weeks)} 至 {max(known_weeks)} 周。"
+                    f"{_parsed_date_range(outside)}",
                 )
             )
     if earliest_calendar_date:
@@ -46,7 +67,7 @@ def schedule_range_violations(
             problems.append(
                 (
                     "PRE_TERM_DATE",
-                    "课表包含早于当前学期第 1 周的日期，可能是上一学期的课表。",
+                    f"课程日期早于当前日历起点 {earliest_calendar_date}。{_parsed_date_range(early)}",
                 )
             )
     return problems

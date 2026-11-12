@@ -24,7 +24,7 @@ from app.services.workflow_persistence import restore_workflow, snapshot_workflo
 from app.privacy import safe_error_message
 from core.errors import ErrorType, ProcessError
 from core.legacy_adapter import infer_member_name_from_filename
-from core.quality import assert_export_allowed, evaluate_quality, schedule_range_violations
+from core.quality import SCHEDULE_RANGE_SUGGESTION, assert_export_allowed, evaluate_quality, schedule_range_violations
 from core.signature import build_parser_signature
 from core.runtime_control import cancellation_scope
 from core.models import FileProcessRecord, ParseIssue, ProcessResult
@@ -706,16 +706,12 @@ def _schedule_range_issues(generation: Any) -> list[ParseIssue]:
         calendar_weeks=calendar_weeks,
         earliest_calendar_date=min(calendar_dates) if calendar_dates else None,
     )
-    suggestions = {
-        "WEEK_OUT_OF_SEMESTER": "调整学期第 1 周和教学周数后重新生成空课表。",
-        "PRE_TERM_DATE": "确认课表属于当前学期，或调整学期第 1 周日期后重新生成。",
-    }
     return [
         ParseIssue(
             code=code,
             message=message,
             severity="error",
-            suggestion=suggestions.get(code, ""),
+            suggestion=SCHEDULE_RANGE_SUGGESTION,
             blocks_export=True,
         )
         for code, message in problems

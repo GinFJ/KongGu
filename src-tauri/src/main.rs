@@ -1,5 +1,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(windows)]
+mod worker_temp;
+
+#[tauri::command]
+fn prepare_worker_temp() -> Result<String, String> {
+    #[cfg(windows)]
+    return worker_temp::prepare();
+    #[cfg(not(windows))]
+    Ok(std::env::temp_dir().to_string_lossy().into_owned())
+}
+
 /// Return true when this process is the first (and only) Konggu instance.
 ///
 /// Two desktop instances share the same SQLite state and OCR worker: the second
@@ -39,6 +50,7 @@ fn main() {
         std::process::exit(0);
     }
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![prepare_worker_temp])
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())

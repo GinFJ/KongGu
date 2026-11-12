@@ -217,10 +217,10 @@ def test_sidecar_request_write_failure_settles_pending_request() -> None:
 def test_sidecar_ignores_closed_child_that_was_replaced() -> None:
     source = _source("src/sidecarClient.ts")
 
-    assert "private onClosed(command: Command<string>)" in source
+    assert "private onClosed(command: Command<string>, code: number | null)" in source
     assert "private onSpawnError(command: Command<string>, error: unknown)" in source
     assert source.count("if (this.command !== command) return;") >= 2
-    assert 'command.on("close", () => this.onClosed(command));' in source
+    assert 'command.on("close", ({ code }) => this.onClosed(command, code));' in source
     assert 'command.on("error", (error) => this.onSpawnError(command, error));' in source
     assert "if (this.command === command) this.consume(chunk);" in source
     # 旧进程写了一半的 NDJSON 行不能拼到新进程首条响应上。

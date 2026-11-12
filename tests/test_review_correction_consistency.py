@@ -188,7 +188,9 @@ def test_out_of_term_issue_is_recomputed_after_week_correction(tmp_path: Path):
         operator_id="测试者",
     )
     outside = get_review_payload(store, job_id)
-    assert "WEEK_OUT_OF_SEMESTER" in {issue["code"] for issue in outside["issues"]}
+    issue = next(issue for issue in outside["issues"] if issue["code"] == "WEEK_OUT_OF_SEMESTER")
+    assert "第 19 周" in issue["message"] and "当前日历从 2026-09-07 开始" in issue["message"]
+    assert "第一周开始日期和教学周数" in issue["suggestion"] and issue["blocks_export"]
     assert outside["quality_state"] != "accepted"
 
     apply_correction(

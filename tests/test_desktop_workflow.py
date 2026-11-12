@@ -353,8 +353,11 @@ def test_week_beyond_teaching_weeks_is_reported_and_blocks_export(tmp_path: Path
     pdf.write_bytes(_minimal_pdf_bytes())
     result = parse_pdf_paths(schedule_core=OutOfTermCore(), paths=[str(pdf)])
 
-    codes = {issue.code for issue in result.process_result.issues}
-    assert "WEEK_OUT_OF_SEMESTER" in codes
+    issue = next(issue for issue in result.process_result.issues if issue.code == "WEEK_OUT_OF_SEMESTER")
+    assert "第 20 周" in issue.message
+    assert "2026-07-20" in issue.message and "2026-03-16" in issue.message
+    assert "按当前设置解析" in issue.message
+    assert issue.blocks_export and "保存设置后重新生成" in issue.suggestion
     assert result.process_result.quality_state != "accepted"
 
 

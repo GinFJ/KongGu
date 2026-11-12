@@ -85,7 +85,7 @@ client.onEvent((event) => {
     const message = formatError(event.message, true);
     state.statusText = state.startupDiagnostic ? message : `本地识别功能启动失败：${message}`;
     state.stage = "failed";
-    state.busy = false;
+    if (state.resourceStatus) state.busy = false;
     render();
     return;
   }
@@ -104,12 +104,15 @@ client.onEvent((event) => {
 });
 
 async function boot() {
+  state.stage = "boot";
+  state.busy = true;
+  state.statusText = "正在启动本地识别服务";
   render();
   try {
-    await Promise.all([client.start(), delay(900)]);
     const [resourceRepair, settings] = await Promise.all([
       client.request<{ ok: boolean; status: ResourceStatus; copied: string[] }>("resources.repair"),
-      client.request<{ ok: boolean; settings: CalendarSettings }>("settings.calendar.get")
+      client.request<{ ok: boolean; settings: CalendarSettings }>("settings.calendar.get"),
+      delay(900)
     ]);
     const resources = resourceRepair.status;
     state.resourceStatus = resources;
@@ -122,6 +125,7 @@ async function boot() {
     state.stage = "failed";
     state.statusText = formatError(error, true);
   }
+  state.busy = false;
   render();
 }
 
@@ -270,6 +274,7 @@ async function waitForJob(jobId: string) {
       response = await client.request<JobResponse>("job.get", { job_id: jobId }, 60_000);
       consecutiveFailures = 0;
     } catch (error) {
+      if (state.jobId !== jobId || completedJobId === jobId) return;
       consecutiveFailures += 1;
       // 单次轮询失败（识别功能重启、瞬时写入失败、一次超时）不能终止整个等待：
       // 任务可能仍在运行，结果也仍会回来。连续失败才判定为中断。
@@ -280,7 +285,7 @@ async function waitForJob(jobId: string) {
       continue;
     }
     const job = response.job;
-    if (state.jobId !== jobId) return;
+    if (state.jobId !== jobId || completedJobId === jobId) return;
     state.progress = { current: job.current, total: job.total };
     state.failedFileCount = job.files.filter((file) => file.status === "failed").length;
     if (job.status === "completed") {
@@ -424,6 +429,8 @@ async function exportExcel() {
 async function repairResources() {
   if (state.startupDiagnostic) return setStatus(INSTALLATION_STARTUP_MESSAGE);
   if (state.busy) return;
+  // 启动自检还未返回时，需要重新启动服务并读回学期设置。
+  if (!state.resourceStatus) return boot();
   state.busy = true;
   setStatus("正在检查并修复本地识别功能");
   try {
@@ -682,7 +689,8 @@ function updateShell() {
   const invalidCount = state.files.filter((path) => !inferKind(path)).length;
   const desktopUnavailable = state.stage === "failed" && state.statusText.includes("桌面运行环境未连接");
   const installationUnavailable = Boolean(state.startupDiagnostic);
-  const nativeUnavailable = desktopUnavailable || installationUnavailable;
+  const startupFailed = state.stage === "failed" && !state.resourceStatus;
+  const nativeUnavailable = desktopUnavailable || installationUnavailable || startupFailed;
   const canParse = state.files.length > 0 && invalidCount === 0 && !state.busy;
   const progressPercent = state.progress.total
     ? Math.min(100, Math.round((state.progress.current / state.progress.total) * 100))
@@ -707,7 +715,7 @@ function updateShell() {
   getElement<HTMLButtonElement>("#chooseFiles").classList.toggle("primary", !state.files.length && !state.busy && !result && !nativeUnavailable);
   getElement<HTMLButtonElement>("#parseSchedules").classList.toggle("primary", canParse && !result && !nativeUnavailable);
   getElement<HTMLButtonElement>("#exportExcel").classList.toggle("primary", Boolean(result?.can_export) && !state.busy && !nativeUnavailable);
-  setText("#actionGuide", installationUnavailable ? "请使用完整安装包重新安装，或联系维护者。" : desktopUnavailable ? "请在空谷桌面端中完成导入与处理。" : state.busy ? "正在整理课表。完成后先核对，再导出。"
+  setText("#actionGuide", installationUnavailable ? "请使用完整安装包重新安装，或联系维护者。" : desktopUnavailable ? "请在空谷桌面端中完成导入与处理。" : startupFailed ? "处理启动问题后，请点击左下方“重新启动识别服务”。" : state.busy ? "正在整理课表。完成后先核对，再导出。"
     : result?.can_export ? "核对已完成，可以导出本次空课表。"
       : result?.quality_state === "accepted" ? "当前结果暂不可导出，请重新生成。"
         : result ? "预览供核对使用，处理完标记内容后再导出。"
@@ -715,7 +723,8 @@ function updateShell() {
   setDisabled("#saveSettings", state.busy || nativeUnavailable);
   setDisabled("#semesterStart", state.busy || nativeUnavailable);
   setDisabled("#teachingWeeks", state.busy || nativeUnavailable);
-  setDisabled("#repairResources", state.busy || nativeUnavailable);
+  setDisabled("#repairResources", state.busy || desktopUnavailable || installationUnavailable);
+  setText("#repairResources", startupFailed && !desktopUnavailable && !installationUnavailable ? "重新启动识别服务" : "修复识别功能");
   setDisabled("#clearLocalData", state.busy || nativeUnavailable);
   setDisabled("#clearFiles", state.busy || !state.files.length);
   setInputValue("#semesterStart", state.calendarSettings.semester_start_date);
@@ -723,8 +732,8 @@ function updateShell() {
 
   const resourceTitle = getElement<HTMLElement>("#resourceTitle");
   resourceTitle.className = state.resourceStatus?.ready && !nativeUnavailable ? "good" : "warning";
-  resourceTitle.textContent = installationUnavailable ? "安装组件异常" : desktopUnavailable ? "仅桌面端可用" : state.resourceStatus?.ready ? "已就绪" : "需要修复";
-  setText("#resourceDetail", installationUnavailable ? "此问题无法通过识别资源修复解决，请重新安装或联系维护者。" : desktopUnavailable ? "普通浏览器无法运行本地识别，请打开空谷桌面端。" : resourceDetail(state.resourceStatus));
+  resourceTitle.textContent = installationUnavailable ? "安装组件异常" : desktopUnavailable ? "仅桌面端可用" : startupFailed ? "服务未启动" : state.resourceStatus?.ready ? "已就绪" : !state.resourceStatus ? "正在启动" : "需要修复";
+  setText("#resourceDetail", installationUnavailable ? "此问题无法通过识别资源修复解决，请重新安装或联系维护者。" : desktopUnavailable ? "普通浏览器无法运行本地识别，请打开空谷桌面端。" : startupFailed ? "服务启动后才能检查识别资源。" : resourceDetail(state.resourceStatus));
   setText("#statusText", state.statusText);
 
   const seal = getElement<HTMLElement>("#qualitySeal");
@@ -732,8 +741,8 @@ function updateShell() {
   seal.className = `qualitySeal ${resultNeedsRefresh ? "needs_review" : quality}`;
   setText("#qualityTitle", installationUnavailable ? "安装组件未能启动" : desktopUnavailable ? "桌面环境未连接" : resultNeedsRefresh ? "需要重新生成" : result ? resultStatusLabel(quality) : "等待生成结果");
   setText("#qualityDetail", installationUnavailable ? "请使用完整安装包重新安装" : desktopUnavailable ? "请在桌面端继续" : resultNeedsRefresh ? "请使用当前设置重新生成" : result ? resultStatusDetail(result) : "导入课表后查看");
-  setText("#stageLabel", installationUnavailable ? "需要重新安装" : desktopUnavailable ? "请打开桌面端" : stageLabel(state.stage));
-  setText("#runHint", installationUnavailable ? "识别资源修复无法解决此问题" : desktopUnavailable ? "浏览器仅支持界面预览" : runHint(result));
+  setText("#stageLabel", installationUnavailable ? "需要重新安装" : desktopUnavailable ? "请打开桌面端" : startupFailed ? "启动失败" : stageLabel(state.stage));
+  setText("#runHint", installationUnavailable ? "识别资源修复无法解决此问题" : desktopUnavailable ? "浏览器仅支持界面预览" : startupFailed ? "请重新启动识别服务" : runHint(result));
   setText("#fileCount", String(result?.summary.pdf_count || state.files.length));
   setText("#memberCount", String(result?.summary.member_count || 0));
   setText("#issueCount", String(result?.issues.filter((issue) => !issue.confirmed).length || 0));
@@ -826,6 +835,13 @@ function bindActions() {
         resetForNewInput(state.files.length ? `已选择 ${state.files.length} 份课表` : "请选择课表 PDF");
       };
       chip ? commitAfterExit(chip, commit) : commit();
+      return;
+    }
+    const settingLink = target.closest<HTMLButtonElement>("[data-semester-setting]");
+    if (settingLink) {
+      const field = getElement<HTMLInputElement>(settingLink.dataset.semesterSetting === "semesterStart" ? "#semesterStart" : "#teachingWeeks");
+      field.scrollIntoView({ block: "center" });
+      field.focus({ preventScroll: true });
       return;
     }
     const confirm = target.closest<HTMLButtonElement>("[data-confirm-inline]");
@@ -1102,8 +1118,8 @@ function getPanel(tab: Tab) {
 
 function renderWelcome(showAgu = true) {
   if (!showAgu) return `<div class="emptyPanel taskEmpty taskEmpty--failed"><span class="taskMarker" aria-hidden="true">!</span>
-    <b>暂时无法完成处理</b><span>${escapeHtml(state.statusText)}</span>
-    <p>${state.startupDiagnostic ? "请关闭当前程序，使用完整安装包重新安装。若仍无法启动，请将下方脱敏技术详情提供给维护者。" : state.statusText.includes("桌面运行环境") ? "请回到空谷桌面端继续，本地功能无法在普通浏览器中运行。" : "请根据上述原因处理后重新生成。识别功能异常时，可在左侧尝试修复。"}</p>
+    <b>${state.resourceStatus ? "暂时无法完成处理" : "本地识别服务未能启动"}</b><span>${escapeHtml(state.statusText)}</span>
+    <p>${state.startupDiagnostic ? "请关闭当前程序，使用完整安装包重新安装。若仍无法启动，请将下方脱敏技术详情提供给维护者。" : state.statusText.includes("桌面运行环境") ? "请回到空谷桌面端继续，本地功能无法在普通浏览器中运行。" : !state.resourceStatus ? "处理上述问题后，请点击左侧“重新启动识别服务”。" : "请根据上述原因处理后重新生成。识别功能异常时，可在左侧尝试修复。"}</p>
     ${state.startupDiagnostic ? `<details><summary>查看脱敏技术详情</summary><pre style="max-width:560px;white-space:pre-wrap;overflow-wrap:anywhere;text-align:left;font-size:11px">${escapeHtml(state.startupDiagnostic)}</pre></details>` : ""}</div>`;
   if (state.busy) return `<div class="emptyPanel taskEmpty"><span class="loadingDot" aria-hidden="true"></span>
     <b>正在整理本批课表</b><span>可以在上方查看处理进度。完成后，空谷会列出需要核对的内容。</span><p>处理期间请保留原文件，暂勿调整本批课表。</p></div>`;
@@ -1281,6 +1297,10 @@ function issueStateLabel(issue: ParseResult["issues"][number]) {
 
 function issueAction(issue: ParseResult["issues"][number]) {
   if (issue.confirmed) return "";
+  if (issue.code === "WEEK_OUT_OF_SEMESTER" || issue.code === "PRE_TERM_DATE") {
+    const field = issue.code === "PRE_TERM_DATE" ? "semesterStart" : "teachingWeeks";
+    return `<button type="button" data-semester-setting="${field}">前往学期设置</button>`;
+  }
   if (issue.severity === "error") return `<small class="issueActionHint">请先补充或修正课表，再重新生成空课表。</small>`;
   return `<button data-confirm-inline="${escapeHtml(issue.issue_id)}">确认已核对</button>`;
 }
@@ -1399,7 +1419,7 @@ void boot();
 
 // 处理中关闭窗口会让任务中断且结果不可续跑：至少在关闭前给用户一次确认。
 window.addEventListener("beforeunload", (event) => {
-  if (!state.busy) return;
+  if (!state.busy || state.stage === "boot") return;
   event.preventDefault();
   event.returnValue = "课表仍在处理中，关闭窗口会中断任务。";
 });

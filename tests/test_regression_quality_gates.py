@@ -20,6 +20,9 @@ from pathlib import Path
 
 import pytest
 
+from app.services.review_service import confirm_issue, apply_saved_corrections
+from app.services.state_store import StateStore
+from core.benchmark import evaluate_samples
 from core.errors import ErrorType, ProcessError
 from core.models import (
     CorrectionRecord,
@@ -31,11 +34,34 @@ from core.models import (
     ProcessResult,
     QualityState,
 )
-from core.quality import assert_export_allowed, evaluate_quality, quality_state
+from core.quality import assert_export_allowed, evaluate_quality, quality_state, schedule_range_violations
 from core.signature import build_parser_signature
-from app.services.review_service import confirm_issue, apply_saved_corrections
-from app.services.state_store import StateStore
-from core.benchmark import evaluate_samples
+
+
+def test_semester_error_reports_only_dates_of_outside_blocks():
+    problems = dict(schedule_range_violations(
+        blocks=[
+            {"week": 18, "date": "2026-07-01"},  # Inside: exclude from the reported span.
+            {"week": 35, "date": "2026-10-26"},
+            {"week": 40, "date": "2026-11-30"},
+            {"week": 19, "date": ""},
+        ],
+        calendar_weeks=range(1, 19),
+        earliest_calendar_date="2026-03-02",
+    ))
+    message = problems["WEEK_OUT_OF_SEMESTER"]
+    assert "19、35、40" in message and "第 1 至 18 周" in message
+    assert "2026-10-26 至 2026-11-30" in message and "2026-07-01" not in message
+
+
+def test_preterm_issue_reports_parsed_date_and_configured_start():
+    problems = dict(schedule_range_violations(
+        blocks=[{"date": "2026-02-28"}],
+        calendar_weeks=range(1, 19),
+        earliest_calendar_date="2026-03-02",
+    ))
+    assert list(problems) == ["PRE_TERM_DATE"]
+    assert "2026-03-02" in problems["PRE_TERM_DATE"] and "2026-02-28" in problems["PRE_TERM_DATE"]
 
 
 # ---------------------------------------------------------------------------
