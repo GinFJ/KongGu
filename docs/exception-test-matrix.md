@@ -1,8 +1,10 @@
 # Konggu 异常样本测试矩阵
 
+2026-11-15 补充：分页星期/日期缺失与冲突见 `test_english_split_date.py`；宽合并告示的双分辨率核对、窄课程格和 OCR 分歧拒绝见 `test_ocr_notice_refinement.py`；不同周数下的短表底说明见 `test_chinese_grid_footer.py`。独立春季批次的截断阻断与图片待复核导出拒绝已经实际接口验证，见[0.7.0 验收](交付验收_0.7.0_v1.0.md)。
+
 这份矩阵用于把协会真实使用中容易暴露的问题拆成可自动化检查的层级。原则是：服务层异常先用 pytest 固化，PDF/OCR/版式异常必须进入样本库做回归。
 
-2026-11-02 文档整理：下列检查表示已有针对性覆盖，不能视为当前安装包验收；后续工作统一见 [项目待办](../MEMORY/待办.md)。0.5.29 算法验证范围见[验收记录](迭代验收_0.5.29_v1.0.txt)。
+2026-11-15 核对：下列入口表示存在针对性测试，不代表本次逐项执行或当前安装包已验收；最新工作见 [项目待办](../MEMORY/待办.md)，最近完整交付见 [0.6.9 验收](交付验收_0.6.9_v1.0.md)。0.7.0/签名 69 的在研变化须单独登记结果。
 
 ## 已覆盖或可单元测试覆盖
 
@@ -19,10 +21,10 @@
 | 课程跨周次 | 周次展开错误，空课统计偏差 | `tests/test_coordinate_parsers.py` 覆盖坐标解析片段，仍需要样本库扩展 |
 | 正式导出数据含列表/结构化值 | openpyxl 拒绝写入，accepted 结果导出必败 | `tests/test_e2e_workflow_real_core.py::test_complete_pair_parses_accepted_and_exports_workbook`、`tests/test_audit_parser_logic.py` 导出展平回归 |
 | 修改学期设置后复用旧缓存/旧修正 | 日期与周次按上一学期计算 | `tests/test_audit_parser_logic.py::test_parser_signature_tracks_effective_semester_calendar` 等签名回归 |
-| 多文件进度与预检过滤 | 文件状态错行、失败文件被标为完成 | `tests/test_audit_workflow_flow.py::test_job_progress_events_follow_the_actual_file_row` 等 14 项 |
+| 多文件进度与预检过滤 | 文件状态错行、失败文件被标为完成 | `tests/test_audit_workflow_flow.py::test_job_progress_events_follow_the_actual_file_row` 等针对性用例 |
 | sidecar 中文请求编码（非 UTF-8 代码页） | 请求乱码或常驻进程退出 | `tests/test_audit_workflow_flow.py::test_serve_decodes_utf8_ndjson_requests_when_windows_stdio_uses_ansi` |
 | 离线资源清单缺失/损坏 | 资源其实未校验却报告就绪 | `tests/test_audit_platform.py::test_missing_manifest_is_reported_instead_of_ready`、`test_corrupt_manifest_is_reported_instead_of_ready` |
-| 界面旧任务响应/迟到进度 | 旧任务结果覆盖新选择、状态死锁 | `tests/test_audit_frontend_flow.py`（22 项静态契约，含 jobId 校验、PDF 生命周期、转义与分页焦点） |
+| 界面旧任务响应/迟到进度 | 旧任务结果覆盖新选择、状态死锁 | `tests/test_audit_frontend_flow.py`（静态契约，含 jobId 校验、PDF 生命周期、转义与分页焦点；不代替实际交互） |
 | 解析周次超出教学周 | 晚于教学周的课程被静默裁剪，空课表缺课 | `tests/test_desktop_workflow.py::test_week_beyond_teaching_weeks_is_reported_and_blocks_export`（`WEEK_OUT_OF_SEMESTER` 阻断） |
 | 学期第 1 周不是周一 | 整套星期与日期错位 | `tests/test_calendar_settings.py::test_calendar_rejects_non_monday_semester_start` |
 | 输入文件被其他进程占用 | 后台线程异常退出，任务永久 running | `tests/test_audit_workflow_flow.py::test_file_hash_tolerates_unreadable_file` |
@@ -40,6 +42,8 @@
 | 重复渲染节次时间 | 每次修正为每块重建时间表，单字段修正 3–7 秒 | `tests/test_coordinate_parsers.py::test_period_time_range_is_cached_for_repeated_renders` |
 
 ## 已确认但尚未覆盖的异常
+
+近期新增入口：`tests/test_review_evidence_reuse.py` 覆盖复核摘要、变更失效及完成状态顺序；`tests/test_timetable_coverage.py` 覆盖原件日期范围；`tests/test_english_midday_axis.py`、`tests/test_english_popup_underlay.py` 覆盖午间及浮层门禁；`tests/test_availability_week_view.py` 覆盖周表缺失、重复与节次顺序。春季跨页、告示与表尾回归入口为 `tests/test_english_split_date.py`、`tests/test_ocr_notice_refinement.py`、`tests/test_chinese_grid_footer.py`，最终真实样本结论仍须单列。
 
 | 场景 | 风险 | 状态 |
 | --- | --- | --- |
@@ -61,7 +65,7 @@ SQLite 损坏或 schema 降级的隔离重建已于 0.5.18 实现，历史记录
 | 多份重复课表但文件名不同 | 原件、副本、重命名副本各 1 份 | 同内容副本跳过；不同成员真实文件不能误跳过 |
 | 节假日调课 | 带官方调课/补课校历样本 | `config/school_calendar.json` 的 `special_adjustments` 尚未被解析链路消费，属未实现；实现后才可验收 |
 | 英方并排周面板 | 同页并排周面板版式各 1 份 | 固定 x 窗口取列仍可能取错列；需真实版式核对后再改解析器（0.5.9 审计遗留） |
-| 中方整学期表末行边界 | 表底紧贴脚注的整学期表 1 份 | 末行下边界可能把脚注首行误计为下一周占用；需人工核对后修（0.5.9 审计遗留） |
+| 中方整学期表末行边界 | 表底紧贴脚注的整学期表，保留不同实际周数 | 签名 69 已有边界修复与 `tests/test_chinese_grid_footer.py`，春季原件全量回归仍在进行；旧缺陷不能继续写成“尚无实现”，也不能提前关闭人工核验 |
 
 ## 建议回归流程
 

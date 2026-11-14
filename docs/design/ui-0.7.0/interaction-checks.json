@@ -1,0 +1,57 @@
+{
+  "checks": [
+    {
+      "viewport": [
+        1280,
+        820
+      ],
+      "checks": [
+        "empty view hides result chrome",
+        "semester link opens and focuses",
+        "unsaved settings do not change summary",
+        "saved settings update summary",
+        "hero imports files",
+        "cancel picker preserves files",
+        "results do not carry file lists",
+        "workspace navigation groups review tools",
+        "generate button completes mocked job flow",
+        "week selector filters both views",
+        "slot details show full names",
+        "Escape closes details",
+        "problem opens the matching second PDF",
+        "PDF review renders synthetic PDF",
+        "calendar view mounts",
+        "clear from another tab returns to import",
+        "startup failure exposes repair"
+      ],
+      "outerOverflow": false
+    },
+    {
+      "viewport": [
+        1080,
+        720
+      ],
+      "checks": [
+        "empty view hides result chrome",
+        "semester link opens and focuses",
+        "unsaved settings do not change summary",
+        "saved settings update summary",
+        "hero imports files",
+        "cancel picker preserves files",
+        "results do not carry file lists",
+        "workspace navigation groups review tools",
+        "generate button completes mocked job flow",
+        "week selector filters both views",
+        "slot details show full names",
+        "Escape closes details",
+        "problem opens the matching second PDF",
+        "PDF review renders synthetic PDF",
+        "calendar view mounts",
+        "clear from another tab returns to import",
+        "startup failure exposes repair"
+      ],
+      "outerOverflow": false
+    }
+  ],
+  "uncaughtExceptions": []
+}

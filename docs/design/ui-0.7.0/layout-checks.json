@@ -1,0 +1,35 @@
+[
+  {
+    "width": 1280,
+    "height": 820,
+    "overflow": false,
+    "panels": 6,
+    "active": 1,
+    "exportDisabled": true,
+    "railBottom": 796,
+    "contentHeight": 585.71875
+  },
+  {
+    "width": 1080,
+    "height": 720,
+    "overflow": false,
+    "panels": 6,
+    "active": 1,
+    "exportDisabled": true,
+    "railBottom": 702,
+    "contentHeight": 509.71875
+  },
+  {
+    "interactions": "passed",
+    "checks": [
+      "table scroll retained",
+      "six panel identities stable",
+      "next action opens and focuses issues",
+      "arrow key tab navigation",
+      "accepted historical quality cannot advertise export",
+      "busy blocks file removal and exposes cancel",
+      "blocking error has no confirm shortcut",
+      "browser unavailable has no misleading repair action"
+    ]
+  }
+]
