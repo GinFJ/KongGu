@@ -25,6 +25,10 @@ class ExcelExportRequest:
     file_df: pd.DataFrame | None = None
     correction_df: pd.DataFrame | None = None
     instructions_df: pd.DataFrame | None = None
+    weekly_only: bool = False
+    department: str = ""
+    start_date: str | None = None
+    end_date: str | None = None
 
 
 def build_export_excel_bytes(*, schedule_core: Any, request: ExcelExportRequest) -> bytes:
@@ -44,4 +48,8 @@ def build_export_excel_bytes(*, schedule_core: Any, request: ExcelExportRequest)
         file_df=request.file_df,
         correction_df=request.correction_df,
         instructions_df=request.instructions_df,
+        **({"weekly_only": True} if request.weekly_only else {}),
+        **({"department": request.department} if request.department else {}),
+        **({"start_date": request.start_date, "end_date": request.end_date}
+           if request.start_date is not None or request.end_date is not None else {}),
     )

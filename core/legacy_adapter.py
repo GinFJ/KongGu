@@ -251,13 +251,12 @@ def build_member_schedules(blocks: Iterable[CourseBlock], known_names: Iterable[
     return list(by_key.values())
 
 
-def _detect_member_conflicts(member: MemberSchedule) -> list[ProcessError]:
+def conflicting_course_slots(course_blocks: Iterable[CourseBlock]):
     slots: dict[tuple[int, str, int], list[CourseBlock]] = {}
-    for block in member.blocks:
+    for block in course_blocks:
         for period in block.periods:
             slots.setdefault((block.week, block.weekday, int(period)), []).append(block)
 
-    errors: list[ProcessError] = []
     for (week, weekday, period), blocks in sorted(slots.items()):
         course_names = sorted({_course_label(block) for block in blocks if _course_label(block)})
         source_keys = {
@@ -266,13 +265,15 @@ def _detect_member_conflicts(member: MemberSchedule) -> list[ProcessError]:
         }
         if len(source_keys) <= 1 or len(course_names) <= 1:
             continue
-        errors.append(
-            ProcessError(
-                error_type=ErrorType.SCHEDULE_CONFLICT,
-                message=f"{member.name} 第{week}周{weekday}第{period}节存在多门课程：{'、'.join(course_names)}",
-            )
+        error = ProcessError(
+            error_type=ErrorType.SCHEDULE_CONFLICT,
+            message=f"{blocks[0].name} 第{week}周{weekday}第{period}节存在多门课程：{'、'.join(course_names)}",
         )
-    return errors
+        yield (week, weekday, period), blocks, course_names, error
+
+
+def _detect_member_conflicts(member: MemberSchedule) -> list[ProcessError]:
+    return [error for _, _, _, error in conflicting_course_slots(member.blocks)]
 
 
 def _course_label(block: CourseBlock) -> str:
@@ -361,7 +362,7 @@ def build_file_records(
 
 def _normalize_text_source(value: Any) -> str:
     text = str(value or "").strip()
-    if text in {"内嵌文本", "OCR", "缓存"}:
+    if text in {"内嵌文本", "OCR", "缓存", "人工修正"}:
         return text
     return "未知"
 
@@ -374,6 +375,8 @@ def _record_text_source(blocks: list[CourseBlock]) -> str:
         return "内嵌文本"
     if "缓存" in sources:
         return "缓存"
+    if "人工修正" in sources:
+        return "人工修正"
     return "未知"
 
 

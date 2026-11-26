@@ -220,7 +220,10 @@ def _worker_archive_checks(root: Path, worker: Path) -> list[tuple[str, bool, st
     try:
         modules = archive.open_embedded_archive('PYZ.pyz').toc
         required = {'core.schedule_core', 'core.bordered_timetables', 'core.vector_notice_consensus',
-                    'core.visual_notice_consensus', 'app.bootstrap', 'app.offline_resources'}
+                    'core.visual_notice_consensus', 'core.identity_completion',
+                    'core.english_split_course', 'core.ocr_notice_refinement',
+                    'core.ocr_location_refinement', 'app.services.review_operations',
+                    'app.bootstrap', 'app.offline_resources'}
         missing_modules = sorted(required - modules.keys())
         checks.append(('sidecar:core-modules', not missing_modules,
                        ', '.join(missing_modules) if missing_modules else 'parser and bootstrap present'))
@@ -282,7 +285,7 @@ def _nsis_install_scope_checks(installer_script: Path) -> list[tuple[str, bool, 
 
 
 def _isolation_report_checks(report_path: Path, worker: Path) -> list[tuple[str, bool, str]]:
-    required = {'resource_restore_and_inference_probe', 'text_pair_preview', 'excel_export',
+    required = {'resource_restore_and_inference_probe', 'text_pair_preview', 'text_pair_course_verification', 'excel_export',
                 'actual_image_ocr', 'unreviewed_export_denied'}
     try:
         report = json.loads(report_path.read_text(encoding='utf-8'))
@@ -322,6 +325,20 @@ def _registration_checks(root: Path, overlay: Path | None = None) -> list[tuple[
         matches = False
     return [('sidecar:runtime-registration', matches,
              'frontend / effective bundle / capability must agree exactly')]
+
+
+def _pdfjs_asset_checks(root: Path) -> list[tuple[str, bool, str]]:
+    checks = []
+    for directory in ('cmaps', 'standard_fonts'):
+        originals = list((root/'node_modules/pdfjs-dist'/directory).glob('*'))
+        mismatches = []
+        for source in originals:
+            target = root/'dist/pdfjs'/directory/source.name
+            if not target.is_file() or hashlib.sha256(target.read_bytes()).digest() != hashlib.sha256(source.read_bytes()).digest():
+                mismatches.append(source.name)
+        checks.append((f'frontend:pdf-{directory}', bool(originals) and not mismatches,
+                       f'{len(originals)} local resources' if not mismatches else ', '.join(mismatches[:3])))
+    return checks
 
 
 def main() -> int:
@@ -369,6 +386,7 @@ def main() -> int:
     frontend_assets = list((ROOT / "dist" / "assets").glob("*")) if (ROOT / "dist" / "assets").exists() else []
     if not args.skip_frontend_artifact and not args.source_only:
         checks.append(("frontend:pdf-worker", any("pdf.worker" in item.name for item in frontend_assets), "dist/assets"))
+        checks.extend(_pdfjs_asset_checks(ROOT))
     worker = args.worker or ROOT / 'src-tauri/binaries/konggu-worker-x86_64-pc-windows-msvc.exe'
     if not args.source_only:
         checks.append(("sidecar", worker.is_file(), "binary"))

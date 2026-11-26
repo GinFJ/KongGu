@@ -53,7 +53,7 @@ def dataframe_records(df: pd.DataFrame | None) -> list[dict[str, Any]]:
 
 def file_record_has_warning(record: FileProcessRecord) -> bool:
     status = str(record.status or "")
-    return bool(record.error) or status in FAILED_STATUS_VALUES or record.block_count == 0
+    return bool(record.error) or status in FAILED_STATUS_VALUES or (record.block_count == 0 and status != "人工核对无课程")
 
 
 def serialize_member(member: MemberSchedule) -> dict[str, Any]:
@@ -171,7 +171,7 @@ def _member_risk(member: MemberSchedule) -> tuple[str, str]:
 
     if warning:
         return "需检查", warning
-    if has_chinese and has_english and block_count > 0:
+    if has_chinese and has_english and (block_count > 0 or member.remark.startswith("已人工核对")):
         return "正常", "-"
     if not has_chinese and not has_english and member.name:
         return "异常", "未找到有效课表"

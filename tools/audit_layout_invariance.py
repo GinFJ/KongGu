@@ -71,6 +71,10 @@ def main():
 
     cv2.setNumThreads(1)
     source_paths = [ROOT/"core/schedule_core.py", ROOT/"core/bordered_timetables.py",
+                    ROOT/"core/english_bordered_grid.py",
+                    ROOT/"core/english_dates.py",
+                    ROOT/"core/english_clock_axis.py",
+                    ROOT/"core/english_popup_underlay.py",
                     ROOT/"core/signature.py", ROOT/"core/visual_notice_consensus.py",
                     ROOT/"core/vector_notice_consensus.py"]
     frozen = {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest()
@@ -109,7 +113,13 @@ def main():
                     scale={"scale_080": .8, "scale_125": 1.25}.get(variant, 1),
                     padding=.2 if variant == "margin_020" else 0,
                     reverse=variant == "reverse_pages")
-            actual = occupied(changed, coordinates, kind, "另一成员")
+            try:
+                actual = occupied(changed, coordinates, kind, "另一成员")
+            except ValueError as exc:
+                rows.append(dict(source=f"S{number:02}", kind=kind, variant=variant,
+                                 passed=False, error=str(exc)))
+                print(f"S{number:02} {variant}: rejected", flush=True)
+                continue
             rows.append(dict(source=f"S{number:02}", kind=kind, variant=variant,
                              baseline=len(baseline), actual=len(actual),
                              missing=len(baseline-actual), extra=len(actual-baseline),

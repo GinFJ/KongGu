@@ -65,11 +65,13 @@ def build_availability_preview(
     def label(member: str) -> str:
         return display_names.get(member) or display_member_name(member)
 
+    labels = {student: label(student) for student in students}
     for week in weeks:
         for weekday in weekdays:
             for period in periods:
-                busy_students = sorted(occupancy.get((week, weekday, period), set()))
-                free_students = [student for student in students if student not in busy_students]
+                occupied = occupancy.get((week, weekday, period), set())
+                busy_students = sorted(occupied)
+                free_students = [student for student in students if student not in occupied]
                 free_count = total_students - len(busy_students)
                 row = {
                     "周次": week,
@@ -78,9 +80,9 @@ def build_availability_preview(
                     "节次": period,
                     "时间": time_map.get(period, ""),
                     "空闲人数": free_count,
-                    "空闲人员": "、".join(label(student) for student in free_students),
+                    "空闲人员": "、".join(labels[student] for student in free_students),
                     "占用人数": len(busy_students),
-                    "有课人员": "、".join(label(student) for student in busy_students),
+                    "有课人员": "、".join(labels[student] if student in labels else label(student) for student in busy_students),
                 }
                 rows.append(row)
                 slots.append(availability_slot_from_row(row))

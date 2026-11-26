@@ -74,6 +74,8 @@ def test_job_poll_cache_tracks_live_signature_without_losing_same_signature_cach
     workflow = parse_pdf_paths(schedule_core=core, paths=[str(pdf)])
     store = StateStore(tmp_path/'state.sqlite3')
     job_id = save_workflow_result(workflow, store)
+    from tests.course_verification_helpers import verify_test_job
+    verify_test_job(store, job_id)
     saved = store.get_job(job_id)['result']
     coordinator = jobs.JobCoordinator(core, store)
     restores = []

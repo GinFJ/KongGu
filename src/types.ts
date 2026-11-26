@@ -46,6 +46,7 @@ export type CourseRow = {
   period?: number;
   periods: number[];
   course?: string;
+  date?: string;
   source_file?: string;
   source_hash?: string;
   page?: number;
@@ -75,7 +76,22 @@ export type PdfInspection = {
   error: string;
 };
 
+export type VerificationSummary = { total: number; confirmed: number; pending: number };
+export type VerificationItem = {
+  item_id: string;
+  source_hash: string;
+  source_file: string;
+  block_ids: string[];
+  weeks: number[];
+  periods: number[];
+  confirmed: boolean;
+};
+
 export type ParseResult = {
+  date_review?: import("./rangeReviewTypes").DateReview | null;
+  range_evidence?: Record<string, string[]>;
+  department_scopes?: { department: string; labels: string[]; busy: number[][] }[];
+  verification?: VerificationSummary;
   ok: boolean;
   result_ref: string;
   quality_state: QualityState;
@@ -96,6 +112,8 @@ export type ParseResult = {
 };
 
 export type ReviewPayload = {
+  date_review?: import("./rangeReviewTypes").DateReview | null;
+  verification?: VerificationSummary & { items: VerificationItem[] };
   ok: boolean;
   job_id: string;
   quality_state: QualityState;
@@ -110,6 +128,13 @@ export type ReviewPayload = {
   blocks: CourseRow[];
   issues: ParseIssue[];
   corrections: Array<Record<string, unknown>>;
+  removed_blocks: CourseRow[];
+  applied_operations: Array<Record<string, unknown>>;
+  revision: string;
+  regions: Array<{
+    region_id: string; source_hash: string; source_file: string;
+    action: string; page: number; week: number; weekday: string; periods: number[];
+  }>;
 };
 
 export type ProgressEvent = {

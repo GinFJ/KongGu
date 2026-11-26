@@ -11,8 +11,8 @@ from .errors import ProcessError
 
 
 ScheduleSourceType = Literal["中方", "英方"]
-TextSourceType = Literal["内嵌文本", "OCR", "缓存", "未知"]
-ProcessingStatus = Literal["待处理", "识别中", "已识别", "解析失败", "处理完成"]
+TextSourceType = Literal["内嵌文本", "OCR", "缓存", "人工修正", "未知"]
+ProcessingStatus = Literal["待处理", "识别中", "已识别", "解析失败", "处理完成", "人工核对无课程"]
 MemberFileStatus = Literal["未导入", "已导入", "待处理", "解析失败"]
 CompletenessStatus = Literal["待处理", "完整", "缺中方", "缺英方", "解析失败"]
 QualityState = Literal["accepted", "needs_review", "blocked"]

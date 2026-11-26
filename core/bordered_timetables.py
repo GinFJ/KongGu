@@ -32,12 +32,18 @@ def uniform_row_height(bounds: list[int]) -> float | None:
 def english_header_items(gray: Any) -> list[dict[str, Any]]:
     """Locate numbered slots in the dated web grid, including blank spacers."""
     height, width = gray.shape[:2]
-    ink = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY_INV)[1]
-    row_support = (ink > 0).sum(axis=1)
+    background = cv2.dilate(gray, cv2.getStructuringElement(cv2.MORPH_RECT, (1, 5)))
+    horizontal_ink = (cv2.subtract(background, gray) > 25).astype('uint8') * 255
+    horizontal = cv2.morphologyEx(horizontal_ink, cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, width//80), 1)))
+    row_support = (horizontal > 0).sum(axis=1)
     ys = _positions(np.where(row_support > row_support.max() * .7)[0])
     typical = float(np.median(np.diff(ys))) if len(ys) > 2 else 0
-    vertical = cv2.morphologyEx(ink, cv2.MORPH_OPEN,
-        cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(8, round(typical * .55)))))
+    # Printed grey headers can be taller than the vertical opening kernel.
+    # Use local contrast so their fill cannot swallow all 17 column borders.
+    # Contrast vanishes at horizontal intersections, so the opening must fit
+    # inside the short header band, rather than require a full body-row line.
+    vertical = vertical_grid_lines(gray, typical * .5)
     headers = []
     # date, 1, 2, spacer, 3, 4, noon, 5, 6, spacer, 7, 8, spacer, 9, 10, 11
     columns = [1, 2, 4, 5, 7, 8, 10, 11, 13, 14, 15]
@@ -140,6 +146,16 @@ def parse_chinese_bordered_image(
     typical = float(np.median(np.diff(body[:7])))
     stop = next((i + 1 for i, gap in enumerate(np.diff(body)) if gap > typical * 1.8), len(body))
     body = body[:stop]
+    # Legend cells may be almost the same height as teaching rows. The actual
+    # week-number divider ends at the table's bottom; its absence identifies
+    # the footer without imposing any fixed maximum teaching-week number.
+    week_divider = cv2.morphologyEx(ink[:,max(0,edges[1]-2):edges[1]+3], cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT,(1,max(8,round(typical*.7)))))
+    for index, (top, bottom) in enumerate(zip(body, body[1:])):
+        strip = week_divider[top+3:bottom-3]
+        if index >= 8 and strip.size and float((strip.max(axis=1)>0).mean()) < .6:
+            body = body[:index+1]
+            break
     if not 8 <= len(body) - 1 <= 30:
         return []
     scale_height = uniform_row_height(body)

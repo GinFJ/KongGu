@@ -15,7 +15,9 @@ if __package__ in {None, ""}:
 
 from app.bootstrap import load_schedule_core
 from app.privacy import safe_error_message
-from app.offline_resources import clear_processing_cache, configure_offline_environment, repair_resources, resource_status
+from app.offline_resources import (
+    clear_processing_cache, configure_offline_environment, processing_cache_usage, repair_resources, resource_status,
+)
 from app.services.calendar_settings import apply_calendar_settings, load_calendar_settings, save_calendar_settings
 from app.services.desktop_workflow import (
     MAX_INPUT_FILES,
@@ -72,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
 def dispatch(
     request: dict[str, Any],
     coordinator: JobCoordinator | None = None,
+    *,
+    account_paths=None,
 ) -> dict[str, Any]:
     nested_payload = request.get("payload")
     if isinstance(nested_payload, dict):
@@ -86,20 +90,37 @@ def dispatch(
             raise ValueError("请先选择课表 PDF。")
         if len(started_paths) > MAX_INPUT_FILES:
             raise ValueError(f"一次最多处理 {MAX_INPUT_FILES} 份 PDF。")
-    paths = configure_offline_environment()
+    paths = account_paths or configure_offline_environment()
 
     if command == "resources.status":
         return resource_status(check_runtime=True)
     if command == "resources.repair":
         return repair_resources()
-    if command == "data.clear":
+    if command in {"data.usage", "data.clear_cache", "data.clear"}:
         store = coordinator.store if coordinator is not None else StateStore.from_resource_paths(paths)
+        # Only the default offline profile may own the old unscoped processing cache.
+        legacy_cache = account_paths is None and not os.environ.get("KONGGU_APP_DATA_ROOT")
+        if command == "data.usage":
+            from app.services.workspace_session import count_history
+            count = count_history(store)
+            database_bytes = 0
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                try:
+                    database_bytes += store.path.with_name(store.path.name + suffix).stat().st_size
+                except FileNotFoundError:
+                    pass
+            return {"ok": True, "batch_count": count, "history_bytes": database_bytes,
+                    **processing_cache_usage(paths, include_legacy=legacy_cache)}
         if coordinator is not None and coordinator.has_active_job():
             raise ValueError("课表正在处理中，请先停止处理，再清理本机记录。")
         # 先清缓存再清数据库：缓存被占用时中止，数据库还在，用户重试即可；
         # 反过来会出现“数据库已清但接口报错”的不可解释状态。
-        cleared = clear_processing_cache(paths)
+        cleared = clear_processing_cache(paths, include_legacy=legacy_cache)
+        if command == "data.clear_cache":
+            return {"ok": True, "cleared_cache": cleared}
         store.clear_all_data()
+        from app.services.ai_review import clear_previews
+        clear_previews()
         return {"ok": True, "cleared_cache": cleared}
     if command == "settings.calendar.get":
         return {"ok": True, "settings": load_calendar_settings(paths)}
@@ -126,6 +147,26 @@ def dispatch(
         schedule_core = coordinator.schedule_core
         store = coordinator.store
 
+    if command.startswith("workspace.") or command == "review.source_pdf":
+        from app.services import workspace_session
+        if command == "workspace.history":
+            return workspace_session.list_history(store)
+        if command == "workspace.open":
+            if coordinator.has_active_job():
+                raise ValueError("这批课表正在处理中，请等处理完成后再打开历史课表。")
+            return workspace_session.open_history(store, str(request.get("job_id") or ""), paths)
+        if command == "workspace.get":
+            return workspace_session.load_workspace(store)
+        if command == "workspace.save":
+            return workspace_session.save_draft(store, request.get("files"), request.get("remember") is True,
+                                                request.get("start_date"), request.get("end_date"))
+        if command == "workspace.attach":
+            return workspace_session.attach_originals(store, str(request.get("job_id") or ""),
+                                                       request.get("paths"), request.get("remember") is True)
+        if command == "review.source_pdf":
+            return workspace_session.read_bound_pdf(store, str(request.get("job_id") or ""),
+                                                    str(request.get("source_hash") or ""), str(request.get("file_name") or ""))
+
     if command == "schedules.parse":
         started = coordinator.start(request, background=False)
         response = coordinator.get(started["job_id"])
@@ -151,6 +192,20 @@ def dispatch(
 
     if command == "review.get":
         return get_review_payload(store, str(request.get("job_id") or ""))
+    if command in {"review.slot", "review.member", "review.flag"}:
+        from app.services.date_review import update_date_review
+        return update_date_review(store, schedule_core, str(request.get("job_id") or ""), request, command.split(".")[1])
+    if command == "review.verify":
+        from app.services.course_verification import verify_course
+        return verify_course(store, str(request.get("job_id") or ""), str(request.get("item_id") or ""),
+                             str(request.get("revision") or ""), compact=request.get("compact") is True)
+    if command in {"ai.prepare", "ai.run", "ai.adopt"}:
+        from app.services import ai_review
+        if command == "ai.prepare":
+            return ai_review.prepare(store, str(request.get('job_id') or ''), str(request.get('source_hash') or ''), request.get('page', 0))
+        if command == "ai.run":
+            return ai_review.run(store, request)
+        return ai_review.adopt(store, schedule_core, request)
     if command == "review.apply":
         return apply_correction(
             store=store,
@@ -162,11 +217,17 @@ def dispatch(
             reason=str(request.get("reason") or ""),
             operator_id=str(request.get("operator_id") or "本机用户"),
         )
+    if command == "review.mutate":
+        from app.services.review_operations import mutate_courses
+        return mutate_courses(store=store, schedule_core=schedule_core,
+                              job_id=str(request.get("job_id") or ""), request=request)
     if command == "review.confirm":
         return confirm_issue(
             store,
             str(request.get("job_id") or ""),
             str(request.get("issue_id") or ""),
+            reason=str(request.get("reason") or "已对照原文核对"),
+            operator_id=str(request.get("operator_id") or "本机用户"),
         )
 
     if command == "exports.excel":
@@ -184,6 +245,8 @@ def dispatch(
             target_path=target_path,
             mode=mode,
             export_week_count=request.get("export_week_count"),
+            department=request.get("department", ""),
+            week=request.get("week"),
         )
         return {"ok": True, "path": str(exported), "mode": mode}
 
@@ -243,13 +306,16 @@ def serve() -> int:
     """Serve one persistent NDJSON connection over stdin/stdout."""
 
     _configure_stdio()
+    # OCR libraries redirect process-global stdout in the parsing thread.
+    # Keep the protocol on its original pipe so concurrent replies cannot vanish.
+    protocol_stdout = sys.stdout
     output_lock = threading.Lock()
 
     def write_message(message: dict[str, Any]) -> None:
         encoded = json.dumps(message, ensure_ascii=False, separators=(",", ":"))
         with output_lock:
-            sys.stdout.write(encoded + "\n")
-            sys.stdout.flush()
+            protocol_stdout.write(encoded + "\n")
+            protocol_stdout.flush()
 
     try:
         paths = configure_offline_environment()
@@ -271,6 +337,8 @@ def serve() -> int:
         schedule_core = load_schedule_core()
         store = StateStore.from_resource_paths(paths)
         coordinator = JobCoordinator(schedule_core, store, event_sink=write_message)
+        from app.services.cloud_workspace import CloudWorkspace
+        cloud = CloudWorkspace(paths, coordinator)
     except Exception as exc:
         write_message(
             {
@@ -304,7 +372,17 @@ def serve() -> int:
         try:
             request = json.loads(line)
             request_id = str(request.get("id") or "")
-            result = dispatch(request, coordinator)
+            command = request.get("command", "")
+            # A restarted worker always begins as a guest. Never replay an old
+            # account's file operation against that guest workspace.
+            if command not in {"cloud.login", "cloud.register", "cloud.logout"} or cloud.scope:
+                cloud.check_scope(request.get("scope", ""))
+            if command.startswith("cloud."):
+                result = cloud.command(command, request.get("payload") or {})
+            elif cloud.scope:
+                result = dispatch(request, cloud.coordinator, account_paths=cloud.paths)
+            else:
+                result = dispatch(request, coordinator)
             ok = bool(result.get("ok", True))
             if ok:
                 write_message(

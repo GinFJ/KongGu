@@ -1,6 +1,6 @@
 [package]
 name = "konggu"
-version = "0.6.5"
+version = "0.14.0"
 description = "Konggu offline desktop app"
 authors = ["Konggu"]
 edition = "2021"

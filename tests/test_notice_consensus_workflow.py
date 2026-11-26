@@ -179,3 +179,25 @@ def test_in_memory_evidence_is_retained_without_a_readable_cache(notice_pdf):
     assert len(result.generation_result.pdf_inspections[0]['nonclass_consensus']) == 1
     assert any(i.code=='VISUAL_NOTICE_CONSENSUS_REVIEW' for i in result.process_result.issues)
     assert result.process_result.quality_state == 'needs_review'
+
+
+@pytest.mark.parametrize('kind,code', [('overlay','ENGLISH_GRID_OVERLAY'),
+                                     ('unnumbered_midday','ENGLISH_UNNUMBERED_MIDDAY')])
+def test_grid_source_problem_blocks_confirmation_and_export_after_restore(notice_pdf,tmp_path,kind,code):
+    class GridCore(NoticeCore):
+        visual_notice_consensus_evidence = None
+        def english_grid_evidence(self,source):
+            return [dict(kind=kind,source_hash=source['content_hash'],page=0,date='2026-03-16')]
+    core = GridCore()
+    result = parse_pdf_paths(schedule_core=core,paths=[str(notice_pdf)])
+    assert result.process_result.quality_state=='blocked'
+    restored = restore_workflow(snapshot_workflow(result),core)
+    store = StateStore(tmp_path/'state.sqlite3')
+    job = save_workflow_result(restored,store)
+    issue = next(i for i in get_review_payload(store,job)['issues'] if i['code']==code)
+    assert issue['source_file'] == notice_pdf.name
+    with pytest.raises(ValueError):
+        confirm_issue(store,job,issue['issue_id'])
+    assert serialize_workflow_result(restored,'test')['can_export'] is False
+    with pytest.raises(ValueError):
+        export_excel(schedule_core=core,workflow_result=restored,target_path=str(tmp_path/'blocked.xlsx'))

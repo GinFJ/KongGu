@@ -9,6 +9,7 @@ import pandas as pd
 
 from app.services.availability_preview_service import align_slot_dates, build_availability_preview
 from app.services.desktop_serialization import json_safe
+from app.services.course_verification import workflow_verification
 from app.services.generate_availability_service import AvailabilityGenerationResult
 from app.services.result_view_service import build_gui_process_result
 from core.legacy_adapter import build_file_records, build_member_schedules, course_blocks_from_legacy
@@ -25,6 +26,10 @@ def snapshot_workflow(workflow_result: Any) -> dict[str, Any]:
     return json_safe(
         {
             "version": SNAPSHOT_VERSION,
+            **({"date_review": workflow_result.date_review} if workflow_result.date_review is not None else {}),
+            # A correction can split or remove a previously verified printed course.
+            "verified_items": [item["item_id"] for item in workflow_verification(workflow_result)["items"]
+                               if item["confirmed"]] if workflow_result.verified_items else [],
             "generation": {
                 "sources": [
                     {
@@ -38,6 +43,7 @@ def snapshot_workflow(workflow_result: Any) -> dict[str, Any]:
                     for source in generation.model_sources
                 ],
                 "blocks": generation.blocks,
+                "removed_blocks": generation.removed_blocks,
                 "calendar_rows": generation.calendar_df.to_dict("records"),
                 "occupancy": [
                     {
@@ -137,7 +143,10 @@ def restore_workflow(snapshot: dict[str, Any], schedule_core: Any) -> Any:
         file_records=file_records,
         elapsed_seconds=float(data.get("elapsed_seconds") or 0),
         pdf_inspections=[dict(item) for item in data.get("pdf_inspections", [])],
+        removed_blocks=[dict(item) for item in data.get("removed_blocks", [])],
     )
+    from app.services.review_operations import restore_empty_source_membership
+    restore_empty_source_membership(generation)
     process = build_gui_process_result(
         course_blocks=course_blocks,
         members=members,
@@ -152,10 +161,16 @@ def restore_workflow(snapshot: dict[str, Any], schedule_core: Any) -> Any:
     process.issues = [ParseIssue(**item) for item in snapshot.get("issues", [])]
     process.corrections = [CorrectionRecord(**item) for item in snapshot.get("corrections", [])]
     process.parser_signature = str(snapshot.get("parser_signature") or "")
-    return DesktopWorkflowResult(
+    workflow = DesktopWorkflowResult(
         generation_result=generation,
         process_result=process,
         preview_df=preview.free_df,
         warnings=list(snapshot.get("warnings", [])),
         errors=list(snapshot.get("errors", [])),
+        verified_items=set(snapshot.get("verified_items", [])),
+        date_review=snapshot.get("date_review"),
     )
+    if workflow.date_review is not None:
+        from app.services.date_review import apply_date_scope
+        apply_date_scope(workflow, schedule_core)
+    return workflow

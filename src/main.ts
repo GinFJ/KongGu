@@ -4,8 +4,16 @@ import wordmarkUrl from "../assets/konggu-wordmark.png";
 import aguSplashUrl from "../assets/brand/agu/agu-splash-scene-1280x720.webp";
 import { renderAguMotion } from "./aguMotion";
 import { mountCalendar } from "./calendarView";
+import type { CourseSlot } from "./calendarCourseEvents";
+import { availabilityWeeks, availabilityToolbar, availabilityWeekGrid, availabilitySlotDetail, departmentPicker } from "./availabilityView";
+import { availabilityForDepartment, departmentOptions, memberDepartmentOptions, membersForDepartment } from "./departmentView";
+import { chooseExportOptions, exportDialog, workbookName } from "./exportOptions";
+import { currentMonth, dateFields, outsideSemester, semesterDates, suggestedDates, type BatchDates } from "./batchDates";
 import { mountReview, type ReviewController } from "./reviewView";
 import { SidecarClient } from "./sidecarClient";
+import { CloudWorkspace } from "./cloudWorkspace";
+import { showLocalHistory, type LocalHistory } from "./localHistory";
+import { needsOriginal, rememberedChoice, readLinkedPdf, type SavedWorkspace } from "./workspaceSession";
 import { commitAfterExit, createFrameScheduler, onNextFrame } from "./uiMotion";
 import type {
   CalendarSettings,
@@ -16,10 +24,22 @@ import type {
   ReviewPayload
 } from "./types";
 import "./styles.css";
+import "./workbench.css";
+import "./verification.css";
+import { renderReviewOverview, type ReviewFilter } from "./reviewOverview";
 
 type Tab = "availability" | "members" | "files" | "issues" | "review" | "calendar";
+type Workspace = "sources" | "review" | "results";
+const workspaceTabs: Record<Workspace, Tab[]> = { sources: ["files", "members", "calendar"], review: ["issues", "review"], results: ["availability"] };
+const workspaceTitles: Record<Workspace, string> = { sources: "课表资料", review: "课表核验", results: "空课结果" };
+const lastWorkspaceTab: Record<Workspace, Tab> = { sources: "files", review: "issues", results: "availability" };
+function currentWorkspace(): Workspace {
+  if (!state.result) return "sources";
+  return state.activeTab === "availability" ? "results" : workspaceTabs.sources.includes(state.activeTab) ? "sources" : "review";
+}
 
 type AppState = {
+  batchDates: BatchDates;
   files: string[];
   resourceStatus: ResourceStatus | null;
   calendarSettings: CalendarSettings;
@@ -37,7 +57,8 @@ type AppState = {
 };
 
 const client = new SidecarClient();
-const state: AppState = {
+const freshState = (): AppState => ({
+  batchDates: currentMonth(),
   files: [],
   resourceStatus: null,
   calendarSettings: { semester_start_date: "2026-03-02", teaching_weeks: 18 },
@@ -52,18 +73,29 @@ const state: AppState = {
   progress: { current: 0, total: 0 },
   logs: [],
   startupDiagnostic: ""
-};
+});
+const state = freshState();
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("App root not found.");
-const appRoot: HTMLDivElement = app;
+let appRoot: HTMLDivElement = app;
 let calendar: Calendar | null = null;
 let calendarKey = "";
+const calendarScope = { member: "" };
 let calendarViewDate: Date | null = null;
 let reviewController: ReviewController | null = null;
 let reviewMount: Promise<void> | null = null;
+let reviewFilter: ReviewFilter = "all";
+let renderedOverviewReview: ReviewPayload | null = null;
 let reviewPayload: ReviewPayload | null = null;
 let availabilityPage = 0;
+let availabilityWeek = 0;
+let availabilityDepartment = "";
+let availabilityMode: "week" | "list" = "week";
+let pendingReviewSource = "";
+let pendingReviewBlock = "";
+let rememberSources = true;
+let draftWrite: Promise<unknown> = Promise.resolve();
 let shellMounted = false;
 let renderedResult: ParseResult | null | undefined;
 let runAguMode = "";
@@ -74,11 +106,55 @@ let completionProbeJobId = "";
 let completedJobId = "";
 let reviewReloading = false;
 let emptyPanelKey = "";
+let sourceListExpanded = true;
 let savedCalendarSettings: CalendarSettings = { ...state.calendarSettings };
 const renderedHtmlCache = new WeakMap<HTMLElement, string>();
 
 const tabs: Tab[] = ["availability", "members", "files", "issues", "review", "calendar"];
 const INSTALLATION_STARTUP_MESSAGE = "安装组件未能启动，请使用完整安装包重新安装；仍无法启动时请联系维护者。";
+
+const cloud = new CloudWorkspace(client, {
+  current: () => ({
+    job: state.result ? state.jobId : "", revision: state.review?.revision || "",
+    memberCount: state.result?.summary.member_count || 0, hasFiles: state.files.length > 0,
+    busy: state.busy || state.stage === "boot" || reviewReloading
+  }),
+  async drain() {
+    await draftWrite.catch(() => undefined);
+    if (state.busy || reviewReloading || client.hasPendingRequests) throw new Error("本机操作还在进行，请稍后重试。");
+  },
+  reopen: reopenWorkbench, render: () => render()
+});
+client.onAccountWorkerLoss = () => { state.busy = false; cloud.workerLost(); };
+
+async function reopenWorkbench() {
+  resetWorkbench();
+  await startWorkbench(true);
+}
+
+function resetWorkbench() {
+  // Detach the previous profile's dialogs, PDF canvases, results and event targets together.
+  resetRichViews();
+  const freshRoot = appRoot.cloneNode(false) as HTMLDivElement;
+  appRoot.replaceWith(freshRoot);
+  appRoot = freshRoot;
+  Object.assign(state, freshState());
+  savedCalendarSettings = { ...state.calendarSettings };
+  shellMounted = false;
+  renderedResult = undefined;
+  renderedOverviewReview = null;
+  sourceKey = null;
+  sourceListExpanded = true;
+  runAguMode = completionPlayedFor = emptyPanelKey = "";
+  completedJobId = cancelRequestedJobId = completionProbeJobId = "";
+  reviewFilter = "all";
+  availabilityPage = availabilityWeek = 0;
+  availabilityDepartment = "";
+  availabilityMode = "week";
+  rememberSources = true;
+  draftWrite = Promise.resolve();
+  Object.assign(lastWorkspaceTab, {sources: "files", review: "issues", results: "availability"});
+}
 
 client.onEvent((event) => {
   if (event.event === "sidecar.fatal") {
@@ -104,6 +180,10 @@ client.onEvent((event) => {
 });
 
 async function boot() {
+  await startWorkbench(false);
+}
+
+async function startWorkbench(resumeSelected: boolean) {
   state.stage = "boot";
   state.busy = true;
   state.statusText = "正在启动本地识别服务";
@@ -118,21 +198,82 @@ async function boot() {
     state.resourceStatus = resources;
     state.calendarSettings = settings.settings;
     savedCalendarSettings = { ...settings.settings };
+    state.batchDates = suggestedDates(savedCalendarSettings);
     state.startupDiagnostic = "";
     state.statusText = resources.ready ? "准备完成，可以导入课表" : "本地识别资源未能自动准备，请点击修复";
     state.stage = "ready";
+    try {
+      if (!resumeSelected) {
+        const history = await client.request<LocalHistory>("workspace.history");
+        if (history.batches.length || history.draft) displayLocalHistory(history);
+      } else if (resources.ready) await resumeWorkspace();
+    } catch (error) { state.statusText = `本机记录暂时无法打开：${formatError(error)}`; }
   } catch (error) {
     state.stage = "failed";
     state.statusText = formatError(error, true);
   }
-  state.busy = false;
+  if (["boot", "ready", "failed"].includes(state.stage)) state.busy = false;
   render();
+}
+
+async function resumeWorkspace(selected?: SavedWorkspace) {
+  const saved = selected || await client.request<SavedWorkspace>("workspace.get");
+  if (saved.calendar) {
+    state.calendarSettings = { ...saved.calendar };
+    savedCalendarSettings = { ...saved.calendar };
+    state.batchDates = suggestedDates(saved.calendar);
+  }
+  if (saved.start_date && saved.end_date) state.batchDates = {start_date: saved.start_date, end_date: saved.end_date};
+  rememberSources = saved.remember;
+  state.files = saved.files.map(file => file.path || file.name);
+  if (saved.job_id && saved.status === "completed") {
+    state.jobId = saved.job_id;
+    const { job } = await client.request<JobResponse>("job.get", { job_id: saved.job_id });
+    if (job.output?.warnings.some(text => text.includes("与当前学期设置或解析规则不一致"))) {
+      state.jobId = "";
+      state.statusText = "学期设置或识别规则已变化，请用已恢复的课表重新生成。";
+      return;
+    }
+    await finishCompletedJob(saved.job_id, job);
+    if (state.jobId === saved.job_id && state.result && state.review) state.statusText = "课表已打开，核验进度已恢复。";
+  } else if (state.files.length) {
+    state.statusText = saved.status === "interrupted"
+      ? "上次识别被中断，已恢复文件列表，可重新生成。" : "已恢复上次选择的课表。";
+  }
+}
+
+function persistDraft() {
+  const files = [...state.files];
+  const remember = rememberSources;
+  const dates = { ...state.batchDates };
+  draftWrite = draftWrite.catch(() => undefined).then(() =>
+    client.request("workspace.save", { files, remember, ...(dates.start_date && dates.end_date && dates.start_date <= dates.end_date ? dates : {}) }));
+  void draftWrite.catch(error => setStatus(`本批文件列表暂未保存：${formatError(error)}`));
+}
+
+async function reconnectOriginals() {
+  if (state.busy) return;
+  const jobId = state.jobId;
+  const owner = appRoot;
+  try {
+    const selected = await open({ multiple: true, title: "选择本批原件，可分次关联", filters: [{name: "PDF", extensions: ["pdf"]}] });
+    const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
+    if (!paths.length || jobId !== state.jobId || owner !== appRoot) return;
+    await draftWrite;
+    if (owner !== appRoot) return;
+    const reply = await client.request<Pick<SavedWorkspace, "files">>("workspace.attach", {job_id: jobId, paths, remember: rememberSources});
+    if (jobId !== state.jobId) return;
+    state.files = reply.files.map((file, index) => file.path || state.files[index] || file.name);
+    if (state.result) await reloadReview();
+    setStatus("原件已关联，可继续本批工作。");
+  } catch (error) { setStatus(formatError(error)); }
 }
 
 function resetForNewInput(message: string) {
   // 文件列表变化后旧任务的所有引用与阶段都必须复位，否则界面会残留
   // “处理完成/处理失败”却没有任何结果。
   state.result = null;
+  sourceListExpanded = true;
   state.review = null;
   state.jobId = "";
   state.failedFileCount = 0;
@@ -140,6 +281,7 @@ function resetForNewInput(message: string) {
   state.stage = "ready";
   state.statusText = message;
   availabilityPage = 0;
+  persistDraft();
   cancelRequestedJobId = "";
   completionProbeJobId = "";
   completedJobId = "";
@@ -148,10 +290,14 @@ function resetForNewInput(message: string) {
 
 async function chooseFiles() {
   if (state.busy) return;
-  const selected = await open({ multiple: true, filters: [{ name: "PDF", extensions: ["pdf"] }] });
+  const owner = appRoot;
+  const selected = await open({ multiple: true, title: rememberSources ? "选择课表并在本机记住原件位置" : "选择本次使用的课表", filters: [{ name: "PDF", extensions: ["pdf"] }] });
   const paths = Array.isArray(selected) ? selected : typeof selected === "string" ? [selected] : [];
   // 取消选择对话框时保留当前结果与任务引用，不能因为空选择把已生成的结果清掉。
   if (!paths.length) return;
+  if (owner !== appRoot) return;
+  const chosenNames = new Set(paths.map(path => path.split(/[\\/]/).pop()));
+  state.files = state.files.filter(path => !needsOriginal(path) || !chosenNames.has(path));
   state.files = Array.from(new Set([...state.files, ...paths]));
   resetForNewInput(state.files.length ? `已选择 ${state.files.length} 份课表` : "请选择课表 PDF");
 }
@@ -159,6 +305,13 @@ async function chooseFiles() {
 async function parseSchedules() {
   if (state.busy) return;
   if (!state.files.length) return setStatus("请先选择课表 PDF。");
+  const batch = { ...state.batchDates };
+  if (!batch.start_date || !batch.end_date || batch.start_date > batch.end_date) {
+    document.querySelector<HTMLInputElement>("#batchEnd")?.reportValidity();
+    return setStatus("请选择本次合表的开始和结束日期，结束日期须在开始日期当天或之后。");
+  }
+  if (state.files.some(needsOriginal)) return setStatus("有原件需要重新关联，请点「关联原件」后生成。");
+  if (outsideSemester(batch, savedCalendarSettings)) return setStatus("合表日期超出当前校历，请调整日期，或先保存正确的学期设置。");
   const invalid = state.files.filter((path) => !inferKind(path));
   if (invalid.length) return setStatus(`${invalid.length} 个文件无法判断中方/英方，请先按规则改名。`);
   state.busy = true;
@@ -174,8 +327,9 @@ async function parseSchedules() {
   state.statusText = "正在准备处理课表";
   render();
   try {
+    await draftWrite;
     await saveSettings(false);
-    const started = await client.request<{ ok: boolean; job_id: string }>("job.start", { paths: state.files });
+    const started = await client.request<{ ok: boolean; job_id: string }>("job.start", { paths: state.files, workspace: true, remember_sources: rememberSources, ...batch });
     state.jobId = started.job_id;
     log(`开始处理 ${state.files.length} 份课表`);
     await waitForJob(started.job_id);
@@ -208,13 +362,18 @@ async function finishCompletedJob(jobId: string, job: JobResponse["job"]) {
   completedJobId = jobId;
   cancelRequestedJobId = "";
   state.progress = { current: job.current, total: job.total };
-  state.result = job.output || null;
+  state.result = checkedWorkerResult(job.output);
   state.failedFileCount = job.files.filter((file) => file.status === "failed").length;
   state.busy = false;
   state.stage = state.result?.can_export ? "completed" : "review";
   // 检测周数只用于本次展示；不回写学期设置。回写会让“导出周数”被检测值收缩，
   // 并改变解析签名，使上一轮已做的人工修正失效。
   state.activeTab = state.result?.can_export ? "availability" : "issues";
+  if (state.result?.date_review) {
+    const { start_date, end_date } = state.result.date_review;
+    state.batchDates = { start_date, end_date };
+    if (!state.result.can_export && state.result.date_review.members.length) state.activeTab = "review";
+  }
   state.statusText = state.result
     ? state.result.can_export
       ? "空课表已生成，可以导出"
@@ -255,6 +414,7 @@ async function reloadReview() {
     const review = await client.request<ReviewPayload>("review.get", { job_id: jobId }, 120_000);
     if (state.jobId !== jobId) return;
     state.review = review;
+    await refreshJobOutput();
     state.statusText = "课表原文已载入";
   } catch (error) {
     if (state.jobId !== jobId) return;
@@ -352,6 +512,8 @@ function resetJobAfterRestart(message: string) {
   completionProbeJobId = "";
   completedJobId = "";
   reviewPayload = null;
+  renderedOverviewReview = null;
+  reviewFilter = "all";
   log(message);
   render();
 }
@@ -393,16 +555,27 @@ async function exportExcel() {
   const result = state.result;
   if (!result?.result_ref) return setStatus("请先生成空课表。");
   if (!result.can_export) {
-    state.activeTab = "issues";
-    return setStatus("当前结果还不能导出，请先核对或修正“待处理”中的内容。");
+    state.activeTab = result.date_review ? "review" : "issues";
+    return setStatus("当前结果还不能导出，请到批次总览查看待核验课程和异常。");
   }
-  const target = await save({
-    defaultPath: "Konggu_availability.xlsx",
-    filters: [{ name: "Excel", extensions: ["xlsx"] }]
-  });
+  const department = availabilityDepartment;
+  const scoped = availabilityForDepartment(result, department);
+  if (department && !scoped.memberCount) return setStatus("当前部门还没有可导出的成员，请核对部门归属。");
+  const selection = await chooseExportOptions(department, scoped.memberCount, availabilityWeek, result.date_review || undefined);
+  if (!selection || state.busy) return;
+  if (state.result !== result || department !== availabilityDepartment) return setStatus("范围已更新，请重新选择导出内容。");
+  let target: string | null;
+  try {
+    target = await save({
+      defaultPath: workbookName(department, selection, result.date_review || undefined),
+      filters: [{ name: "Excel", extensions: ["xlsx"] }]
+    });
+  } catch (error) {
+    return setStatus(`无法打开保存窗口：${formatError(error)}`);
+  }
   if (!target) return;
   // 保存对话框期间结果可能已被新任务替换，导出必须绑定用户刚才看到的那份结果。
-  if (state.result !== result) return setStatus("结果已更新，请重新确认后再导出。");
+  if (state.result !== result || availabilityDepartment !== department) return setStatus("结果或部门已更新，请重新确认后再导出。");
   state.busy = true;
   state.statusText = "正在生成 Excel 文件";
   render();
@@ -410,16 +583,17 @@ async function exportExcel() {
     const response = await client.request<{ ok: boolean; path: string }>("exports.excel", {
       result_ref: result.result_ref,
       target_path: target,
-      mode: "classic",
+      mode: selection.mode,
+      department,
+      ...(selection.week ? { week: selection.week } : {}),
       // 用已保存的学期设置：输入框改动未点保存时，导出不能提前套用未生效的周数。
-      export_week_count: savedCalendarSettings.teaching_weeks
+      ...(result.date_review ? {} : { export_week_count: savedCalendarSettings.teaching_weeks })
     });
     state.statusText = `空课表已导出：${response.path}`;
     state.stage = "exported";
     log(state.statusText);
   } catch (error) {
     state.statusText = `暂时无法导出：${formatError(error)}`;
-    state.activeTab = "issues";
   } finally {
     state.busy = false;
     render();
@@ -451,34 +625,65 @@ async function repairResources() {
 }
 
 async function clearLocalData() {
-  if (state.busy) return;
-  if (!window.confirm("这会删除空谷保存的结果、人工修正和本地解析缓存，原始 PDF 不会被删除。继续吗？")) return;
-  state.busy = true;
-  setStatus("正在清理本机记录");
-  try {
-    await client.request<{ ok: boolean }>("data.clear");
-    state.files = [];
-    state.result = null;
-    state.review = null;
-    state.jobId = "";
-    state.logs = [];
-    state.stage = "ready";
-    state.statusText = "本机记录和解析缓存已清理";
-  } catch (error) {
-    state.statusText = `清理失败：${formatError(error)}`;
-  } finally {
-    state.busy = false;
-    render();
+  await client.request("data.clear");
+  resetLocalView("本机记录和识别缓存已清除");
+}
+
+function resetLocalView(message: string) {
+  const resources = state.resourceStatus;
+  const calendar = { ...savedCalendarSettings };
+  const remember = rememberSources;
+  resetWorkbench();
+  rememberSources = remember;
+  state.resourceStatus = resources;
+  state.calendarSettings = { ...calendar };
+  savedCalendarSettings = calendar;
+  state.batchDates = suggestedDates(calendar);
+  state.stage = "ready";
+  state.statusText = message;
+  render();
+}
+
+function displayLocalHistory(initial?: LocalHistory) {
+  showLocalHistory(client, {
+    async openBatch(jobId) {
+      const saved = await client.request<SavedWorkspace>("workspace.open", {job_id: jobId});
+      resetLocalView("正在打开本机课表");
+      await resumeWorkspace(saved);
+      render();
+    },
+    async openDraft() {
+      const saved = await client.request<SavedWorkspace>("workspace.get");
+      resetLocalView("正在打开上次草稿");
+      await resumeWorkspace(saved);
+      render();
+    },
+    async newBatch() {
+      await client.request("workspace.save", {files: [], remember: rememberSources});
+      resetLocalView("请选择课表 PDF");
+    },
+    clearAll: clearLocalData
+  }, initial);
+}
+
+async function openLocalHistory() {
+  if (state.busy || reviewReloading) return;
+  const owner = appRoot;
+  await draftWrite.catch(() => undefined);
+  if (owner !== appRoot || state.busy || reviewReloading || client.hasPendingRequests) {
+    if (owner === appRoot) setStatus("本机操作还在进行，请稍后打开记录。");
+    return;
   }
+  displayLocalHistory();
 }
 
 async function saveSettings(showFeedback = true) {
   const next = { ...state.calendarSettings };
   const wouldChange = savedCalendarSettings.semester_start_date !== next.semester_start_date
     || savedCalendarSettings.teaching_weeks !== next.teaching_weeks;
+  const hadResults = Boolean(state.result || state.review);
   if (wouldChange && showFeedback) {
-    const hasWork = Boolean(state.result || state.review);
-    const warning = hasWork
+    const warning = hadResults
       ? "学期设置变化会让已生成的结果和已做的人工修正失效，需要重新生成空课表。继续保存吗？"
       : "学期设置保存后，下次生成会使用新设置。继续吗？";
     if (!window.confirm(warning)) {
@@ -496,6 +701,7 @@ async function saveSettings(showFeedback = true) {
       || savedCalendarSettings.teaching_weeks !== response.settings.teaching_weeks;
     savedCalendarSettings = { ...response.settings };
     if (changed) {
+      if (outsideSemester(state.batchDates, response.settings)) state.batchDates = suggestedDates(response.settings);
       state.result = null;
       state.review = null;
       state.jobId = "";
@@ -503,10 +709,11 @@ async function saveSettings(showFeedback = true) {
       state.activeTab = "availability";
       if (!state.busy) state.stage = "ready";
       completedJobId = "";
+      if (showFeedback) persistDraft();
     }
     if (showFeedback) {
       setStatus(
-        changed
+        changed && hadResults
           ? "学期设置已保存；旧结果和原人工修正已失效，请重新生成空课表。"
           : "学期设置已保存。"
       );
@@ -547,6 +754,34 @@ async function applyReview(blockId: string, field: string, value: unknown, reaso
   }
 }
 
+async function mutateReview(payload: Record<string, unknown>) {
+  const jobId = state.jobId;
+  if (!jobId) throw new Error("请先生成课表再修正。");
+  const review = await client.request<ReviewPayload>("review.mutate", { ...payload, job_id: jobId });
+  if (state.jobId !== jobId) return;
+  state.review = review;
+  try {
+    await refreshJobOutput();
+  } catch (error) {
+    setStatus(`修正已保存，但结果刷新失败：${formatError(error)}`);
+    throw new Error("修正已保存，请重新载入结果，不要重复补录。");
+  }
+}
+
+async function requestAi(command: string, payload: Record<string, unknown>) {
+  const result = await client.request<any>(command, payload, 240_000);
+  if (command === "ai.run" && state.jobId === result.job_id) {
+    state.review = await client.request<ReviewPayload>("review.get", { job_id: result.job_id });
+    await refreshJobOutput();
+  }
+  if (command === "ai.adopt" && state.jobId === payload.job_id) {
+    state.review = result as ReviewPayload;
+    try { await refreshJobOutput(); }
+    catch { throw new Error("补录已保存，但刷新失败。请重新载入结果，不要重复补录。"); }
+  }
+  return result;
+}
+
 async function confirmIssue(issueId: string) {
   const jobId = state.jobId;
   if (!jobId) return;
@@ -567,12 +802,75 @@ async function confirmIssue(issueId: string) {
   }
 }
 
+async function verifyItem(itemId: string, revision: string): Promise<ReviewPayload> {
+  const jobId = state.jobId;
+  if (!jobId) throw new Error("请重新打开本批课表。");
+  const reply = await client.request<ReviewPayload | {previous_revision: string; revision: string; item_id: string;
+    verification: {total: number; confirmed: number; pending: number}}>("review.verify", {
+    job_id: jobId, item_id: itemId, revision, compact: true
+  });
+  if (state.jobId !== jobId) throw new Error("已切换批次。");
+  let review: ReviewPayload;
+  if (!("previous_revision" in reply)) review = reply;
+  else if (state.review?.revision === reply.previous_revision && state.review.verification &&
+           reply.item_id === itemId && state.review.verification.items.some(item => item.item_id === itemId)) {
+    const items = state.review.verification.items.map(item => item.item_id === itemId ? {...item, confirmed: true} : item);
+    review = {...state.review, revision: reply.revision, verification: {...reply.verification, items}};
+  } else {
+    review = await client.request<ReviewPayload>("review.get", {job_id: jobId});
+    if (state.jobId !== jobId) throw new Error("已切换批次。");
+  }
+  state.review = review;
+  // A confirmation only changes the queue. Fetch the authoritative export decision at completion.
+  if (state.result && review.verification?.pending) {
+    const { total, confirmed, pending } = review.verification;
+    state.result.verification = { total, confirmed, pending };
+    state.statusText = resultActionText(state.result.quality_state);
+    render();
+    return review;
+  }
+  try {
+    await refreshJobOutput();
+  } catch {
+    const message = "核验已保存，结果尚未刷新。请重新载入核验结果。";
+    setStatus(message);
+    throw new Error(message);
+  }
+  return review;
+}
+
+async function dateCommand(command: "review.slot" | "review.member" | "review.flag", payload: Record<string, unknown>): Promise<ReviewPayload> {
+  const job = state.jobId;
+  if (!job || !state.review?.date_review) throw new Error("请重新打开本次核对。");
+  const updated = await client.request<ReviewPayload>(command, {...payload, job_id: job});
+  if (state.jobId !== job) throw new Error("已切换合表批次。");
+  state.review = updated;
+  await refreshJobOutput();
+  return updated;
+}
+
+function rangeComplete() {
+  if (state.result?.can_export) {
+    state.activeTab = "availability";
+    setStatus("本批成员已确认，可以查看并导出空课表。");
+  } else {
+    state.activeTab = "issues";
+    setStatus("成员核对已保存，请检查剩余的课表问题。");
+  }
+}
+
+function checkedWorkerResult(result?: ParseResult) {
+  if (!result || result.verification) return result || null;
+  // An older worker cannot enforce the per-course export check.
+  return { ...result, can_export: false, errors: ["当前识别组件未提供逐项核验，请使用配套的新版空谷。", ...result.errors] };
+}
+
 async function refreshJobOutput() {
   const jobId = state.jobId;
   if (!jobId) return;
   const response = await client.request<JobResponse>("job.get", { job_id: jobId }, 60_000);
   if (state.jobId !== jobId) return;
-  state.result = response.job.output || state.result;
+  state.result = checkedWorkerResult(response.job.output) || state.result;
   if (state.result) {
     state.stage = state.result.can_export ? "completed" : "review";
     state.statusText = resultActionText(state.result.quality_state);
@@ -598,60 +896,72 @@ function mountShell() {
         </div>
       </section>
       <aside class="rail">
-        <div class="brand"><img src="${wordmarkUrl}" alt="空谷" /><span>青禾计划孵化的课表协作产品</span></div>
-        <nav class="primaryActions" aria-label="主要操作">
-          <div class="sectionLabel">本次排班</div>
-          <button id="chooseFiles" class="primary" data-step="01">＋ 导入课表</button>
-          <button id="parseSchedules" data-step="02">生成空课表</button>
-          <button id="cancelJob" class="danger" hidden>停止处理</button>
-          <button id="retryFailed">重新处理本批课表</button>
-          <button id="exportExcel" data-step="03">导出空课表</button>
-          <p id="actionGuide" class="actionGuide">准备每位成员的中方、英方课表。</p>
+        <div class="brand"><img src="${wordmarkUrl}" alt="空谷" /><span title="空谷是青禾计划孵化的课表协作产品">青禾计划孵化项目</span></div>
+        <nav class="workspaceNav" aria-label="工作区">
+          <button data-workspace="sources">课表资料<em id="navFileCount" hidden></em></button>
+          <button data-workspace="review">课表核验<em id="navIssueCount" hidden></em></button>
+          <button data-workspace="results">空课结果</button>
+          <p id="actionGuide" class="actionGuide" hidden></p>
         </nav>
-        <section class="railSection">
-          <div class="sectionLabel">学期设置</div>
-          <label>第一周开始日期<input id="semesterStart" type="date" /></label>
-          <label>教学周数<input id="teachingWeeks" type="number" min="1" max="30" /></label>
-          <button id="saveSettings">保存设置</button>
-        </section>
-        <section class="railSection resourceState">
-          <div class="sectionLabel">本地识别</div>
-          <strong id="resourceTitle" class="warning">正在检查</strong>
-          <small id="resourceDetail">正在确认图片课表识别能力</small>
-          <button id="repairResources">修复识别功能</button>
-          <button id="clearLocalData" class="quiet">清除本机记录</button>
-        </section>
-        <p class="railFootnote">离线运行 · 文件留在本机</p>
+        <div class="railUtilities">
+          <button type="button" id="historyEntry" class="cloudEntry"><strong>本机课表记录</strong><small>打开历史 · 管理缓存</small></button>
+          <button type="button" id="cloudEntry" class="cloudEntry"><strong>登录 / 注册</strong><small>本机模式</small></button>
+          <details id="semesterSettings" class="railDisclosure">
+            <summary>学期设置</summary>
+            <div class="railSection">
+              <label>第一周开始日期<input id="semesterStart" type="date" /></label>
+              <label>教学周数<input id="teachingWeeks" type="number" min="1" max="30" /></label>
+              <button id="applySemester" hidden>保存并重新生成</button>
+              <button id="saveSettings">保存设置</button>
+            </div>
+          </details>
+          <details id="maintenanceSettings" class="railDisclosure">
+            <summary>本地维护</summary>
+            <div class="railSection resourceState">
+              <small id="resourceDetail">正在检查识别资源</small>
+              <button id="repairResources">修复识别功能</button>
+            </div>
+          </details>
+        </div>
+        <p class="railFootnote">本地识别<span id="resourceTitle" class="warning">正在检查</span></p>
       </aside>
       <section class="workbench">
         <header class="masthead">
-          <div>
-            <h1>课表协作工作台</h1>
+          <div class="workspaceHeading">
+            <h1 id="workspaceTitle">课表资料</h1>
+            <p id="workspaceMeta" hidden></p>
             <p id="statusText" aria-live="polite"></p>
           </div>
+          <div class="workspaceActions">
+          <div id="sourceDepartmentPicker" hidden></div>
           <div id="qualitySeal" class="qualitySeal pending">
-            <span id="qualityTitle">等待生成结果</span>
-            <small id="qualityDetail">导入课表后查看</small>
+            <span id="qualityTitle">本地处理</span>
+            <small id="qualityDetail" hidden></small>
+          </div>
+          <button id="linkOriginals" hidden>关联原件</button>
+          <button id="chooseFiles">添加课表</button>
+          <button id="clearFiles" class="quiet">清空</button>
+          <button id="parseSchedules" class="primary">识别并核对</button>
+          <button id="cancelJob" class="danger" hidden>停止处理</button>
+          <button id="retryFailed" hidden>重新处理本批课表</button>
+          <button id="exportExcel" class="primary">导出空课表</button>
           </div>
         </header>
         <section class="runStrip" aria-label="处理进度">
           <div class="runMeta"><b id="stageLabel"></b><span id="runHint"></span></div>
           <div class="workflowTrack">
-            <ol class="workflowSteps" aria-label="排班处理步骤">
-              <li id="workflow-import"><i>1</i><span>导入课表</span></li>
-              <li id="workflow-review"><i>2</i><span>处理与核对</span></li>
-              <li id="workflow-export"><i>3</i><span>导出结果</span></li>
-            </ol>
             <div id="progressTrack" class="progressTrack" role="progressbar" aria-valuemin="0" aria-valuemax="100"><i id="progressFill"></i></div>
           </div>
           <div class="runCounts"><strong id="fileCount">0</strong><span>文件</span><strong id="memberCount">0</strong><span>成员</span><strong id="issueCount">0</strong><span>待处理</span></div>
           <div id="runAguSlot"></div>
         </section>
+        ${dateFields}
         <section class="sourceRibbon">
           <div class="sourceHeader">
-            <div class="sourceHeaderCopy"><b>已选课表</b><span id="sourceSummary">尚未选择文件</span></div>
-            <div class="sourceHeaderActions"><small id="sourceViewHint">文件列表可独立滚动</small><button id="clearFiles">清空</button></div>
+            <div class="sourceHeaderCopy"><span id="sourceSummary">尚未选择文件</span></div>
+            <div class="sourceHeaderActions"><button type="button" data-semester-setting="semesterStart">学期设置</button><small id="sourceViewHint" hidden></small><button id="toggleSources" hidden aria-controls="sourceChips" aria-expanded="true">收起文件</button></div>
           </div>
+          <div id="draftRemember"></div>
           <div id="sourceChips" class="sourceChips" role="list" aria-label="已选择的课表文件"></div>
         </section>
         <section class="contentCard">
@@ -661,9 +971,9 @@ function mountShell() {
           </div>
           <div class="tabs" role="tablist" aria-label="结果视图">
             ${tabButton("availability", "共同空闲")}
-            ${tabButton("members", "成员课表", 0)}
-            ${tabButton("files", "文件检查", 0)}
-            ${tabButton("issues", "待处理", 0)}
+            ${tabButton("members", "成员课表")}
+            ${tabButton("files", "文件检查")}
+            ${tabButton("issues", "批次总览")}
             ${tabButton("review", "原文核对")}
             ${tabButton("calendar", "课程周视图")}
             <i class="tabIndicator" aria-hidden="true"></i>
@@ -672,26 +982,84 @@ function mountShell() {
             ${tabs.map((tab) => `<section id="panel-${tab}" class="tabPanel" data-panel="${tab}" role="tabpanel"></section>`).join("")}
           </div>
         </section>
-        <footer class="activityLog">
-          <b>最近操作</b>
+        <details class="activityLog">
+          <summary>操作记录</summary>
           <div id="activityItems"><span>等待操作。</span></div>
-        </footer>
+        </details>
       </section>
+      <dialog id="slotDetail" class="slotDetail" aria-labelledby="slotDetailTitle"><div id="slotDetailBody"></div><form method="dialog"><button>关闭</button></form></dialog>
+      ${exportDialog}
     </main>
   `;
   shellMounted = true;
+  getElement<HTMLButtonElement>("#cloudEntry").onclick = () => void cloud.open();
   bindActions();
 }
 
 function updateShell() {
+  cloud.updateEntry(getElement<HTMLButtonElement>("#cloudEntry"));
   const result = state.result;
+  if (!result) state.activeTab = "availability";
+  if (result?.date_review && !result.can_export && state.activeTab === "availability") state.activeTab = "review";
+  const workspace = currentWorkspace();
+  if (result) lastWorkspaceTab[workspace] = state.activeTab;
+  getElement<HTMLElement>(".shell").dataset.workspace = workspace;
+  getElement<HTMLElement>(".shell").dataset.stage = state.stage;
+  setText("#workspaceTitle", workspaceTitles[workspace]);
+  const scopedSource = state.activeTab === "members" || state.activeTab === "calendar";
+  const picker = getElement<HTMLElement>("#sourceDepartmentPicker");
+  picker.hidden = !result || !scopedSource;
+  if (!picker.hidden && result) setHtmlIfChanged(picker, departmentPicker(memberDepartmentOptions(result), availabilityDepartment, "sourceDepartment"));
+  const scopeLabel = result && (workspace === "results" || scopedSource) && availabilityDepartment
+    ? `${availabilityDepartment} · ${membersForDepartment(result, availabilityDepartment).length} 位成员` : "";
+  const range = result?.date_review;
+  getElement<HTMLElement>(".shell").classList.toggle("is-date-review", Boolean(range && state.activeTab === "review"));
+  const peoplePending = range?.members.filter(member => !member.confirmed).length;
+  const batchLabel = range ? `${range.start_date} 至 ${range.end_date} · ` : "";
+  setText("#workspaceMeta", batchLabel + (scopeLabel || (result ? `本批 ${result.summary.member_count || 0} 位成员 · ${result.summary.pdf_count || state.files.length} 份课表` : "")));
+  getElement<HTMLElement>("#workspaceMeta").hidden = !result;
+  document.querySelectorAll<HTMLButtonElement>("button[data-workspace]").forEach(button => {
+    const active = button.dataset.workspace === workspace;
+    button.classList.toggle("active", active);
+    if (active) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+    button.disabled = button.dataset.workspace !== "sources" && !result
+      || button.dataset.workspace === "results" && Boolean(range && !result?.can_export);
+  });
+  setText("#navFileCount", String(state.files.length));
+  getElement<HTMLElement>("#navFileCount").hidden = !state.files.length;
+  const openReviewCount = peoplePending ?? (unresolvedIssueCount(result) + (result?.verification?.pending || 0));
+  setText("#navIssueCount", String(openReviewCount));
+  getElement<HTMLElement>("#navIssueCount").hidden = !openReviewCount;
+  if (result && result.result_ref !== renderedResult?.result_ref) sourceListExpanded = false;
+  else if (!result && renderedResult) sourceListExpanded = true;
   const quality = result?.quality_state || "pending";
   const invalidCount = state.files.filter((path) => !inferKind(path)).length;
   const desktopUnavailable = state.stage === "failed" && state.statusText.includes("桌面运行环境未连接");
   const installationUnavailable = Boolean(state.startupDiagnostic);
   const startupFailed = state.stage === "failed" && !state.resourceStatus;
   const nativeUnavailable = desktopUnavailable || installationUnavailable || startupFailed;
-  const canParse = state.files.length > 0 && invalidCount === 0 && !state.busy;
+  if (nativeUnavailable) setDisabled("#cloudEntry", true);
+  const hasInput = state.files.length > 0;
+  getElement<HTMLElement>(".shell").classList.toggle("has-result", Boolean(result));
+  getElement<HTMLElement>(".shell").classList.toggle("has-input", hasInput);
+  getElement<HTMLElement>(".shell").classList.toggle("is-working", state.busy);
+  getElement<HTMLElement>(".tabs").hidden = !result || workspace === "results";
+  getElement<HTMLElement>(".sourceRibbon").hidden = !hasInput || Boolean(result);
+  getElement<HTMLElement>("#batchDates").hidden = Boolean(result) || state.busy || nativeUnavailable;
+  setInputValue("#batchStart", state.batchDates.start_date);
+  setInputValue("#batchEnd", state.batchDates.end_date);
+  getElement<HTMLInputElement>("#batchEnd").min = state.batchDates.start_date;
+  const calendarHint = getElement<HTMLElement>("#batchCalendarHint");
+  calendarHint.hidden = !outsideSemester(state.batchDates, savedCalendarSettings);
+  if (!calendarHint.hidden) {
+    const term = semesterDates(savedCalendarSettings);
+    calendarHint.textContent = `当前校历为 ${term.start_date} 至 ${term.end_date}。请调整合表日期，或在学期设置中更新校历。`;
+  }
+  getElement<HTMLElement>(".contentCard").hidden = hasInput && !result && !state.busy && state.stage !== "failed";
+  getElement<HTMLElement>(".runStrip").hidden = !state.busy || state.stage === "boot";
+  getElement<HTMLElement>(".activityLog").hidden = !state.logs.length || Boolean(range && state.activeTab === "review");
+  const canParse = state.files.length > 0 && invalidCount === 0 && !state.files.some(needsOriginal) && !state.busy;
   const progressPercent = state.progress.total
     ? Math.min(100, Math.round((state.progress.current / state.progress.total) * 100))
     : state.busy ? 8 : 0;
@@ -699,10 +1067,24 @@ function updateShell() {
   const launch = getElement<HTMLElement>("#launchScreen");
   launch.classList.toggle("is-visible", state.stage === "boot");
   launch.setAttribute("aria-hidden", String(state.stage !== "boot"));
-  setText("#launchStatus", state.statusText);
+  setText("#launchStatus", state.stage === "boot" ? "正在启动…" : state.statusText);
 
+  const detached = state.files.filter(needsOriginal).length;
+  const reconnect = getElement<HTMLButtonElement>("#linkOriginals");
+  reconnect.hidden = !detached;
+  reconnect.disabled = state.busy || nativeUnavailable;
+  reconnect.textContent = `关联原件（${detached}）`;
+  setHtmlIfChanged(getElement("#draftRemember"), rememberedChoice(rememberSources));
+  getElement<HTMLButtonElement>("#applySemester").hidden = !result || !hasInput;
+  setDisabled("#applySemester", state.busy || Boolean(detached));
+  setText("#saveSettings", result ? "只保存设置" : "保存设置");
   setDisabled("#chooseFiles", state.busy || nativeUnavailable);
   setDisabled("#parseSchedules", !canParse || nativeUnavailable);
+  setText("#parseSchedules", result ? "新建合表" : "识别并核对");
+  getElement<HTMLButtonElement>("#chooseFiles").hidden = workspace !== "sources" || (!hasInput && !result);
+  getElement<HTMLButtonElement>("#clearFiles").hidden = workspace !== "sources" || !hasInput;
+  getElement<HTMLButtonElement>("#parseSchedules").hidden = workspace !== "sources" || !hasInput || state.busy;
+  getElement<HTMLButtonElement>("#exportExcel").hidden = workspace !== "results";
   const cancel = getElement<HTMLButtonElement>("#cancelJob");
   const retry = getElement<HTMLButtonElement>("#retryFailed");
   cancel.hidden = !state.busy || !state.jobId;
@@ -715,17 +1097,14 @@ function updateShell() {
   getElement<HTMLButtonElement>("#chooseFiles").classList.toggle("primary", !state.files.length && !state.busy && !result && !nativeUnavailable);
   getElement<HTMLButtonElement>("#parseSchedules").classList.toggle("primary", canParse && !result && !nativeUnavailable);
   getElement<HTMLButtonElement>("#exportExcel").classList.toggle("primary", Boolean(result?.can_export) && !state.busy && !nativeUnavailable);
-  setText("#actionGuide", installationUnavailable ? "请使用完整安装包重新安装，或联系维护者。" : desktopUnavailable ? "请在空谷桌面端中完成导入与处理。" : startupFailed ? "处理启动问题后，请点击左下方“重新启动识别服务”。" : state.busy ? "正在整理课表。完成后先核对，再导出。"
-    : result?.can_export ? "核对已完成，可以导出本次空课表。"
-      : result?.quality_state === "accepted" ? "当前结果暂不可导出，请重新生成。"
-        : result ? "预览供核对使用，处理完标记内容后再导出。"
-        : state.files.length ? "确认学期设置后，点击“生成空课表”。" : "每位成员需要中方、英方两份课表。");
+  setText("#actionGuide", invalidCount ? `${invalidCount} 份文件需注明中方或英方。` : "");
+  getElement<HTMLElement>("#actionGuide").hidden = !invalidCount;
   setDisabled("#saveSettings", state.busy || nativeUnavailable);
   setDisabled("#semesterStart", state.busy || nativeUnavailable);
   setDisabled("#teachingWeeks", state.busy || nativeUnavailable);
   setDisabled("#repairResources", state.busy || desktopUnavailable || installationUnavailable);
   setText("#repairResources", startupFailed && !desktopUnavailable && !installationUnavailable ? "重新启动识别服务" : "修复识别功能");
-  setDisabled("#clearLocalData", state.busy || nativeUnavailable);
+  setDisabled("#historyEntry", state.busy || reviewReloading || nativeUnavailable);
   setDisabled("#clearFiles", state.busy || !state.files.length);
   setInputValue("#semesterStart", state.calendarSettings.semester_start_date);
   setInputValue("#teachingWeeks", String(state.calendarSettings.teaching_weeks));
@@ -735,40 +1114,43 @@ function updateShell() {
   resourceTitle.textContent = installationUnavailable ? "安装组件异常" : desktopUnavailable ? "仅桌面端可用" : startupFailed ? "服务未启动" : state.resourceStatus?.ready ? "已就绪" : !state.resourceStatus ? "正在启动" : "需要修复";
   setText("#resourceDetail", installationUnavailable ? "此问题无法通过识别资源修复解决，请重新安装或联系维护者。" : desktopUnavailable ? "普通浏览器无法运行本地识别，请打开空谷桌面端。" : startupFailed ? "服务启动后才能检查识别资源。" : resourceDetail(state.resourceStatus));
   setText("#statusText", state.statusText);
+  getElement<HTMLElement>("#statusText").hidden = state.busy || (state.stage === "failed" && !result) || [
+    "准备完成，可以导入课表", "空课表已生成，可以导出", "课表已处理，请先核对标记内容", "发现影响结果的问题，请先修正"
+  ].includes(state.statusText);
+  const maintenance = getElement<HTMLDetailsElement>("#maintenanceSettings");
+  const needsRepair = startupFailed || Boolean(state.resourceStatus && !state.resourceStatus.ready);
+  if (needsRepair && maintenance.dataset.needsRepair !== "true") maintenance.open = true;
+  maintenance.dataset.needsRepair = String(needsRepair);
 
   const seal = getElement<HTMLElement>("#qualitySeal");
-  const resultNeedsRefresh = Boolean(result && quality === "accepted" && !result.can_export);
-  seal.className = `qualitySeal ${resultNeedsRefresh ? "needs_review" : quality}`;
-  setText("#qualityTitle", installationUnavailable ? "安装组件未能启动" : desktopUnavailable ? "桌面环境未连接" : resultNeedsRefresh ? "需要重新生成" : result ? resultStatusLabel(quality) : "等待生成结果");
+  seal.hidden = !result && !nativeUnavailable;
+  const pendingVerification = peoplePending ?? (result?.verification?.pending || 0);
+  const resultNeedsRefresh = Boolean(result && quality === "accepted" && !result.can_export && !pendingVerification);
+  seal.className = `qualitySeal ${nativeUnavailable ? "blocked" : (quality === "accepted" && pendingVerification) || resultNeedsRefresh ? "needs_review" : quality}`;
+  setText("#qualityTitle", installationUnavailable ? "安装组件未能启动" : desktopUnavailable ? "桌面环境未连接" : startupFailed ? "启动失败" : resultNeedsRefresh ? "需要重新生成" : quality === "accepted" && pendingVerification ? "待人工核验" : result ? resultStatusLabel(quality) : "本地处理");
   setText("#qualityDetail", installationUnavailable ? "请使用完整安装包重新安装" : desktopUnavailable ? "请在桌面端继续" : resultNeedsRefresh ? "请使用当前设置重新生成" : result ? resultStatusDetail(result) : "导入课表后查看");
+  getElement<HTMLElement>("#qualityDetail").hidden = true;
   setText("#stageLabel", installationUnavailable ? "需要重新安装" : desktopUnavailable ? "请打开桌面端" : startupFailed ? "启动失败" : stageLabel(state.stage));
-  setText("#runHint", installationUnavailable ? "识别资源修复无法解决此问题" : desktopUnavailable ? "浏览器仅支持界面预览" : startupFailed ? "请重新启动识别服务" : runHint(result));
+  setText("#runHint", state.busy ? state.statusText : runHint(result));
   setText("#fileCount", String(result?.summary.pdf_count || state.files.length));
   setText("#memberCount", String(result?.summary.member_count || 0));
-  setText("#issueCount", String(result?.issues.filter((issue) => !issue.confirmed).length || 0));
+  setText("#issueCount", String(result?.issues.filter((issue) => !issue.confirmed && issue.blocks_export).length || 0));
   const progress = getElement<HTMLElement>("#progressTrack");
   progress.classList.toggle("indeterminate", state.busy && !state.progress.total);
   progress.setAttribute("aria-valuenow", String(progressPercent));
   getElement<HTMLElement>("#progressFill").style.setProperty("--progress-scale", String(progressPercent / 100));
   progress.hidden = !state.busy;
   getElement<HTMLElement>(".runStrip").dataset.state = state.stage;
-  const workflowStep = result?.can_export ? 2 : (state.busy || result || state.files.length) ? 1 : 0;
-  ["import", "review", "export"].forEach((step, index) => {
-    const item = getElement<HTMLElement>(`#workflow-${step}`);
-    item.classList.toggle("is-current", index === workflowStep);
-    item.classList.toggle("is-done", index < workflowStep);
-    if (index === workflowStep) item.setAttribute("aria-current", "step");
-    else item.removeAttribute("aria-current");
-  });
   const notice = getElement<HTMLElement>("#resultNotice");
-  notice.hidden = !result || result.can_export;
+  notice.hidden = !result || result.can_export || workspace !== "results";
   notice.dataset.quality = quality;
   const hasIssues = !resultNeedsRefresh && unresolvedIssueCount(result) > 0;
-  setText("#resultNoticeTitle", quality === "blocked" ? "先修正标记内容，再使用结果" : hasIssues ? "还有内容需要核对，当前为预览" : "结果需要重新生成");
-  setText("#resultNoticeDetail", hasIssues ? `${unresolvedIssueCount(result)} 项待处理，请对照原文核实。未处理前不能导出。`
+  setText("#resultNoticeTitle", quality === "blocked" ? "仅供预览 · 必须处理的问题尚未解决" : hasIssues || pendingVerification ? "结果待核对" : "结果需要重新生成");
+  setText("#resultNoticeDetail", hasIssues ? `${unresolvedIssueCount(result)} 项待处理，核对或修正后才能导出。` : pendingVerification ? `还有 ${pendingVerification} 项课程需要对照原文。`
     : friendlyMessage(result?.errors[0] || result?.warnings[0] || "当前结果暂不可导出，请核对来源和学期设置后重新生成。"));
-  setText("#nextStepAction", hasIssues ? "查看待处理 →" : state.files.length ? "重新生成" : "重新导入课表");
+  setText("#nextStepAction", hasIssues ? "查看批次总览" : pendingVerification ? "继续核验" : state.files.length ? "重新生成" : "重新导入课表");
   setDisabled("#nextStepAction", state.busy || nativeUnavailable);
+  getElement<HTMLButtonElement>("#nextStepAction").hidden = hasIssues && state.activeTab === "issues";
 
   updateRunAgu(result);
   updateSources(invalidCount);
@@ -776,11 +1158,46 @@ function updateShell() {
   updateTabs(result);
   updateActivity();
   updatePanels(result);
+  document.querySelectorAll<HTMLButtonElement>("[data-welcome-action]").forEach((button) => {
+    button.disabled = state.busy || nativeUnavailable || (button.dataset.welcomeAction === "generate" && !canParse);
+  });
+  const semesterSummary = document.querySelector<HTMLElement>("#welcomeSemester");
+  if (semesterSummary) semesterSummary.textContent = `${savedCalendarSettings.semester_start_date.replaceAll("-", "/")} 起 · ${savedCalendarSettings.teaching_weeks} 周`;
 }
 
 function bindActions() {
+  document.querySelector("#linkOriginals")?.addEventListener("click", () => void reconnectOriginals());
+  document.querySelector("#applySemester")?.addEventListener("click", async () => {
+    if (state.busy || !state.result) return;
+    try {
+      await saveSettings();
+      if (!state.result) await parseSchedules();
+      else setStatus("请按校历修改第一周周一或教学周数。若设置正确，请核对提示中的原课。");
+    } catch { /* saveSettings displays the reason. */ }
+  });
+  appRoot.addEventListener("change", event => {
+    const input = event.target as HTMLInputElement;
+    if (!input.matches("[data-remember-sources]") || state.busy) return;
+    rememberSources = input.checked;
+    persistDraft();
+    document.querySelectorAll<HTMLInputElement>("[data-remember-sources]").forEach(box => box.checked = rememberSources);
+  });
   document.querySelector("#chooseFiles")?.addEventListener("click", chooseFiles);
-  document.querySelector("#parseSchedules")?.addEventListener("click", parseSchedules);
+  document.querySelector("#parseSchedules")?.addEventListener("click", () => {
+    if (state.result) resetForNewInput("可沿用已选文件，请设置本次合表日期。");
+    else void parseSchedules();
+  });
+  const changeDates = () => {
+    if (state.busy || state.result) return;
+    state.batchDates = {start_date: getElement<HTMLInputElement>("#batchStart").value, end_date: getElement<HTMLInputElement>("#batchEnd").value};
+    if (state.batchDates.start_date && state.batchDates.start_date <= state.batchDates.end_date) persistDraft();
+    render();
+  };
+  document.querySelector("#batchStart")?.addEventListener("change", changeDates);
+  document.querySelector("#batchEnd")?.addEventListener("change", changeDates);
+  document.querySelector("#batchThisMonth")?.addEventListener("click", () => {
+    if (!state.busy && !state.result) { state.batchDates = currentMonth(); persistDraft(); render(); }
+  });
   document.querySelector("#cancelJob")?.addEventListener("click", cancelJob);
   document.querySelector("#retryFailed")?.addEventListener("click", retryFailed);
   document.querySelector("#exportExcel")?.addEventListener("click", exportExcel);
@@ -790,11 +1207,14 @@ function bindActions() {
       state.activeTab = "issues";
       render();
       onNextFrame(() => document.querySelector<HTMLButtonElement>('[data-tab="issues"]')?.focus());
+    } else if (state.result?.verification?.pending) {
+      state.activeTab = "review";
+      render();
     } else if (state.files.length) void parseSchedules();
     else void chooseFiles();
   });
   document.querySelector("#repairResources")?.addEventListener("click", repairResources);
-  document.querySelector("#clearLocalData")?.addEventListener("click", clearLocalData);
+  document.querySelector("#historyEntry")?.addEventListener("click", openLocalHistory);
   document.querySelector("#saveSettings")?.addEventListener("click", () => {
     if (state.busy) return;
     void saveSettings().catch(() => undefined);
@@ -802,6 +1222,10 @@ function bindActions() {
   document.querySelector("#clearFiles")?.addEventListener("click", () => {
     state.files = [];
     resetForNewInput("已清空文件列表，请重新导入课表");
+  });
+  document.querySelector("#toggleSources")?.addEventListener("click", () => {
+    sourceListExpanded = !sourceListExpanded;
+    render();
   });
   document.querySelector<HTMLInputElement>("#semesterStart")?.addEventListener("change", (event) => {
     state.calendarSettings.semester_start_date = (event.target as HTMLInputElement).value;
@@ -811,6 +1235,63 @@ function bindActions() {
   });
   appRoot.addEventListener("click", (event) => {
     const target = event.target as HTMLElement;
+    const workspaceButton = target.closest<HTMLButtonElement>("button[data-workspace]");
+    if (workspaceButton && !workspaceButton.disabled) {
+      state.activeTab = lastWorkspaceTab[workspaceButton.dataset.workspace as Workspace];
+      render();
+      return;
+    }
+    const viewButton = target.closest<HTMLButtonElement>("[data-availability-mode]");
+    if (viewButton && state.result) {
+      availabilityMode = viewButton.dataset.availabilityMode === "list" ? "list" : "week";
+      availabilityPage = 0;
+      setHtmlIfChanged(getPanel("availability"), renderPanel("availability", state.result));
+      getPanel("availability").querySelector<HTMLButtonElement>(`[data-availability-mode="${availabilityMode}"]`)?.focus();
+      return;
+    }
+    const weekStep = target.closest<HTMLButtonElement>("[data-week-step]");
+    if (weekStep && state.result && !weekStep.disabled) {
+      const weeks = availabilityWeeks(availabilityForDepartment(state.result, availabilityDepartment).rows);
+      const nextWeek = weeks[weeks.indexOf(availabilityWeek) + Number(weekStep.dataset.weekStep)];
+      if (nextWeek) {
+        availabilityWeek = nextWeek;
+        availabilityPage = 0;
+        setHtmlIfChanged(getPanel("availability"), renderPanel("availability", state.result));
+        const panel = getPanel("availability");
+        (panel.querySelector<HTMLElement>(`[data-week-step="${weekStep.dataset.weekStep}"]:not(:disabled)`) || panel.querySelector<HTMLElement>("#availabilityWeek"))?.focus();
+      }
+      return;
+    }
+    const slotButton = target.closest<HTMLButtonElement>("[data-slot-index]");
+    if (slotButton && state.result) {
+      const row = availabilityForDepartment(state.result, availabilityDepartment).rows[Number(slotButton.dataset.slotIndex)];
+      if (row) {
+        getElement<HTMLElement>("#slotDetailBody").innerHTML = availabilitySlotDetail(row, availabilityDepartment);
+        getElement<HTMLDialogElement>("#slotDetail").showModal();
+      }
+      return;
+    }
+    const filterButton = target.closest<HTMLButtonElement>("[data-review-filter]");
+    if (filterButton && state.result) {
+      reviewFilter = filterButton.dataset.reviewFilter as ReviewFilter;
+      setHtmlIfChanged(getPanel("issues"), renderPanel("issues", state.result));
+      getPanel("issues").querySelector<HTMLButtonElement>(`[data-review-filter="${reviewFilter}"]`)?.focus();
+      return;
+    }
+    const openSource = target.closest<HTMLButtonElement>("[data-open-source]");
+    if (openSource) {
+      pendingReviewSource = openSource.dataset.openSource || "";
+      pendingReviewBlock = openSource.dataset.openBlock || "";
+      state.activeTab = "review";
+      render();
+      return;
+    }
+    const welcomeAction = target.closest<HTMLButtonElement>("[data-welcome-action]");
+    if (welcomeAction && !welcomeAction.disabled) {
+      if (welcomeAction.dataset.welcomeAction === "generate") void parseSchedules();
+      else void chooseFiles();
+      return;
+    }
     const tab = target.closest<HTMLButtonElement>("[data-tab]");
     if (tab) {
       state.activeTab = tab.dataset.tab as Tab;
@@ -826,6 +1307,7 @@ function bindActions() {
       }
       const chip = remove.closest<HTMLElement>(".sourceChip");
       const commit = () => {
+        if (chip && !chip.isConnected) return;
         // 延迟提交期间用户可能已开始生成：此时改文件列表会清掉正在跑的任务引用。
         if (state.busy) {
           setStatus("课表正在处理，完成后再调整文件列表。");
@@ -839,6 +1321,7 @@ function bindActions() {
     }
     const settingLink = target.closest<HTMLButtonElement>("[data-semester-setting]");
     if (settingLink) {
+      getElement<HTMLDetailsElement>("#semesterSettings").open = true;
       const field = getElement<HTMLInputElement>(settingLink.dataset.semesterSetting === "semesterStart" ? "#semesterStart" : "#teachingWeeks");
       field.scrollIntoView({ block: "center" });
       field.focus({ preventScroll: true });
@@ -876,16 +1359,36 @@ function bindActions() {
     }
   });
   appRoot.addEventListener("keydown", (event) => {
-    const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-tab]");
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>('.tabs [data-tab]');
     if (!button || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
-    const current = tabs.indexOf(button.dataset.tab as Tab);
+    const visibleTabs = workspaceTabs[currentWorkspace()];
+    const current = visibleTabs.indexOf(button.dataset.tab as Tab);
     const next = event.key === "Home" ? 0
-      : event.key === "End" ? tabs.length - 1
-        : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
-    state.activeTab = tabs[next];
+      : event.key === "End" ? visibleTabs.length - 1
+        : (current + (event.key === "ArrowRight" ? 1 : -1) + visibleTabs.length) % visibleTabs.length;
+    state.activeTab = visibleTabs[next];
     render();
     onNextFrame(() => document.querySelector<HTMLButtonElement>(`[data-tab="${state.activeTab}"]`)?.focus());
+  });
+  appRoot.addEventListener("change", event => {
+    const input = event.target as HTMLSelectElement;
+    if (!state.result) return;
+    if (input.id === "availabilityDepartment" || input.id === "sourceDepartment") {
+      availabilityDepartment = input.value;
+      availabilityPage = 0;
+      setHtmlIfChanged(getPanel("availability"), renderPanel("availability", state.result));
+      setHtmlIfChanged(getPanel("members"), renderPanel("members", state.result));
+      render();
+      const focusId = input.id;
+      onNextFrame(() => document.getElementById(focusId)?.focus());
+      return;
+    }
+    if (input.id !== "availabilityWeek") return;
+    availabilityWeek = Number(input.value);
+    availabilityPage = 0;
+    setHtmlIfChanged(getPanel("availability"), renderPanel("availability", state.result));
+    getPanel("availability").querySelector<HTMLSelectElement>("#availabilityWeek")?.focus();
   });
   window.addEventListener("resize", render);
 }
@@ -922,8 +1425,11 @@ function updateRunAgu(result: ParseResult | null) {
 let sourceKey: string | null = null;
 function updateSources(invalidCount: number) {
   getElement<HTMLElement>(".sourceRibbon").classList.toggle("is-empty", !state.files.length);
+  getElement<HTMLElement>("#sourceChips").hidden = Boolean(state.result) && !sourceListExpanded;
+  setText("#toggleSources", sourceListExpanded ? "收起文件" : "查看文件");
+  getElement<HTMLButtonElement>("#toggleSources").setAttribute("aria-expanded", String(sourceListExpanded));
   setText("#sourceSummary", state.files.length
-    ? `${state.files.length} 份 PDF · ${invalidCount ? `${invalidCount} 份无法判断课表类型` : "文件名检查通过"}`
+    ? `${state.files.length} 份 PDF${invalidCount ? ` · ${invalidCount} 份需注明课表类型` : ""}`
     : "尚未选择文件");
   setText("#sourceViewHint", state.files.length > 6 ? "列表可独立滚动" : "导入后显示文件列表");
   const nextKey = state.files.join("\u0000");
@@ -941,9 +1447,10 @@ function updateTabs(result: ParseResult | null) {
     issues: unresolvedIssueCount(result)
   };
   const tabList = getElement<HTMLElement>(".tabs");
-  document.querySelectorAll<HTMLButtonElement>("[data-tab]").forEach((button) => {
+  document.querySelectorAll<HTMLButtonElement>('.tabs [data-tab]').forEach((button) => {
     const tab = button.dataset.tab as Tab;
     const active = tab === state.activeTab;
+    button.hidden = !workspaceTabs[currentWorkspace()].includes(tab);
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", String(active));
     button.tabIndex = active ? 0 : -1;
@@ -976,11 +1483,18 @@ function updatePanels(result: ParseResult | null) {
 
   if (renderedResult !== result) {
     const previousResultRef = renderedResult?.result_ref || "";
+    const detail = getElement<HTMLDialogElement>("#slotDetail");
+    if (detail.open) detail.close();
     const refreshingSameResult = Boolean(result && previousResultRef === result.result_ref);
     // 同一结果内的修正刷新要保留各表格的滚动位置，只有换任务结果才回到顶部第一页。
     const scrollPositions = refreshingSameResult ? captureTableScroll() : null;
     renderedResult = result;
-    if (!result || result.result_ref !== previousResultRef) availabilityPage = 0;
+    if (!result || result.result_ref !== previousResultRef) {
+      availabilityPage = 0;
+      availabilityDepartment = "";
+    } else if (availabilityDepartment && !memberDepartmentOptions(result).includes(availabilityDepartment)) {
+      availabilityDepartment = "";
+    }
     if (!result) {
       resetRichViews();
       setHtmlIfChanged(getPanel("availability"), renderWelcome(state.stage !== "failed"));
@@ -1007,18 +1521,31 @@ function updatePanels(result: ParseResult | null) {
   }
 
   if (!result) {
-    const nextEmptyKey = `${state.stage === "failed" ? state.statusText : ""}:${state.busy}:${state.files.length > 0}`;
+    const nextEmptyKey = `${state.stage === "failed" ? state.statusText : ""}:${state.busy}:${state.files.length}`;
     if (nextEmptyKey !== emptyPanelKey) {
       emptyPanelKey = nextEmptyKey;
       setHtmlIfChanged(getPanel("availability"), renderWelcome(state.stage !== "failed"));
     }
   } else emptyPanelKey = "";
 
+  if (state.activeTab === "issues" && result && state.review && renderedOverviewReview !== state.review) {
+    renderedOverviewReview = state.review;
+    setHtmlIfChanged(getPanel("issues"), renderPanel("issues", result));
+  }
   if (reviewController && state.review && reviewPayload !== state.review) {
     reviewPayload = state.review;
     void reviewController.update(state.review);
   }
-  if (state.activeTab === "review" && state.review) ensureReview();
+  if (state.activeTab === "review" && state.review) {
+    ensureReview();
+    if (reviewController && pendingReviewSource) {
+      const path = pendingReviewSource;
+      pendingReviewSource = "";
+      const block = pendingReviewBlock;
+      pendingReviewBlock = "";
+      void reviewController.selectSource(path, block).catch(error => setStatus(formatError(error)));
+    }
+  }
   if (state.activeTab === "calendar" && result) ensureCalendar(result);
 }
 
@@ -1028,7 +1555,7 @@ function ensureReview() {
   const generation = richViewGeneration;
   panel.innerHTML = `<div class="loadingPanel"><span class="loadingDot" aria-hidden="true"></span>正在载入课表原文…</div>`;
   const initialPayload = state.review;
-  const currentMount = mountReview(panel, initialPayload, { apply: applyReview, confirm: confirmIssue })
+  const currentMount = mountReview(panel, initialPayload, { reconnect: reconnectOriginals, readOriginal: (source) => readLinkedPdf(client, initialPayload.job_id, source.content_hash, source.file_name), apply: applyReview, confirm: confirmIssue, mutate: mutateReview, verify: verifyItem, dateCommand, rangeComplete, result: () => state.result, ai: requestAi })
     .then(async (controller) => {
       if (generation !== richViewGeneration) {
         controller.destroy();
@@ -1039,6 +1566,13 @@ function ensureReview() {
       if (state.review && state.review !== initialPayload) {
         reviewPayload = state.review;
         await controller.update(state.review);
+      }
+      if (pendingReviewSource) {
+        const path = pendingReviewSource;
+        pendingReviewSource = "";
+        const block = pendingReviewBlock;
+        pendingReviewBlock = "";
+        await controller.selectSource(path, block).catch(error => setStatus(formatError(error)));
       }
     })
     .catch((error) => {
@@ -1064,13 +1598,27 @@ function ensureCalendar(result: ParseResult) {
   calendarKey = "";
   const host = getPanel("calendar").querySelector<HTMLElement>(".calendarHost");
   if (!host) return;
-  calendar = mountCalendar(host, result.courses, state.calendarSettings, async (block, patch) => {
+  const members = new Set(membersForDepartment(result, availabilityDepartment).map(member => member.member_key));
+  const courses = availabilityDepartment ? result.courses.filter(course => members.has(course.member_key)) : result.courses;
+  calendar = mountCalendar(host, courses, state.calendarSettings, async (block, patch) => {
     for (const [field, value] of Object.entries(patch)) {
       await applyReview(block.block_id, field, value, "周课表拖拽修正");
     }
-  }, initialDate, (message) => setStatus(message));
+  }, initialDate, (message) => setStatus(message), showCourseSlot, calendarScope);
   calendarKey = key;
   onNextFrame(() => calendar?.updateSize());
+}
+
+function showCourseSlot(slot: CourseSlot) {
+  const distinct = new Map(slot.courses.map(course => [
+    JSON.stringify([course.member_key || course.name, course.course, course.source_file]), course
+  ]));
+  const body = getElement<HTMLElement>("#slotDetailBody");
+  body.innerHTML = `<h2 id="slotDetailTitle">${escapeHtml(slot.day)} · 第 ${slot.period} 节</h2>
+    <p>${slot.memberCount} 人有课</p><ul class="courseRoster">${[...distinct.values()].map(course =>
+      `<li><strong>${escapeHtml(course.name)}</strong><span>${escapeHtml(course.course || "课程")}</span>
+        <small>${escapeHtml([course.department, course.role].filter(Boolean).join(" · "))}</small></li>`).join("")}</ul>`;
+  getElement<HTMLDialogElement>("#slotDetail").showModal();
 }
 
 function captureTableScroll() {
@@ -1090,6 +1638,8 @@ function restoreTableScroll(positions: Map<Tab, number>) {
 }
 
 function resetRichViews() {
+  pendingReviewSource = "";
+  pendingReviewBlock = "";
   richViewGeneration += 1;
   reviewController?.destroy();
   reviewController = null;
@@ -1099,6 +1649,7 @@ function resetRichViews() {
   calendar = null;
   calendarKey = "";
   calendarViewDate = null;
+  calendarScope.member = "";
 }
 
 function calendarSignature(result: ParseResult) {
@@ -1109,7 +1660,7 @@ function calendarSignature(result: ParseResult) {
     course.periods.join(","),
     course.course || ""
   ].join(":")).join("|");
-  return `${result.result_ref}|${courseKey}|${state.calendarSettings.semester_start_date}|${state.calendarSettings.teaching_weeks}`;
+  return `${result.result_ref}|${availabilityDepartment}|${courseKey}|${state.calendarSettings.semester_start_date}|${state.calendarSettings.teaching_weeks}`;
 }
 
 function getPanel(tab: Tab) {
@@ -1119,17 +1670,17 @@ function getPanel(tab: Tab) {
 function renderWelcome(showAgu = true) {
   if (!showAgu) return `<div class="emptyPanel taskEmpty taskEmpty--failed"><span class="taskMarker" aria-hidden="true">!</span>
     <b>${state.resourceStatus ? "暂时无法完成处理" : "本地识别服务未能启动"}</b><span>${escapeHtml(state.statusText)}</span>
-    <p>${state.startupDiagnostic ? "请关闭当前程序，使用完整安装包重新安装。若仍无法启动，请将下方脱敏技术详情提供给维护者。" : state.statusText.includes("桌面运行环境") ? "请回到空谷桌面端继续，本地功能无法在普通浏览器中运行。" : !state.resourceStatus ? "处理上述问题后，请点击左侧“重新启动识别服务”。" : "请根据上述原因处理后重新生成。识别功能异常时，可在左侧尝试修复。"}</p>
+    <p>${state.startupDiagnostic ? "请使用完整安装包重新安装；仍失败时，将下方技术详情提供给维护者。" : state.statusText.includes("桌面运行环境") ? "请打开空谷桌面端导入课表。" : !state.resourceStatus ? "可在左侧“本地维护”中重新启动识别服务。" : "请根据上述原因处理后重新生成。"}</p>
     ${state.startupDiagnostic ? `<details><summary>查看脱敏技术详情</summary><pre style="max-width:560px;white-space:pre-wrap;overflow-wrap:anywhere;text-align:left;font-size:11px">${escapeHtml(state.startupDiagnostic)}</pre></details>` : ""}</div>`;
   if (state.busy) return `<div class="emptyPanel taskEmpty"><span class="loadingDot" aria-hidden="true"></span>
-    <b>正在整理本批课表</b><span>可以在上方查看处理进度。完成后，空谷会列出需要核对的内容。</span><p>处理期间请保留原文件，暂勿调整本批课表。</p></div>`;
+    <b>正在处理课表</b><span>处理期间请保留原文件。</span></div>`;
   return `<div class="emptyPanel welcomePanel">
     <div class="welcomeCopy">
-      <span class="welcomeKicker">青心如禾，向阳而生</span>
-      <b>把大家的课表放在一起，看看什么时候都有空。</b>
-      <p>请导入同一批成员的中方和英方课表。空谷会整理每个人的上课时间，把不确定的内容列出来核对，然后生成共同空闲时段。</p>
-      <div class="welcomeSteps"><span><i>1</i>导入课表</span><span><i>2</i>生成空课表</span><span><i>3</i>核对并导出</span></div>
-      <div class="inputTip"><b>导入前，确认这两件事</b><span>每位成员的中方、英方课表齐全；左侧学期开始日期和周数与原件一致。</span></div>
+      <h2>${state.files.length ? "课表已选好" : "导入课表"}</h2>
+      <p>${state.files.length ? `已选择 ${state.files.length} 份课表，确认学期设置后开始生成。` : "每位成员需提供中方、英方两份 PDF 课表。"}</p>
+      <button type="button" class="primary welcomeAction" data-welcome-action="${state.files.length ? "generate" : "choose"}">${state.files.length ? "生成空课表" : "选择课表文件"}</button>
+      ${!state.files.length ? rememberedChoice(rememberSources) : ""}
+      <div class="welcomeSemester"><button type="button" data-semester-setting="semesterStart">学期设置</button><span id="welcomeSemester"></span></div>
     </div>
     ${showAgu ? renderAguMotion("welcome") : ""}
   </div>`;
@@ -1137,7 +1688,8 @@ function renderWelcome(showAgu = true) {
 
 function renderPanel(tab: Tab, result: ParseResult) {
   if (tab === "members") {
-    return table(result.members, [
+    const members = membersForDepartment(result, availabilityDepartment);
+    return table(members, [
       { key: "member", label: "成员" },
       { key: "department", label: "部门" },
       { key: "role", label: "职务" },
@@ -1160,23 +1712,34 @@ function renderPanel(tab: Tab, result: ParseResult) {
     ]);
   }
   if (tab === "issues") {
-    if (!unresolvedIssueCount(result)) return `<div class="emptyPanel"><b>没有待处理问题</b><span>本次结果已检查完成，可以导出空课表。</span></div>`;
-    return `<div class="issueTable">${result.issues.map((issue) => `<article class="${escapeHtml(issue.confirmed ? "confirmed" : issue.severity)}">
+    const overview = renderReviewOverview(result, state.review, reviewFilter);
+    if (!result.issues.length) return overview;
+    return `${overview}<details class="batchIssueDetails"><summary>全部检查记录（${result.issues.length}）</summary><div class="issueTable">${result.issues.map((issue) => `<article class="${escapeHtml(issue.confirmed ? "confirmed" : issue.severity)}">
       <div class="issueHeading"><b>${issueStateLabel(issue)}</b><span>${escapeHtml((issue.source_file || "本批课表").split(/[\\/]/).pop() || "本批课表")}</span></div>
       <h3>${escapeHtml(friendlyMessage(issue.message))}</h3><p>${escapeHtml(friendlyMessage(issue.suggestion || "请在“原文核对”中对照课表。"))}</p>
+      ${issue.source_file ? `<button data-open-source="${escapeHtml(issue.source_file)}">查看原文</button>` : ""}
       ${issueAction(issue)}
-    </article>`).join("")}</div>`;
+    </article>`).join("")}</div></details>`;
   }
   if (tab === "review") return `<div class="loadingPanel">正在载入课表原文…</div>`;
   if (tab === "calendar") return `<div class="calendarHost"></div>`;
-  const rows = result.availability_preview;
+  const scoped = availabilityForDepartment(result, availabilityDepartment);
+  const weeks = availabilityWeeks(scoped.rows);
+  if (!weeks.includes(availabilityWeek)) availabilityWeek = weeks[0] || 0;
+  const departments = departmentOptions(result);
+  if (availabilityDepartment && !departments.includes(availabilityDepartment)) departments.push(availabilityDepartment);
+  const toolbar = availabilityToolbar(scoped.rows, availabilityWeek, availabilityMode, departments, availabilityDepartment);
+  const rows = scoped.rows.filter(row => Number(row["周次"]) === availabilityWeek);
   const pageSize = 800;
   const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
   const page = Math.min(availabilityPage, pageCount - 1);
   const pageRows = rows.slice(page * pageSize, (page + 1) * pageSize);
   const columns = ["周次", "日期", "星期", "节次", "时间", "空闲人数", "空闲人员", "占用人数", "有课人员"];
   const pager = availabilityPager(rows.length, page, pageCount);
-  return `${pager}${table(pageRows, columns)}${pager}`;
+  const coverage = result.issues.find((issue) => issue.code === "TIMETABLE_COVERAGE_LIMIT" || issue.code === "TIMETABLE_COVERAGE_EMPTY");
+  const coverageNote = coverage ? `<p class="inputTip" role="note">${escapeHtml(coverage.message)} ${escapeHtml(coverage.suggestion || "")}</p>` : "";
+  const content = availabilityMode === "week" ? availabilityWeekGrid(scoped.rows, availabilityWeek, scoped.memberCount, Boolean(result.date_review)) : `${pager}${table(pageRows, columns)}${pager}`;
+  return `${coverageNote}${toolbar}<div class="availabilityBody">${content}</div>`;
 }
 
 function availabilityPager(total: number, page: number, pageCount: number) {
@@ -1226,7 +1789,7 @@ function tabButton(tab: Tab, label: string, count?: number) {
 function fileChip(path: string) {
   const name = path.split(/[\\/]/).pop() || path;
   const kind = inferKind(path);
-  return `<span class="sourceChip ${kind ? "" : "invalid"}" role="listitem"><i aria-hidden="true">${kind || "?"}</i><b title="${escapeHtml(name)}">${escapeHtml(name)}</b><button type="button" aria-label="移除课表 ${escapeHtml(name)}" title="移除这份课表" data-remove="${escapeHtml(path)}">×</button></span>`;
+  return `<span class="sourceChip ${kind ? "" : "invalid"}" role="listitem"><i>${kind || "待检查"}</i><b title="${escapeHtml(name)}">${escapeHtml(name)}</b><button type="button" aria-label="移除课表 ${escapeHtml(name)}" title="移除这份课表" data-remove="${escapeHtml(path)}">移除</button></span>`;
 }
 
 function inferKind(path: string) {
@@ -1263,20 +1826,25 @@ function resultStatusLabel(stateValue: string) {
 }
 
 function resultActionText(stateValue: string) {
+  const pending = state.result?.date_review?.members.filter(member => !member.confirmed).length;
+  if (pending) return `识别结果待确认，请逐人对照原件。还有 ${pending} 位成员待核对。`;
+  if (state.result && !state.result.verification) return "当前识别组件未提供逐项核验，请使用配套的新版空谷。";
   if (stateValue === "needs_review") return "课表已处理，请先核对标记内容";
   if (stateValue === "blocked") return "发现影响结果的问题，请先修正";
+  if (state.result?.verification?.pending) return `还有 ${state.result.verification.pending} 项课程待人工核验`;
   if (state.result && !state.result.can_export) return "当前结果暂不可导出，请重新生成";
   return "空课表已生成，可以导出";
 }
 
 function unresolvedIssueCount(result: ParseResult | null) {
-  return result?.issues.filter((issue) => !issue.confirmed).length || 0;
+  return result?.issues.filter((issue) => !issue.confirmed && issue.blocks_export).length || 0;
 }
 
 function resultStatusDetail(result: ParseResult) {
   const count = unresolvedIssueCount(result);
   if (result.can_export) return "所有问题均已处理";
   if (result.quality_state === "blocked") return `${count} 项必须先修正`;
+  if (result.verification?.pending) return `${result.verification.pending} 项课程待核验`;
   return `${count} 项需要核对`;
 }
 
@@ -1296,7 +1864,7 @@ function issueStateLabel(issue: ParseResult["issues"][number]) {
 }
 
 function issueAction(issue: ParseResult["issues"][number]) {
-  if (issue.confirmed) return "";
+  if (issue.confirmed || issue.blocks_export === false) return "";
   if (issue.code === "WEEK_OUT_OF_SEMESTER" || issue.code === "PRE_TERM_DATE") {
     const field = issue.code === "PRE_TERM_DATE" ? "semesterStart" : "teachingWeeks";
     return `<button type="button" data-semester-setting="${field}">前往学期设置</button>`;

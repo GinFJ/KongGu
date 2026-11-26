@@ -123,7 +123,8 @@ def test_export_is_bound_to_the_visible_result() -> None:
 
     assert "if (state.busy) return;" in export_body
     assert "const result = state.result;" in export_body
-    assert 'if (state.result !== result) return setStatus("结果已更新，请重新确认后再导出。");' in export_body
+    assert 'if (state.result !== result || availabilityDepartment !== department)' in export_body
+    assert 'defaultPath: workbookName(department, selection, result.date_review || undefined)' in export_body
     assert "result_ref: result.result_ref," in export_body
     assert "result_ref: state.result.result_ref" not in main
 
@@ -152,7 +153,7 @@ def test_availability_pagination_resets_only_when_result_changes() -> None:
     main = _source("src/main.ts")
 
     assert 'const previousResultRef = renderedResult?.result_ref || "";' in main
-    assert "if (!result || result.result_ref !== previousResultRef) availabilityPage = 0;" in main
+    assert "if (!result || result.result_ref !== previousResultRef) {\n      availabilityPage = 0;" in main
     assert "if (renderedResult !== result) {\n    const previousResultRef" in main
 
 
@@ -176,8 +177,8 @@ def test_export_button_disabled_state_matches_export_gate() -> None:
 
     assert 'setDisabled("#exportExcel", !result?.can_export || state.busy || nativeUnavailable);' in main
     assert "if (!result.can_export) {" in export_body
-    assert 'state.activeTab = "issues";' in export_body
-    assert "当前结果还不能导出，请先核对或修正“待处理”中的内容。" in export_body
+    assert 'state.activeTab = result.date_review ? "review" : "issues";' in export_body
+    assert "当前结果还不能导出，请到批次总览查看待核验课程和异常。" in export_body
 
 
 def test_pager_announces_page_and_restores_keyboard_focus() -> None:
@@ -193,7 +194,7 @@ def test_pager_announces_page_and_restores_keyboard_focus() -> None:
     assert "const groupIndex = pagerGroup ? Math.max(0, groups.indexOf(pagerGroup)) : 0;" in pager_block
     assert ':not(:disabled)`);' in pager_block
     assert 'const fallback = group?.querySelector<HTMLButtonElement>("button:not(:disabled)");' in pager_block
-    assert 'if (!result || result.result_ref !== previousResultRef) availabilityPage = 0;' in main
+    assert 'if (!result || result.result_ref !== previousResultRef) {\n      availabilityPage = 0;' in main
 
 
 # ---------------------------------------------------------------------------

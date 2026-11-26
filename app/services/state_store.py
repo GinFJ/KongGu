@@ -46,6 +46,7 @@ class StateStore:
             self.migrate()
         self.purge_expired()
         self.mark_running_jobs_interrupted()
+        self._upgrade_date_review_results()
 
     def _quarantine_database(self) -> None:
         """Move an unusable database aside so a fresh one can be created."""
@@ -98,6 +99,14 @@ class StateStore:
                 CREATE TABLE IF NOT EXISTS schema_info (
                     version INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS workspace (
+                    id INTEGER PRIMARY KEY CHECK(id=1), job_id TEXT NOT NULL,
+                    selection TEXT NOT NULL, remember INTEGER NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS workspace_dates (
+                    workspace_id INTEGER PRIMARY KEY REFERENCES workspace(id) ON DELETE CASCADE,
+                    start_date TEXT NOT NULL, end_date TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS jobs (
                     id TEXT PRIMARY KEY,
                     status TEXT NOT NULL,
@@ -112,6 +121,18 @@ class StateStore:
                     total INTEGER NOT NULL DEFAULT 0,
                     active_source_id TEXT
                 );
+                CREATE TABLE IF NOT EXISTS local_batch_history (
+                    job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+                    keep_result INTEGER NOT NULL,
+                    selection TEXT NOT NULL,
+                    remember INTEGER NOT NULL,
+                    paths_updated_at TEXT NOT NULL
+                );
+                -- Preserve the previous release's single remembered selection with its
+                -- original expiry. Opening it explicitly will retain the batch result.
+                INSERT OR IGNORE INTO local_batch_history
+                    SELECT w.job_id,0,w.selection,w.remember,w.updated_at
+                    FROM workspace w JOIN jobs j ON j.id=w.job_id;
                 CREATE TABLE IF NOT EXISTS job_files (
                     id TEXT PRIMARY KEY,
                     job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -228,10 +249,39 @@ class StateStore:
                 """
                 UPDATE job_files
                    SET source_path='__cleared__:' || id
-                 WHERE job_id IN (SELECT id FROM jobs WHERE status='interrupted')
+                 WHERE source_path <> '__cleared__:' || id
+                   AND job_id IN (SELECT id FROM jobs WHERE status IN
+                                   ('interrupted','completed','failed','cancelled'))
                 """
             )
             return int(cursor.rowcount)
+
+    def _upgrade_date_review_results(self) -> None:
+        """Repair affected pre-fix results before an old approval can export."""
+        with self.connect() as db:
+            candidates = db.execute("""
+                SELECT id,result_json FROM jobs WHERE status='completed' AND result_json IS NOT NULL
+                  AND ((instr(result_json,'"date_review"')>0 AND instr(result_json,'"SCHEDULE_CONFLICT"')>0) OR id IN (
+                    SELECT job_id FROM job_files WHERE source_hash<>''
+                    GROUP BY job_id,source_hash HAVING count(DISTINCT file_name)>1
+                  ))
+            """).fetchall()
+            for row in candidates:
+                from .date_review import reconcile_saved_date_issues
+                files = [dict(f) for f in db.execute(
+                    "SELECT file_name,source_hash FROM job_files WHERE job_id=?", (row['id'],))]
+                snapshot = json.loads(row['result_json'])
+                if not reconcile_saved_date_issues(snapshot, files):
+                    continue
+                # Another worker may already have edited the job since SELECT.
+                changed = db.execute("UPDATE jobs SET result_json=?,quality_state=? WHERE id=? AND result_json=?",
+                    (_json(snapshot), snapshot['quality_state'], row['id'], row['result_json']))
+                if changed.rowcount:
+                    self._replace_issues(db, row['id'], snapshot['issues'])
+                    for issue in snapshot['issues']:
+                        if issue.get('confirmed'):
+                            db.execute("UPDATE issues SET confirmed=1 WHERE job_id=? AND issue_id=?",
+                                       (row['id'], issue['issue_id']))
 
     @staticmethod
     def _strip_request_paths(value: Any) -> Any:
@@ -263,6 +313,9 @@ class StateStore:
                 """,
                 (job_id, "queued", now, now, parser_signature, _json(safe_request), len(paths)),
             )
+            if request.get("workspace") is True:
+                from .workspace_session import write_workspace
+                write_workspace(connection, paths, request.get("remember_sources") is True, job_id)
             for path in paths:
                 file_name = Path(path).name
                 connection.execute(
@@ -316,8 +369,9 @@ class StateStore:
         total: int,
         issues: list[dict[str, Any]],
         connection: sqlite3.Connection | None = None,
+        completed: bool = True,
     ) -> None:
-        """Atomically persist a completed result and its review issues."""
+        """Persist result/issues together, optionally awaiting final review reuse."""
 
         if connection is not None:
             self._save_job_result_on(
@@ -329,6 +383,7 @@ class StateStore:
                 current=current,
                 total=total,
                 issues=issues,
+                completed=completed,
             )
             return
         with self.connect() as own:
@@ -341,6 +396,7 @@ class StateStore:
                 current=current,
                 total=total,
                 issues=issues,
+                completed=completed,
             )
 
     def _save_job_result_on(
@@ -354,11 +410,12 @@ class StateStore:
         current: int,
         total: int,
         issues: list[dict[str, Any]],
+        completed: bool,
     ) -> None:
         cursor = connection.execute(
             """
             UPDATE jobs
-               SET status='completed',
+               SET status=?,
                    result_json=?,
                    error=?,
                    quality_state=?,
@@ -368,6 +425,7 @@ class StateStore:
              WHERE id=?
             """,
             (
+                "completed" if completed else "running",
                 result_json,
                 error,
                 quality_state,
@@ -381,17 +439,20 @@ class StateStore:
             raise ValueError("未找到要保存结果的任务。")
         self._replace_issues(connection, job_id, issues)
 
-    def update_file(self, job_id: str, source_path: str, **fields: Any) -> None:
+    def update_file(self, job_id: str, source_path: str, *, connection: sqlite3.Connection | None = None,
+                    **fields: Any) -> None:
         allowed = {"kind", "source_hash", "status", "stage", "message"}
         values = {key: value for key, value in fields.items() if key in allowed}
         if not values:
             return
         assignments = ", ".join(f"{key}=?" for key in values)
-        with self.connect() as connection:
-            connection.execute(
-                f"UPDATE job_files SET {assignments} WHERE job_id=? AND source_path=?",
-                (*values.values(), job_id, source_path),
-            )
+        statement = f"UPDATE job_files SET {assignments} WHERE job_id=? AND source_path=?"
+        parameters = (*values.values(), job_id, source_path)
+        if connection is not None:
+            connection.execute(statement, parameters)
+        else:
+            with self.connect() as own:
+                own.execute(statement, parameters)
 
     def clear_job_source_paths(self, job_id: str) -> None:
         """Remove persisted source paths after a completed job is materialized."""
@@ -401,6 +462,9 @@ class StateStore:
                 "UPDATE job_files SET source_path='__cleared__:' || id WHERE job_id=?",
                 (job_id,),
             )
+
+    def bind_session_paths(self, job_id: str, paths: list[str]) -> None:
+        self._session_paths[job_id] = list(paths)
 
     def source_paths_for_job(self, job_id: str) -> list[str]:
         """Return paths only to trusted in-process code that needs local review."""
@@ -427,7 +491,10 @@ class StateStore:
         include_sensitive_paths: bool = False,
     ) -> dict[str, Any] | None:
         with self.connect() as connection:
-            row = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            columns = ("*" if include_result else
+                       "id,status,created_at,updated_at,parser_signature,request_json,NULL AS result_json,"
+                       "error,quality_state,current,total,active_source_id")
+            row = connection.execute(f"SELECT {columns} FROM jobs WHERE id=?", (job_id,)).fetchone()
             if row is None:
                 return None
             payload = dict(row)
@@ -490,6 +557,7 @@ class StateStore:
                 placeholders = ",".join("?" for _ in hashes)
                 connection.execute(f"DELETE FROM corrections WHERE source_hash IN ({placeholders})", hashes)
             connection.execute("DELETE FROM audit_events WHERE job_id=?", (job_id,))
+            connection.execute("DELETE FROM workspace WHERE job_id=?", (job_id,))
             cursor = connection.execute("DELETE FROM jobs WHERE id=?", (job_id,))
         self._session_paths.pop(job_id, None)
         self._checkpoint()
@@ -504,6 +572,7 @@ class StateStore:
         """
 
         with self.connect() as connection:
+            connection.execute("DELETE FROM workspace")
             connection.execute("DELETE FROM corrections")
             connection.execute("DELETE FROM audit_events")
             connection.execute("DELETE FROM jobs")
@@ -522,19 +591,31 @@ class StateStore:
             old_jobs = [
                 str(row["id"])
                 for row in connection.execute(
-                    "SELECT id FROM jobs WHERE updated_at < ?", (cutoff_text,)
+                    """SELECT id FROM jobs WHERE updated_at < ? AND NOT
+                       (status='completed' AND result_json IS NOT NULL AND EXISTS
+                        (SELECT 1 FROM local_batch_history h WHERE h.job_id=jobs.id AND h.keep_result=1))""",
+                    (cutoff_text,)
                 ).fetchall()
             ]
+            expired_workspace = connection.execute("DELETE FROM workspace WHERE updated_at < ?", (cutoff_text,)).rowcount
+            expired_paths = connection.execute(
+                """UPDATE local_batch_history SET selection='[]' WHERE selection<>'[]'
+                   AND paths_updated_at < ?""", (cutoff_text,)).rowcount
             removed_corrections = 0
             if old_jobs:
                 placeholders = ",".join("?" for _ in old_jobs)
                 connection.execute(f"DELETE FROM jobs WHERE id IN ({placeholders})", old_jobs)
                 connection.execute(f"DELETE FROM audit_events WHERE job_id IN ({placeholders})", old_jobs)
-            cursor = connection.execute("DELETE FROM corrections WHERE created_at < ?", (cutoff_text,))
+            cursor = connection.execute("""DELETE FROM corrections WHERE created_at < ? AND NOT EXISTS (
+                SELECT 1 FROM local_batch_history h JOIN jobs j ON j.id=h.job_id
+                JOIN job_files f ON f.job_id=j.id
+                WHERE h.keep_result=1 AND j.status='completed' AND f.source_hash=corrections.source_hash
+                    AND j.parser_signature=corrections.parser_signature
+            )""", (cutoff_text,))
             removed_corrections = int(cursor.rowcount or 0)
         for job_id in old_jobs:
             self._session_paths.pop(job_id, None)
-        if old_jobs or removed_corrections:
+        if old_jobs or removed_corrections or expired_workspace or expired_paths:
             self._checkpoint()
             self._secure_vacuum()
             self._checkpoint()
@@ -618,6 +699,16 @@ class StateStore:
         with self.connect() as own:
             apply(own)
 
+    def review_evidence(self, context_digest: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT job_id,payload_json FROM audit_events
+                   WHERE event='review.evidence'
+                     AND json_extract(payload_json, '$.context_digest')=? ORDER BY id""",
+                (context_digest,),
+            ).fetchall()
+        return [{**_loads(row['payload_json'], {}), 'job_id': row['job_id']} for row in rows]
+
     def add_correction(
         self,
         *,
@@ -674,7 +765,7 @@ class StateStore:
             rows = connection.execute(
                 """
                 SELECT * FROM corrections WHERE source_hash=?
-                ORDER BY created_at,id
+                ORDER BY created_at,rowid
                 """,
                 (source_hash,),
             ).fetchall()

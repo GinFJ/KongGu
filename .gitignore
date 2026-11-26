@@ -37,3 +37,9 @@ env/
 
 *.tmp
 *.bak
+
+# Local credentials and private distribution inputs
+.env
+.env.*
+/private/
+.playwright-cli/

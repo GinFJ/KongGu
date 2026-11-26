@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from pathlib import PurePosixPath, PureWindowsPath
 import shutil
+import stat
 import sys
 import time
 import uuid
@@ -281,45 +282,90 @@ def repair_resources() -> dict[str, Any]:
     }
 
 
-def clear_processing_cache(paths: ResourcePaths | None = None) -> list[str]:
-    """Remove Konggu-generated processing caches.
+def _is_link(info):
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
 
-    ``schedule_core`` falls back to the repository ``cache/`` directory when the
-    KONGGU_* cache variables are missing (development and packaged runs without
-    the environment), so a privacy clear must cover both roots; otherwise real
-    timetable caches survive ``data.clear``.
-    """
 
-    resolved = paths or resolve_resource_paths()
-    roots = [resolved.cache_root, Path(__file__).resolve().parents[1] / "cache"]
-    cleared: list[str] = []
+def _cache_directory(path):
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    return stat.S_ISDIR(info.st_mode) and not _is_link(info)
+
+
+def _processing_cache_folders(paths, include_legacy):
+    roots = [paths.cache_root]
+    if include_legacy:
+        roots.append(Path(__file__).resolve().parents[1] / "cache")
+    seen = set()
     for root in roots:
+        if not _cache_directory(root):
+            continue
         for name in PROCESSING_CACHE_DIRS:
-            try:
-                target = _safe_child(root, name, "cache")
-            except ValueError:
+            folder = root / name
+            if not _cache_directory(folder):
                 continue
-            if target.exists():
-                shutil.rmtree(target)
-                if name not in cleared:
-                    cleared.append(name)
+            resolved = folder.resolve()
+            if resolved.parent == root.resolve() and resolved not in seen:
+                seen.add(resolved)
+                yield resolved
+
+
+def processing_cache_usage(paths: ResourcePaths, *, include_legacy: bool) -> dict[str, int]:
+    """Measure the same files the current workspace can clear, excluding links and models."""
+    total = count = 0
+    for folder in _processing_cache_folders(paths, include_legacy):
+        pending = [folder]
+        while pending:
+            with os.scandir(pending.pop()) as entries:
+                for entry in entries:
+                    try:
+                        info = entry.stat(follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    if _is_link(info):
+                        continue
+                    if stat.S_ISDIR(info.st_mode):
+                        pending.append(entry.path)
+                    elif stat.S_ISREG(info.st_mode):
+                        total += info.st_size
+                        count += 1
+    return {"cache_bytes": total, "cache_files": count}
+
+
+def clear_processing_cache(paths: ResourcePaths | None = None, *, include_legacy: bool = True) -> list[str]:
+    """Clear owned OCR artefacts. Account and custom data roots are isolated by the caller."""
+    cleared = []
+    for folder in _processing_cache_folders(paths or resolve_resource_paths(), include_legacy):
+        shutil.rmtree(folder)
+        if folder.name not in cleared:
+            cleared.append(folder.name)
     return cleared
 
 
 def _purge_expired_processing_cache(paths: ResourcePaths, retention_days: int = 30) -> None:
     cutoff = datetime.now(UTC).timestamp() - timedelta(days=max(1, retention_days)).total_seconds()
-    for name in PROCESSING_CACHE_DIRS:
-        root = _safe_child(paths.cache_root, name, "cache")
-        if not root.exists():
-            continue
-        for item in sorted(root.rglob("*"), key=lambda path: len(path.parts), reverse=True):
+    for root in _processing_cache_folders(paths, include_legacy=False):
+        directories = []
+        for directory, children, files in os.walk(root):
+            folder = Path(directory)
+            children[:] = [name for name in children if _cache_directory(folder / name)]
+            if folder != root:
+                directories.append(folder)
+            for name in files:
+                item = folder / name
+                try:
+                    info = item.lstat()
+                    if stat.S_ISREG(info.st_mode) and not _is_link(info) and info.st_mtime < cutoff:
+                        item.unlink()
+                except OSError:
+                    continue
+        for folder in reversed(directories):
             try:
-                if item.is_file() and item.stat().st_mtime < cutoff:
-                    item.unlink()
-                elif item.is_dir() and not any(item.iterdir()):
-                    item.rmdir()
+                folder.rmdir()
             except OSError:
-                continue
+                pass  # Still contains current entries, or has already gone.
 
 
 def load_manifest(bundled_root: Path | None = None) -> dict[str, Any]:

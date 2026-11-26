@@ -12,6 +12,7 @@ from app.services.desktop_workflow import (
 )
 from app.services.state_store import StateStore
 from app.services.workflow_persistence import snapshot_workflow
+from tests.course_verification_helpers import verify_test_workflow
 
 
 class FakeDesktopCore:
@@ -105,6 +106,7 @@ def test_desktop_workflow_parse_serializes_and_exports(tmp_path: Path):
     result = parse_pdf_paths(schedule_core=core, paths=[str(pdf)])
     payload = serialize_workflow_result(result, "result.pkl")
     snapshot = snapshot_workflow(result)
+    result = verify_test_workflow(result, core, tmp_path)
     exported = export_excel(
         schedule_core=core,
         workflow_result=result,
@@ -149,6 +151,7 @@ def test_desktop_workflow_export_can_override_week_count(tmp_path: Path):
     pdf.write_bytes(_minimal_pdf_bytes())
     core = FakeDesktopCore()
     result = parse_pdf_paths(schedule_core=core, paths=[str(pdf)])
+    result = verify_test_workflow(result, core, tmp_path)
 
     export_excel(
         schedule_core=core,
@@ -269,9 +272,10 @@ def test_desktop_workflow_blocks_invalid_pdf_before_generation(tmp_path: Path):
 
 
 def test_desktop_workflow_rejects_too_many_input_files(tmp_path: Path):
+    from app.services.desktop_workflow import MAX_INPUT_FILES
     paths = []
     content = _minimal_pdf_bytes()
-    for index in range(33):
+    for index in range(MAX_INPUT_FILES + 1):
         path = tmp_path / f"成员{index}-中方课表.pdf"
         path.write_bytes(content)
         paths.append(str(path))
@@ -279,7 +283,7 @@ def test_desktop_workflow_rejects_too_many_input_files(tmp_path: Path):
     try:
         parse_pdf_paths(schedule_core=FakeDesktopCore(), paths=paths)
     except ValueError as exc:
-        assert "最多处理 32 份" in str(exc)
+        assert f"最多处理 {MAX_INPUT_FILES} 份" in str(exc)
     else:
         raise AssertionError("The batch file limit must be enforced.")
 

@@ -26,6 +26,19 @@ def _parsed_date_range(blocks: Iterable[dict[str, Any]]) -> str:
     return f"按当前设置解析的越界课程日期为 {span}。"
 
 
+def schedule_range_blocks(blocks, calendar_weeks, earliest_calendar_date):
+    known_weeks = set(calendar_weeks)
+    outside, early = [], []
+    for block in blocks:
+        week = block.get("week")
+        if known_weeks and week is not None and int(week) not in known_weeks:
+            outside.append(block)
+        day = str(block.get("date") or "")
+        if earliest_calendar_date and day and day < earliest_calendar_date:
+            early.append(block)
+    return {"WEEK_OUT_OF_SEMESTER": outside, "PRE_TERM_DATE": early}
+
+
 def schedule_range_violations(
     *,
     blocks: Iterable[dict[str, Any]],
@@ -38,14 +51,11 @@ def schedule_range_violations(
     pass the gate while the same data fails it after a correction.
     """
 
-    block_list = list(blocks)
     known_weeks = {int(week) for week in calendar_weeks}
+    affected = schedule_range_blocks(blocks, known_weeks, earliest_calendar_date)
     problems: list[tuple[str, str]] = []
     if known_weeks:
-        outside = [
-            block for block in block_list
-            if block.get("week") is not None and int(block["week"]) not in known_weeks
-        ]
+        outside = affected["WEEK_OUT_OF_SEMESTER"]
         if outside:
             weeks = sorted({int(block["week"]) for block in outside})
             start = f"从 {earliest_calendar_date} 开始，" if earliest_calendar_date else ""
@@ -58,11 +68,7 @@ def schedule_range_violations(
                 )
             )
     if earliest_calendar_date:
-        early = [
-            block
-            for block in block_list
-            if str(block.get("date") or "") and str(block["date"]) < earliest_calendar_date
-        ]
+        early = affected["PRE_TERM_DATE"]
         if early:
             problems.append(
                 (
@@ -98,7 +104,7 @@ def evaluate_quality(
                     blocks_export=True,
                 )
             )
-        elif record.block_count == 0:
+        elif record.block_count == 0 and record.status != "人工核对无课程":
             issues.append(
                 ParseIssue(
                     code="NO_COURSE_BLOCKS",
@@ -112,6 +118,36 @@ def evaluate_quality(
             )
 
     for member in member_rows:
+        completed_sources = set()
+        for block in member.blocks:
+            if (block.provenance.get('identity_completion')
+                    and block.source_hash not in completed_sources):
+                completed_sources.add(block.source_hash)
+                issues.append(ParseIssue(
+                    code='MEMBER_IDENTITY_COMPLETED',
+                    message='已从本批次唯一同名、身份信息一致的中英课表配对中补齐缺少的部门或职务。',
+                    severity='info', source_hash=block.source_hash,
+                    source_file=block.source_file, blocks_export=False,
+                ))
+        incomplete_cells = set()
+        for block in member.blocks:
+            if not (block.provenance.get('cell_text_incomplete')
+                    and str(block.course or '').startswith('待核对占用（')):
+                continue
+            cell_key = (block.source_hash, block.page, block.bbox, block.date)
+            if cell_key in incomplete_cells:
+                continue
+            incomplete_cells.add(cell_key)
+            periods = '、'.join(map(str, block.provenance.get('periods', block.periods)))
+            page_label = f'第 {block.page + 1} 页，' if block.page is not None else ''
+            issues.append(ParseIssue(
+                code='ENGLISH_CELL_TEXT_INCOMPLETE',
+                message=f'{page_label}{block.date or block.weekday} 第 {periods} 节课程格有内容，但文字未完整识别；预览已保留占用。',
+                severity='warning', field='course', source_hash=block.source_hash,
+                source_file=block.source_file, block_id=block.block_id,
+                suggestion='定位原页高亮格，核对课程占用与跨页部分；可修正课程名称，或确认该格确实有课。',
+                blocks_export=True,
+            ))
         if enforce_identity and member.has_chinese != member.has_english:
             missing = "英方" if member.has_chinese else "中方"
             issues.append(

@@ -105,3 +105,36 @@ def test_sidecar_serve_emits_utf8_when_windows_stdio_uses_ansi_encoding(monkeypa
     response = json.loads(decoded)
     assert response["ok"] is False
     assert response["error"] == "OCR 配置异常：模型启动失败"
+
+
+def test_serve_keeps_protocol_output_while_ocr_redirects_global_stdout(monkeypatch):
+    from contextlib import redirect_stdout
+
+    output, ocr_output = io.StringIO(), io.StringIO()
+    monkeypatch.setattr(sidecar.sys, "stdout", output)
+    monkeypatch.setattr(sidecar.sys, "stdin", io.StringIO('{"id":"poll-1","command":"job.get"}\n'))
+    monkeypatch.setattr(sidecar, "configure_offline_environment", lambda: object())
+    monkeypatch.setattr(sidecar, "_acquire_worker_slot", lambda paths: True)
+    monkeypatch.setattr(sidecar, "load_calendar_settings", lambda paths: {})
+    monkeypatch.setattr(sidecar, "apply_calendar_settings", lambda settings: None)
+    monkeypatch.setattr(sidecar, "load_schedule_core", lambda: object())
+    monkeypatch.setattr(sidecar, "StateStore", types.SimpleNamespace(from_resource_paths=lambda paths: object()))
+    monkeypatch.setattr(sidecar, "JobCoordinator", lambda *args, **kwargs: types.SimpleNamespace(event_sink=kwargs["event_sink"]))
+    redirection = redirect_stdout(ocr_output)
+
+    def during_ocr(request, coordinator):
+        # Paddle redirects this process-global stream in the parsing thread
+        # while the main thread serves job.get.
+        redirection.__enter__()
+        coordinator.event_sink({"type":"event", "event":"job.progress"})
+        return {"ok":True, "job":{"status":"running"}}
+
+    monkeypatch.setattr(sidecar, "dispatch", during_ocr)
+    try:
+        assert sidecar.serve() == 0
+    finally:
+        redirection.__exit__(None, None, None)
+    messages = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert [message["type"] for message in messages] == ["event", "response"]
+    assert messages[1]["id"] == "poll-1"
+    assert not ocr_output.getvalue()

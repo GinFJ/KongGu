@@ -93,12 +93,15 @@ def test_complete_pair_parses_accepted_and_exports_workbook(tmp_path: Path, monk
     payload = serialize_workflow_result(result, "e2e-accepted")
 
     assert result.process_result.quality_state == "accepted"
-    assert payload["can_export"] is True
+    assert payload["can_export"] is False and payload["verification"]["pending"] > 0
     assert result.process_result.issues == []
     assert len(result.generation_result.blocks) == 10
     assert {record.text_source for record in result.process_result.file_records} == {"内嵌文本"}
 
     target = tmp_path / "空课结果.xlsx"
+    from tests.course_verification_helpers import verify_test_workflow
+    result = verify_test_workflow(result, schedule_core, tmp_path)
+    assert serialize_workflow_result(result, "e2e-accepted")["can_export"] is True
     exported = export_excel(
         schedule_core=schedule_core,
         workflow_result=result,
@@ -176,6 +179,8 @@ def test_reviewed_conflict_can_be_confirmed_then_exported(tmp_path: Path, monkey
     payload = confirm_issue(store, job_id, conflict.issue_id)
     assert payload["quality_state"] == "accepted"
 
+    from tests.course_verification_helpers import verify_test_job
+    verify_test_job(store, job_id)
     loaded = load_workflow_result(job_id, store, schedule_core)
     exported = export_excel(
         schedule_core=schedule_core,

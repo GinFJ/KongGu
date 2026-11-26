@@ -1,0 +1,100 @@
+.rangeReview {
+  display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,30%);gap:14px;
+  padding:14px;box-sizing:border-box;height:100%;min-height:0;overflow:auto;
+  background:#f0f3ed;color:#20392d;font:14px/1.45 "Microsoft YaHei UI","Microsoft YaHei",sans-serif;
+}
+#panel-review:has(.rangeReview) {container-type:inline-size}
+.shell:has(#panel-review.is-active .rangeReview) .activityLog {display:none}
+.rangeReview *, .rangeReview *::before, .rangeReview *::after {box-sizing:border-box}
+.rangeReview button:focus-visible,.rangeReview select:focus-visible,.rangeReview input:focus-visible {
+  outline:2px solid #a86912;outline-offset:2px;
+}
+.rrDocument {display:grid;grid-template-rows:auto auto minmax(160px,1fr) auto;min-width:0;min-height:0}
+.rrTop,.rrNav,.rrFoot,.rrPanel header,.rrWeeks,.rrSources {display:flex;align-items:center;justify-content:space-between;gap:8px}
+.rrTop {padding:0 2px 12px;flex-wrap:wrap}
+.rrTop small,.rrPanel header span,.rrTop>span,.rrFoot>span {font-size:12px;color:#506759}
+.rrTop select {display:block;max-width:100%;font-size:18px;font-weight:650;color:#173d2e;background:transparent}
+.rrNav {padding:9px;background:white;border:1px solid #cbd7cd;border-radius:9px 9px 0 0;flex-wrap:wrap}
+.rrSources {justify-content:flex-start;flex-wrap:wrap}
+.rrSources button,.rrWeeks button,.rrFoot button,.rrSecondary,.rrPick button,#rrIssues button,#rrLatest {
+  color:#234b38;background:#fff;border:1px solid #bacabc;border-radius:5px;min-height:30px;padding:4px 9px;
+  white-space:normal;font-size:12px;
+}
+.rrSources button[aria-pressed=true] {border-color:#7d9a86;background:#e5eee4;font-weight:650}
+.rrWeeks span {font-size:12px;font-variant-numeric:tabular-nums}
+.rrFoot {padding:8px 10px;background:white;border:1px solid #cbd7cd;border-radius:0 0 9px 9px}
+.rrOriginalArea {min-width:0;min-height:0;position:relative}
+#rrReader {min-width:0;min-height:0;height:100%}
+#rrDocError {position:absolute;inset:46px 8px auto;padding:12px;background:#fff6e6;color:#694a22;border:1px solid #caa967;border-radius:6px}
+#rrDocError button {margin:6px 6px 0 0}
+#rrReader .reviewSplit {display:block;height:100%;overflow:auto}
+#rrReader .pdfDesk {height:100%;border:1px solid #cbd7cd;border-block:0;display:grid;grid-template-rows:auto minmax(0,1fr)}
+#rrReader .reviewToolbar {padding:5px 9px;gap:8px;background:#f8faf6;border-bottom:1px solid #d2dbd0;color:#344b3b;flex-wrap:wrap}
+#rrReader .reviewToolbar .reviewFileControl {display:none}
+#rrReader .reviewToolbar .markToggle,#rrReader .reviewToolbar span,#rrReader .reviewToolbar button {color:#34533e;min-width:0}
+#rrReader .reviewToolbar button {background:#fff;border:1px solid #cdd8ce;padding:2px 7px;font-size:12px}
+#rrReader .pdfViewport {background:#dfe6dd;padding:12px;scrollbar-gutter:stable}
+#rrReader .pdfStage {box-shadow:0 1px 6px #344b3324}
+#rrReader .pdfScrollHint {display:none}
+#rrReader .reviewInspector {display:none}
+#rrReader.rrShowAdvanced .reviewInspector {display:block;max-height:none}
+#rrReader .verifyCard {display:none}
+#rrReader.rrShowAdvanced .verifyCard:has(#relinkSource:not([hidden])),#rrReader.rrShowAdvanced .verifyCard:has(#retrySource:not([hidden])) {display:block}
+#rrReader .verifyCard>*:not(#retrySource):not(#relinkSource):not(#verifyFeedback) {display:none!important}
+#rrReader .pdfOverlay {pointer-events:auto}
+#rrReader .rrMark {position:absolute;min-height:0;min-width:0;padding:0;margin:0;border:0;background:transparent;border-radius:2px}
+#rrReader .rrMark[aria-pressed=true] {background:rgb(39 153 87 / 22%);border:1px solid rgb(24 112 64 / 78%)}
+#rrReader .rrMark.mixed {border-style:dashed;background:repeating-linear-gradient(135deg,#27995730 0 5px,#2799570c 5px 10px)}
+#rrReader .rrMark:hover,#rrReader .rrMark:focus-visible {outline:2px solid #17694e;outline-offset:-2px}
+#rrReader .rrMark.located {outline:3px solid #b57c1f;outline-offset:-2px}
+.rrRail {display:grid;grid-template-rows:minmax(0,1fr) clamp(190px,38%,295px);gap:10px;min-width:0;min-height:0;overflow:hidden}
+.rrPanel {background:#fff;border:1px solid #c7d5c9;border-radius:9px;padding:12px;flex:none;min-width:0}
+.rrPanel h3 {margin:0;font:650 15px/1.4 "Microsoft YaHei UI",sans-serif;color:#173d2e}
+.rrDecisions {display:flex;flex-direction:column;min-height:0}
+.rrDecisionTop {flex:none}
+.rrIssuesScroll {flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+#rrProgress {display:block;width:100%;height:5px;margin:8px 0 10px;accent-color:#17694e}
+#rrConfirm {width:100%;min-height:37px;background:#216449;color:#fff;border:0;border-radius:6px}
+#rrMessage:empty,#rrMissing:empty {display:none}
+#rrMessage,#rrPickHint {margin:6px 0;color:#745521;font-size:12px}
+.rrIssuesHead {border-top:1px solid #d8e2d7;margin:10px 0 4px;padding-top:9px}
+#rrIssues {min-height:0}
+#rrIssues article {border-bottom:1px solid #e5ece4;margin-bottom:6px;padding-bottom:5px}
+#rrIssues article strong {color:#77511c;font-size:13px} #rrIssues article small,#rrLog small {display:block;color:#536a59;overflow-wrap:anywhere}
+#rrIssues article button {margin:3px 5px 0 0} #rrIssues>p {margin:5px 0;font-size:12px;color:#637166}
+#rrReport {margin:4px 0}
+#rrReport[aria-pressed=true] {background:#fff2d6;border-color:#ac7521;color:#654616}
+#rrFlags {min-height:0}
+#rrFlags article {margin:4px 0 6px;padding:5px 0;border-top:1px solid #e3e6df}
+#rrFlags strong {font-size:13px;color:#77511c}
+#rrFlags small {display:block;color:#526457}
+#rrFlags button {margin:3px 4px 0 0;padding:4px 6px;min-height:28px;font-size:12px}
+#rrReader .rrMark.flagged {border:2px dashed #a76d10}
+#rrUnlocated {font-size:12px;margin:5px 0;color:#715122}
+#rrUnlocated ul {list-style:none;margin:4px 0;padding:0;max-height:100px;overflow:auto}
+#rrUnlocated button,#rrReload {margin:2px 0;font-size:12px}
+.rrAck,.rrManual {display:flex;align-items:center;gap:4px;font-size:12px;margin:5px 0}
+.rangeReview .rrAck input,.rangeReview .rrManual input {width:15px;min-width:15px;height:15px;min-height:15px;margin:0 3px 0 0;padding:0;flex:0 0 15px}
+.rrGaps {font-size:12px;color:#77511c}.rrGaps p {max-height:64px;overflow:auto}
+.rrPick summary {cursor:pointer;color:#23513a;font-size:12px}.rrPick {margin:8px 0}
+.rrFields {display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:6px}
+.rrFields label {display:grid;gap:2px;font-size:12px}
+.rrFields select,.rrFields input {width:100%;min-width:0;background:white;color:#1c3325}
+#rrChoices button {font-size:12px;margin:2px}
+.rrJournal {min-height:0;display:flex;flex-direction:column}
+#rrLog {flex:1;min-height:92px;overflow:auto;overscroll-behavior:contain;list-style:none;padding:2px 3px 0 10px;margin:7px 0 0;border-top:1px solid #d8e2d7}
+#rrLog li {border-left:1px solid #d2ded3;padding:4px 0 6px 10px;position:relative;font-size:12px}
+#rrLog li::before {content:"";width:6px;height:6px;border-radius:100%;background:#729981;position:absolute;left:-3.5px;top:9px}
+#rrLog time {float:right;color:#536b59;font-variant-numeric:tabular-nums} #rrLog small {clear:both;font-size:11.5px}
+@container (max-width:770px) {
+  .rangeReview {display:flex;flex-direction:column}
+  .rrDocument {height:65vh;flex:none} .rrRail {display:flex;flex-direction:column;overflow:visible;min-height:auto}
+  .rrIssuesScroll {overflow:visible}
+  .rrJournal {height:210px;flex:none}
+}
+@media(max-width:800px) {
+  .rangeReview {display:flex;flex-direction:column;padding:8px}
+  .rrDocument {height:65vh;min-height:340px;flex:none}.rrRail {display:flex;flex-direction:column;overflow:visible;min-height:auto}
+  .rrIssuesScroll {overflow:visible}
+  .rrJournal {height:210px;flex:none}
+}

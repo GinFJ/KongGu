@@ -1,8 +1,38 @@
 # tests 目录说明
 
+## 0.14.0 本机历史与缓存
+
+`test_local_history.py` 覆盖跨批次恢复、旧库升级、学期匹配及原件位置过期。`test_local_storage_usage.py` 核对识别缓存大小、文件数和清理范围。`test_local_history_restart.py` 在独立桌面服务进程之间重开两份合成课表，验证清缓存、保存核验、Excel 导出和清除全部记录。可通过 `KONGGU_CLOUD_TEST_WORKER` 指定待验收的 Windows worker。
+
+## 0.13.0 日期批次核对
+
+日期选择和模板文件名见 `batchDates.test.mjs`。服务端对所选日期的逐人确认、单节修改、多来源重叠、并发修订及正式导出条件使用 `test_date_review.py` 验证。跨周、跨月和周末的工作簿内容见 `test_date_range_export.py`，日期草稿和账号备份分别由工作区恢复用例和云批次用例覆盖。[本版验收](../docs/交付验收_0.13.0_v1.0.md)
+
+## 0.12.0 制表人账号
+
+云文档回归覆盖跨数据目录恢复、学期与核验状态。独立服务端测试包含账号隔离和并发版本冲突。桌面到服务端的联合验证记录见[云端批次](../docs/云端批次_0.12.0.md)。
+
+## 0.11.0 续做与原件关联
+
+`test_workspace_session.py` 覆盖草稿、旧版任务恢复、脱机原件的分次关联、哈希校验、处理被中断以及清理期限。`test_course_verification.py` 检查简短核验回执、修订号和完整状态回退。`test_frontend_semester_recovery.py` 和 `test_worker_startup_recovery.py` 覆盖重置及重启入口。五人逐节对照、界面回归和耗时见[本版验收](../docs/交付验收_0.11.0_v1.0.md)。
+
+## 0.10.0 逐项核验与部门导出
+
+在支持直接运行 TypeScript 的 Node.js 环境执行 `node --test tests/reviewRisks.test.mjs tests/departmentView.test.mjs`，检查原件配对、异常分类及按部门显示名单。`test_department_availability.py` 和 `test_department_exports.py` 检查同名成员的归属、周次覆盖、完整工作簿和青禾周表。
+
+`test_course_verification.py` 检查原件与核验凭据。打包流程的 `tools/verify_worker_isolation.py` 使用合成原件检查核验前拒绝导出，逐项确认后再导出 Excel，并另外检查图片解析的质量阻断。
+
+Windows 安装态兼容性自动检查使用 `tools/windows_compatibility/windows-selfcheck.ps1`，在目标电脑的 PowerShell 5.1 直接驱动冻结 worker，不依赖 Python。只使用工具内合成 PDF，不发送 API 请求。它与本目录单元测试分别记录，详见[0.9.0 Windows 验收补充](../docs/Windows跨电脑验收_0.9.0.md)。
+
+## 0.9.0 AI 原页核对
+
+`tests/test_ai_review.py` 覆盖发送同意、遮盖像素、单次预览、原件变化、结构/日期校验、疑似漏课补录重算、导出门禁、缓存、本机额度、失败不改课表、跨任务与旧界面防护、清理和重导入。真实 API 验证只使用不含个人信息的合成页；不把它称为真实课表准确率。最终结果见[验收](../docs/交付验收_0.9.0_v1.0.md)。
+
+2026-11-16：`pytest tests -q` 最终 739 passed，其中 AI 专项 17 项；Rust 3 项、TypeScript、Cargo 检查通过。请明确指定正式 `tests` 目录：仓库忽略的 `tmp` 中存在历史备份测试，裸 `pytest` 会误收集它们，不能作为本版套件结果。
+
 本目录保存单元测试、集成测试和脱敏回归用例。真实课表、OCR、真值与审计明细保存在版本库外，仓库内测试使用合成材料或脱敏记录。
 
-截至 2026-11-15，源码标识为 0.7.0（在研），解析签名 69。最近完整验收记录为 [0.6.9](../docs/交付验收_0.6.9_v1.0.md)，其 671 项 Python 与 3 项 Rust 结果不代表后续工作区已通过。界面相关 65 项回归、TypeScript、生产构建及两尺寸浏览器检查通过，范围和限制见[界面验证](../docs/design/ui-0.7.0/README.md)；春季日期、告示及表尾回归另行更新，不把局部检查当作整版验收。
+截至 2026-11-15，本地验证版 0.8.0 / 签名 71：Python 722、Rust 3、TypeScript、Vite、Cargo、42 项包检查及本机安装目录新增操作流程通过，见[验收记录](../docs/交付验收_0.8.0_v1.0.md)。
 
 0.6.6 的课程格完整性、坏日期恢复、日期覆盖及导出范围回归分别见 `test_english_cell_completeness.py`、`test_layout_invariance.py`、`test_timetable_coverage.py`。对应历史输入及交付状态见[0.6.6 交付记录](../docs/交付验收_0.6.6_v1.0.md)；下方 0.6.0 数字也属于历史记录。
 
@@ -111,3 +141,8 @@ PDF 原文预览的离线映射和字体文件完整性见 `test_pdf_preview_res
 - 对交付的影响。
 
 未运行的验证必须标记为“未验证”，不得默认视为通过。
+
+0.7.1 / 签名 70 增加 `test_identity_completion.py`、`test_english_split_course.py`、`test_ocr_location_refinement.py`，并扩展告示复识别反例。覆盖配对歧义/冲突、非相邻或错列分页、浅色边框、两次读取分歧、漏字高置信告示及校外地点不得跨单元格推定。该版本完整单测 706 项通过；真实原件与安装结果另见 [0.7.1 验收](../docs/交付验收_0.7.1_v1.0.md)。
+
+
+0.8.0 新增 `test_review_operations.py`：多节课程逐节导出、补录去重、删除最后课程保留成员、误排除恢复、部分区域撤销、同源重导、身份/区域变化拒绝复用、旧界面版本拒绝、失败事务回滚与坏案例门禁。真实 PDF 和界面回归证据保存在仓库外，受控故障注入与自然识别结果分开报告。

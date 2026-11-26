@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.identity import identity_from_filename
 from core.legacy_adapter import pdf_source_from_path
 from core.models import PdfSource, ScheduleSourceType
 
@@ -91,18 +92,9 @@ def add_pdf_sources(
         hash_key = (source.content_hash, source.kind)
         if source.content_hash and hash_key in existing_hashes:
             existing_source = existing_hashes[hash_key]
-            existing_name = _extract_member_name(schedule_core, existing_source.file_name)
-            new_name = _extract_member_name(schedule_core, source.file_name)
-            if existing_name and new_name and existing_name != new_name:
-                result.errors.append(
-                    (
-                        pdf_path,
-                        ValueError(
-                            f"同一份{source.kind}课表内容重复，但文件名成员不一致："
-                            f"{existing_name} / {new_name}。请确认是否传错课表。"
-                        ),
-                    )
-                )
+            conflict = duplicate_identity_error(existing_source.file_name, source.file_name, source.kind)
+            if conflict:
+                result.errors.append((pdf_path, ValueError(conflict)))
             else:
                 result.skipped.append(str(pdf_path))
             continue
@@ -122,11 +114,14 @@ def _looks_like_placeholder_file_name(file_name: str) -> bool:
     return "路人甲" in file_name
 
 
-def _extract_member_name(schedule_core: Any, file_name: str) -> str:
-    extractor = getattr(schedule_core, "_extract_name_from_filename", None)
-    if callable(extractor):
-        return str(extractor(file_name) or "").strip()
-    return Path(file_name).stem
+def duplicate_identity_error(first_name: str, second_name: str, kind: str) -> str:
+    first = identity_from_filename(first_name)
+    second = identity_from_filename(second_name)
+    if first.name and first.member_key == second.member_key:
+        return ""
+    return (f"两份{kind}课表内容完全相同，但文件名成员不一致或身份不完整，无法区分原件归属。"
+            f"「{first_name}」对应{first.display_name or '未知成员'}，"
+            f"「{second_name}」对应{second.display_name or '未知成员'}。请核实两份原件后重新导入。")
 
 
 def load_reference_library_summary(reference_library_path: str) -> ReferenceLibrarySummary:

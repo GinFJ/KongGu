@@ -3,15 +3,9 @@ import zhCnLocale from "@fullcalendar/core/locales/zh-cn";
 import interactionPlugin, { EventResizeDoneArg } from "@fullcalendar/interaction";
 import timeGridPlugin from "@fullcalendar/timegrid";
 import type { CalendarSettings, CourseRow } from "./types";
+import { courseEvents, groupedCourseEvents, periodTimes, type CourseSlot } from "./calendarCourseEvents";
 
 const weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
-const periodTimes: Record<number, [string, string]> = {
-  1: ["08:10", "08:55"], 2: ["09:00", "09:45"], 3: ["10:15", "11:00"],
-  4: ["11:05", "11:50"], 12: ["12:40", "13:25"], 13: ["13:30", "14:15"],
-  5: ["14:30", "15:15"], 6: ["15:20", "16:05"], 7: ["16:25", "17:10"],
-  8: ["17:15", "18:00"], 9: ["19:10", "19:55"], 10: ["20:00", "20:45"],
-  11: ["20:50", "21:35"]
-};
 
 export function mountCalendar(
   element: HTMLElement,
@@ -19,11 +13,32 @@ export function mountCalendar(
   settings: CalendarSettings,
   onEdit: (block: CourseRow, patch: Partial<CourseRow>) => Promise<void>,
   initialDate?: Date,
-  onError?: (message: string) => void
+  onError?: (message: string) => void,
+  onSlot?: (slot: CourseSlot) => void,
+  scope: { member: string } = { member: "" }
 ) {
+  const members = new Map(courses.map(course => [course.member_key || course.name, course]));
+  if (!members.has(scope.member)) scope.member = "";
+  const filter = document.createElement("label");
+  filter.className = "calendarFilter";
+  filter.append("成员");
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", "按成员查看课程");
+  select.add(new Option("全部成员 · 按节汇总", ""));
+  for (const [key, course] of members) {
+    select.add(new Option([course.name, course.department, course.role].filter(Boolean).join(" · "), key));
+  }
+  select.value = scope.member;
+  filter.append(select);
+  filter.hidden = members.size < 2;
+  const canvas = document.createElement("div");
+  canvas.className = "calendarCanvas";
+  canvas.classList.toggle("groupedWeek", members.size > 1 && !scope.member);
+  element.replaceChildren(filter, canvas);
+  const courseDays = courses.map(course => ({course, day: dateFor(settings.semester_start_date, course.week, course.weekday)}));
   const firstWeek = courses[0]?.week || 1;
   const firstDate = dateFor(settings.semester_start_date, firstWeek, "周一");
-  const calendar = new Calendar(element, {
+  const calendar = new Calendar(canvas, {
     plugins: [timeGridPlugin, interactionPlugin],
     initialView: "timeGridWeek",
     initialDate: initialDate ?? firstDate,
@@ -33,30 +48,45 @@ export function mountCalendar(
     allDaySlot: false,
     editable: true,
     eventDurationEditable: true,
-    slotMinTime: "07:45:00",
+    slotMinTime: "08:00:00",
+    slotLabelInterval: "01:00:00",
+    slotLabelFormat: {hour: "2-digit", minute: "2-digit", hour12: false},
     slotMaxTime: "22:00:00",
-    slotDuration: "00:15:00",
+    slotDuration: canvas.classList.contains("groupedWeek") ? "00:30:00" : "00:15:00",
     snapDuration: "00:05:00",
     height: "100%",
     nowIndicator: false,
     headerToolbar: { left: "prev,next today", center: "title", right: "" },
-    events: courses.flatMap((course) => {
-      const periods = course.periods?.length ? course.periods : course.period ? [course.period] : [];
-      if (!periods.length) return [];
-      const first = periodTimes[periods[0]];
-      const last = periodTimes[periods[periods.length - 1]];
-      if (!first || !last) return [];
-      const day = dateFor(settings.semester_start_date, course.week, course.weekday);
-      return [{
-        id: course.block_id,
-        title: `${course.course || "课程"} · ${course.name}`,
-        start: `${day}T${first[0]}:00`,
-        end: `${day}T${last[1]}:00`,
-        extendedProps: { block: course }
-      }];
-    }),
+    events: (range, success) => {
+      const from = localDate(range.start), to = localDate(range.end);
+      const visible = courseDays.filter(({course, day}) => day >= from && day < to &&
+        (!scope.member || (course.member_key || course.name) === scope.member)).map(row => row.course);
+      const dayFor = (course: CourseRow) => dateFor(settings.semester_start_date, course.week, course.weekday);
+      success(members.size > 1 && !scope.member ? groupedCourseEvents(visible, dayFor) : courseEvents(visible, dayFor));
+    },
+    eventClick: ({event}) => { if (event.extendedProps.slot) onSlot?.(event.extendedProps.slot); },
+    eventDidMount: ({ el, event }) => {
+      const slot: CourseSlot | undefined = event.extendedProps.slot;
+      if (slot) {
+        el.tabIndex = 0;
+        el.setAttribute("role", "button");
+        el.setAttribute("aria-label", `${slot.day} 第 ${slot.period} 节，${event.title}，查看课程名单`);
+        el.addEventListener("keydown", e => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSlot?.(slot); }
+        });
+      }
+      el.title = slot ? `第 ${slot.period} 节 · ${event.title}` : event.title + (event.extendedProps.split ? "；不连续课程请在“原文核对”修改。" : "");
+    },
     eventDrop: (arg) => void handleChange(arg, settings, onEdit, onError),
     eventResize: (arg) => void handleChange(arg, settings, onEdit, onError)
+  });
+  select.addEventListener("change", () => {
+    scope.member = select.value;
+    const grouped = members.size > 1 && !scope.member;
+    canvas.classList.toggle("groupedWeek", grouped);
+    calendar.setOption("slotDuration", grouped ? "00:30:00" : "00:15:00");
+    calendar.refetchEvents();
+    calendar.updateSize();
   });
   calendar.render();
   return calendar;

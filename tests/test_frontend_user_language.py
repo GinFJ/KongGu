@@ -11,9 +11,9 @@ def _source(relative_path: str) -> str:
 def test_main_flow_uses_user_task_language() -> None:
     main = _source("src/main.ts")
 
-    assert ">生成空课表<" in main
+    assert ">识别并核对<" in main
     assert ">导出空课表<" in main
-    assert 'tabButton("issues", "待处理"' in main
+    assert 'tabButton("issues", "批次总览"' in main
     assert 'tabButton("review", "原文核对"' in main
     for internal_copy in (
         "排班复核工作台",
@@ -53,13 +53,16 @@ def test_blocking_issues_do_not_render_confirm_only_actions() -> None:
     assert "请先补充或修正课表，再重新生成空课表。" in review
 
 
-def test_welcome_copy_uses_confirmed_slogan_and_concrete_language() -> None:
+def test_welcome_copy_focuses_on_import_and_required_files() -> None:
     main = _source("src/main.ts")
 
-    assert "<h1>课表协作工作台</h1>" in main
-    assert '<span class="welcomeKicker">青心如禾，向阳而生</span>' in main
-    assert "把大家的课表放在一起，看看什么时候都有空。" in main
+    assert '<h1 id="workspaceTitle">课表资料</h1>' in main
+    assert "每位成员需提供中方、英方两份 PDF 课表。" in main
+    assert 'data-welcome-action=' in main
     for rejected_copy in (
+        "把大家的课表放在一起，看看什么时候都有空。",
+        'class="welcomeKicker"',
+        'class="welcomeSteps"',
         "多人课表协作工具",
         "课表只在这台电脑处理",
         "从共同空课时间出发",
@@ -74,7 +77,7 @@ def test_workbench_header_prioritizes_the_task_with_offline_chinese_fonts() -> N
     styles = _source("src/styles.css")
 
     assert "青禾计划 · 空谷" not in main
-    assert "<h1>课表协作工作台</h1>" in main
+    assert '<h1 id="workspaceTitle">课表资料</h1>' in main
     assert 'color: var(--green); font: 700 25px/1.1 "STZhongsong", "华文中宋"' in styles
 
 
@@ -112,8 +115,8 @@ def test_progress_messages_do_not_expose_quality_gate_language() -> None:
     workflow = _source("app/services/desktop_workflow.py")
     jobs = _source("app/services/job_service.py")
 
-    assert "空课表已生成，可以导出" in workflow
-    assert "空课表已生成，可以导出" in jobs
+    assert "课表识别完成，请逐项对照原件核验" in workflow
+    assert "课表识别完成，请逐项对照原件核验" in jobs
     assert "解析与质量门禁已通过" not in workflow
     assert "任务完成并通过质量门禁" not in jobs
 

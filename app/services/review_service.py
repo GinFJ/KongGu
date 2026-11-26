@@ -7,6 +7,8 @@ import json
 from typing import Any
 
 from app.services.state_store import StateStore, utc_now
+from app.services.course_verification import review_blocks, verification_queue
+from app.services.review_operations import lock_review_revision, review_revision
 from app.services.availability_preview_service import align_slot_dates, build_availability_preview, build_date_map
 from app.services.result_view_service import build_gui_process_result
 from app.services.workflow_persistence import restore_workflow, snapshot_workflow
@@ -26,6 +28,7 @@ EDITABLE_BLOCK_FIELDS = {
     "role",
 }
 DERIVED_ISSUE_CODES = {
+    "ENGLISH_CELL_TEXT_INCOMPLETE",
     "FILE_PARSE_FAILED",
     "NO_COURSE_BLOCKS",
     "MEMBER_SCHEDULE_INCOMPLETE",
@@ -66,6 +69,18 @@ def get_review_payload(store: StateStore, job_id: str) -> dict[str, Any]:
         source["source_path"] = session_paths.get(
             (str(source.get("file_name") or ""), str(source.get("content_hash") or "")), ""
         )
+    from app.services.review_operations import region_choices
+    from app.services.date_review import date_review_view
+    blocks = review_blocks(generation.get("blocks", []), generation.get("pdf_inspections", []))
+    removed_blocks = generation.get("removed_blocks", [])
+    if result.get("date_review"):
+        calendar = {(int(row['week']), row['weekday']): str(row['date'])[:10]
+                    for row in generation['calendar_rows']}
+        def dated(row):
+            actual = calendar.get((row.get('week'), row.get('weekday')))
+            return {**row, 'date': actual} if actual else row
+        blocks = [dated(row) for row in blocks]
+        removed_blocks = [dated(row) for row in review_blocks(removed_blocks, generation.get("pdf_inspections", []))]
     return {
         "ok": True,
         "job_id": job_id,
@@ -73,9 +88,15 @@ def get_review_payload(store: StateStore, job_id: str) -> dict[str, Any]:
         "parser_signature": signature,
         "sources": sources,
         "inspections": generation.get("pdf_inspections", []),
-        "blocks": generation.get("blocks", []),
+        "blocks": blocks,
         "issues": issues,
         "corrections": corrections,
+        "removed_blocks": removed_blocks,
+        "applied_operations": [c for c in result.get("corrections", []) if c['field'] == 'course_operation'],
+        "regions": region_choices(result),
+        **({"date_review": date_review_view(result["date_review"], generation)} if result.get("date_review") else {}),
+        "revision": review_revision(result),
+        "verification": verification_queue(blocks, signature, set(result.get("verified_items", []))),
     }
 
 
@@ -98,6 +119,7 @@ def apply_correction(
     if not job or not job.get("result"):
         raise ValueError("未找到可修正的解析任务。")
     snapshot = dict(job["result"])
+    revision = review_revision(snapshot)
     blocks = list((snapshot.get("generation") or {}).get("blocks", []))
     target = next((block for block in blocks if str(block.get("block_id")) == block_id), None)
     if target is None:
@@ -129,6 +151,7 @@ def apply_correction(
     # The correction row, the refreshed snapshot and its issues must land together:
     # a failed save must not leave a correction that no review snapshot reflects.
     with store.connect() as connection:
+        lock_review_revision(connection, job_id, revision)
         correction_id = store.add_correction(
             source_hash=source_hash,
             block_id=block_id,
@@ -154,7 +177,8 @@ def apply_correction(
     return {"ok": True, "correction_id": correction_id, **get_review_payload(store, job_id)}
 
 
-def confirm_issue(store: StateStore, job_id: str, issue_id: str) -> dict[str, Any]:
+def confirm_issue(store: StateStore, job_id: str, issue_id: str, *,
+                  reason: str = "已对照原文核对", operator_id: str = "本机用户") -> dict[str, Any]:
     job = store.get_job(job_id)
     if not job or not job.get("result"):
         raise ValueError("未找到可确认的解析任务。")
@@ -167,6 +191,7 @@ def confirm_issue(store: StateStore, job_id: str, issue_id: str) -> dict[str, An
     if target.get("severity") == "error":
         raise ValueError("阻断错误不能仅靠确认放行，必须修复源文件或解析结果。")
     snapshot = dict(job["result"])
+    revision = review_revision(snapshot)
     issues = []
     for item in snapshot.get("issues", []):
         issue = dict(item)
@@ -179,7 +204,13 @@ def confirm_issue(store: StateStore, job_id: str, issue_id: str) -> dict[str, An
     snapshot["quality_state"] = state
     # The confirmed flag and the snapshot that records it must commit together.
     with store.connect() as connection:
+        lock_review_revision(connection, job_id, revision)
         store.confirm_issue(job_id, issue_id, connection=connection)
+        from app.services.review_evidence import confirmation_receipt
+        receipt = confirmation_receipt(snapshot, target)
+        if receipt:
+            receipt.update(reason=reason.strip(), operator_id=operator_id.strip())
+            store.add_audit_event(job_id, "review.evidence", receipt, connection=connection)
         store.update_job(
             job_id,
             result_json=json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
@@ -195,11 +226,26 @@ def apply_saved_corrections(workflow: Any, store: StateStore, schedule_core: Any
     signature = workflow.process_result.parser_signature
     blocks = workflow.generation_result.blocks
     applied = 0
+    issue_count = len(workflow.process_result.issues)
     for source in workflow.generation_result.model_sources:
         if not source.content_hash:
             continue
+        operation_chain_changed = False
         for correction in store.corrections_for_source(source.content_hash, signature):
             if correction["stale"]:
+                continue
+            from app.services.review_operations import OPERATION_FIELD, replay_operation
+            if correction["field"] == OPERATION_FIELD:
+                if operation_chain_changed:
+                    continue
+                before_issue_count = len(workflow.process_result.issues)
+                if replay_operation(workflow, correction):
+                    workflow.process_result.corrections.append(CorrectionRecord(**{
+                        k: correction[k] for k in CorrectionRecord.__dataclass_fields__
+                    }))
+                    applied += 1
+                elif len(workflow.process_result.issues) != before_issue_count:
+                    operation_chain_changed = True
                 continue
             target = next(
                 (item for item in blocks if str(item.get("block_id")) == correction["block_id"]),
@@ -223,7 +269,7 @@ def apply_saved_corrections(workflow: Any, store: StateStore, schedule_core: Any
                 )
             )
             applied += 1
-    if applied:
+    if applied or len(workflow.process_result.issues) != issue_count:
         _refresh_derived(workflow, schedule_core)
     return applied
 
@@ -284,7 +330,7 @@ def _refresh_derived(workflow: Any, schedule_core: Any) -> None:
     generation = workflow.generation_result
     generation.students = sorted({
         str(block.get("member_key") or block.get("name"))
-        for block in generation.blocks
+        for block in generation.blocks + generation.removed_blocks
         if block.get("member_key") or block.get("name")
     })
     calendar_weeks: set[int] = set()
@@ -297,6 +343,8 @@ def _refresh_derived(workflow: Any, schedule_core: Any) -> None:
     generation.weeks = sorted(calendar_weeks | {
         int(block["week"]) for block in generation.blocks if block.get("week") is not None
     })
+    from core.timetable_coverage import covered_weeks
+    generation.weeks = covered_weeks(generation.pdf_inspections, generation.calendar_df, generation.weeks)
     date_map = build_date_map(generation.calendar_df)
     time_range = getattr(schedule_core, "period_time_range", None)
     for block in generation.blocks:
@@ -326,6 +374,8 @@ def _refresh_derived(workflow: Any, schedule_core: Any) -> None:
         previous = prior_records.get(record.source.content_hash)
         if previous:
             record.layout_profile = previous.layout_profile
+    from app.services.review_operations import restore_empty_source_membership
+    restore_empty_source_membership(generation)
     generation.occupancy = schedule_core.build_occupancy(generation.blocks)
     generation.blocks_df = schedule_core.blocks_to_dataframe(generation.blocks)
     timetable = schedule_core.default_timetable()
@@ -406,6 +456,9 @@ def _refresh_derived(workflow: Any, schedule_core: Any) -> None:
     process.parser_signature = previous_process.parser_signature
     process.job_id = previous_process.job_id
     workflow.process_result = process
+    if workflow.date_review is not None:
+        from app.services.date_review import apply_date_scope
+        apply_date_scope(workflow, schedule_core, confirmed_issue_ids=confirmed_ids)
 
 
 def snapshot_issues(snapshot: dict[str, Any]) -> list[dict[str, Any]]:

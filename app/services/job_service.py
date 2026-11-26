@@ -15,6 +15,7 @@ from app.services.desktop_workflow import (
     serialize_workflow_result,
 )
 from app.services.review_service import apply_saved_corrections
+from app.services.date_review import apply_date_scope, date_bounds, selected_calendar
 from app.services.state_store import StateStore
 from app.services.workflow_persistence import restore_workflow
 from core.signature import build_parser_signature
@@ -40,14 +41,22 @@ class JobCoordinator:
         self._result_cache: tuple[str, Any, dict[str, Any], str] | None = None
 
     def start(self, payload: dict[str, Any], *, background: bool = True) -> dict[str, Any]:
+        bounds = date_bounds(payload)
         paths = [str(Path(path)) for path in payload.get("paths", []) if str(path).strip()]
         if not paths:
             raise ValueError("请先选择课表 PDF。")
+        if bounds:
+            selected_calendar(self.schedule_core.synthesize_calendar_from_blocks([]), bounds)
         with self._lock:
             if self._active_job_id:
                 raise ValueError("已有一批课表正在处理中，请等待完成后再试。")
-            signature = build_parser_signature().digest
-            job_id = self.store.create_job(payload, signature, paths)
+            signature = build_parser_signature()
+            if payload.get("workspace") is True:
+                payload = {**payload, "workspace_calendar": {
+                    "semester_start_date": signature.calendar_start,
+                    "teaching_weeks": int(signature.teaching_weeks),
+                }}
+            job_id = self.store.create_job(payload, signature.digest, paths)
             self._active_job_id = job_id
             self._cancel_event = threading.Event()
         if background:
@@ -171,20 +180,14 @@ class JobCoordinator:
                 index = max(0, min(int(current), len(file_rows) - 1)) if file_rows else 0
                 active = file_rows[index] if file_rows else None
                 source_id = str(active["id"]) if active else ""
-                if active:
-                    self.store.update_file(
-                        job_id,
-                        active["source_path"],
-                        status="running",
-                        stage=stage,
-                        message=message,
-                    )
-                self.store.update_job(
-                    job_id,
-                    current=current,
-                    total=total,
-                    active_source_id=source_id or None,
-                )
+                with self.store.connect() as connection:
+                    if active:
+                        self.store.update_file(job_id, active["source_path"], connection=connection,
+                                               status="running", stage=stage, message=message)
+                    self.store.update_job(job_id, connection=connection, current=current, total=total,
+                                          active_source_id=source_id or None)
+                if payload.get('start_date') and stage == 'completed':
+                    stage, message = 'review', '识别结果已就绪，请逐人核对。'
                 self._emit(job_id, source_id, stage, current, total, message)
 
             workflow = parse_pdf_paths(
@@ -198,6 +201,12 @@ class JobCoordinator:
             if self._cancel_event.is_set():
                 raise InterruptedError("处理已取消。")
             apply_saved_corrections(workflow, self.store, self.schedule_core)
+            from app.services.ai_review import retain_prior_ai_warnings
+            retain_prior_ai_warnings(workflow, self.store)
+            bounds = date_bounds(payload)
+            if bounds:
+                workflow.date_review = {**bounds, 'confirmed': {}, 'log': []}
+                apply_date_scope(workflow, self.schedule_core)
             state = workflow.process_result.quality_state
             for file_row in file_rows:
                 record = next(
@@ -231,9 +240,17 @@ class JobCoordinator:
                     stage=stage,
                     message=message or "处理完成",
                 )
-            # Persist per-file terminal states before marking the job completed:
-            # the 650ms UI poll must never see "completed" with files still running.
-            save_workflow_result(workflow, self.store, job_id=job_id, request=payload)
+            # Polling must not see a terminal result until review reuse and all
+            # per-file states are final; the UI stops polling on "completed".
+            save_workflow_result(workflow, self.store, job_id=job_id, request=payload,
+                                 completed=False)
+            from app.services.review_evidence import reuse_confirmed_issues
+            if reuse_confirmed_issues(self.store, job_id):
+                state = self.store.get_job(job_id, include_result=False)['quality_state']
+                if state == 'accepted':
+                    for file_row in file_rows:
+                        self.store.update_file(job_id, file_row['source_path'], stage='completed')
+            self.store.update_job(job_id, status="completed", error="")
             final_status = "completed"
             try:
                 # 结果已落库：清理与审计失败只能记录，不能把已完成任务降级成 failed。
@@ -244,10 +261,10 @@ class JobCoordinator:
             self._emit(
                 job_id,
                 "",
-                "review" if state != "accepted" else "completed",
+                "review" if bounds or state != "accepted" else "completed",
                 len(paths),
                 len(paths),
-                "课表已处理，请核对标记内容" if state != "accepted" else "空课表已生成，可以导出",
+                "课表识别完成，请逐人对照原件核对本次日期。" if bounds else "课表识别完成，请逐项对照原件核验",
             )
         except InterruptedError as exc:
             final_status = "cancelled"

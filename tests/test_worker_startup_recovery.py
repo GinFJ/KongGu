@@ -85,19 +85,53 @@ assert.doesNotMatch(message, /解包|关闭其他空谷窗口/);
 
 const main = fs.readFileSync('src/main.ts', 'utf8');
 const ast = ts.createSourceFile('main.ts', main, ts.ScriptTarget.Latest, true);
-const names = new Set(['boot', 'repairResources']);
+const names = new Set(['boot', 'startWorkbench', 'repairResources', 'resumeWorkspace']);
+let listed = {batches: [], draft: false};
+let choices = 0;
+let resourcesReady = true;
 const calls = [], state = {stage: 'failed', resourceStatus: null, busy: false, startupDiagnostic: ''};
 const context = vm.createContext({state, client: {request: async (name) => {
   calls.push(name);
-  return name === 'resources.repair' ? {status: {ready:true}} : {settings: {teaching_weeks: 17}};
-}}, render() {}, setStatus() {}, delay() {}, savedCalendarSettings: {}});
+  if (name === 'workspace.history') return listed;
+  if (name === 'workspace.get') return {files: [], remember:true, job_id:''};
+  return name === 'resources.repair' ? {status: {ready:resourcesReady}} : {settings: {semester_start_date: '2026-09-07', teaching_weeks: 17}};
+}}, render() {}, setStatus() {}, delay() {}, rememberSources: true, savedCalendarSettings: {},
+suggestedDates(settings) {return {start_date: settings.semester_start_date, end_date: '2026-09-30'};},
+displayLocalHistory(history) {choices++; assert.equal(history, listed);}});
 vm.runInContext(compile(ast.statements.filter(n => ts.isFunctionDeclaration(n) && names.has(n.name?.text))
   .map(n => n.getText(ast)).join('\n')), context);
 await vm.runInContext('repairResources()', context);
-assert.deepEqual(calls.sort(), ['resources.repair', 'settings.calendar.get']);
+assert.deepEqual(calls.sort(), ['resources.repair', 'settings.calendar.get', 'workspace.history']);
 assert.equal(state.stage, 'ready');
 assert.equal(state.calendarSettings.teaching_weeks, 17);
 assert.equal(state.busy, false);
+assert.equal(choices, 0);
+listed = {batches:[{job_id:'older'}],draft:false};
+await vm.runInContext('boot()', context);
+assert.equal(choices, 1);
+assert.ok(!calls.includes('workspace.get'));
+listed = {batches:[],draft:true};
+await vm.runInContext('boot()', context);
+assert.equal(choices, 2);
+await vm.runInContext('startWorkbench(true)', context);
+assert.equal(choices, 2);
+assert.equal(calls.at(-1), 'workspace.get');
+resourcesReady = false;
+await vm.runInContext('boot()', context);
+assert.equal(choices, 3);
+const oldBatch = {calendar:{semester_start_date:'2026-03-02', teaching_weeks:18},
+  remember:false, files:[{name:'合成.pdf',path:''}], job_id:''};
+context.oldBatch = oldBatch;
+const previousCalls = calls.length;
+await vm.runInContext('resumeWorkspace(oldBatch)', context);
+assert.equal(state.batchDates.start_date, oldBatch.calendar.semester_start_date);
+assert.equal(state.calendarSettings.teaching_weeks, 18);
+assert.equal(context.rememberSources, false);
+Object.assign(oldBatch, {start_date:'2026-04-03',end_date:'2026-04-07'});
+await vm.runInContext('resumeWorkspace(oldBatch)', context);
+assert.equal(state.batchDates.start_date, oldBatch.start_date);
+assert.equal(state.batchDates.end_date, oldBatch.end_date);
+assert.equal(calls.length, previousCalls);
 """
     run = subprocess.run([node, "--input-type=module", "-e", script], cwd=ROOT,
                          capture_output=True, encoding="utf-8", timeout=20)

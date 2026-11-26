@@ -1,6 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+import os
+import json
 import sys
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, copy_metadata
 
@@ -9,6 +11,16 @@ sys.path.insert(0, str(ROOT))
 from tools.worker_bundle import runtime_datas, write_worker_build_metadata
 
 datas = runtime_datas(ROOT)
+# Explicit private build input. Never store the credential in tracked resources.
+credential_file = os.environ.get("KONGGU_AI_CREDENTIAL_FILE", "")
+if credential_file:
+    credential_path = Path(credential_file).resolve(strict=True)
+    credential_data = json.loads(credential_path.read_text(encoding="utf-8"))
+    if not str(credential_data.get("api_key", "")).strip():
+        raise ValueError("Private AI credential is missing")
+    if credential_path.name != "ai-credential.json":
+        raise ValueError("Private AI credential must use the documented file name")
+    datas.append((str(credential_path), "private"))
 build_metadata = write_worker_build_metadata(ROOT, Path(workpath) / "provenance")
 datas.append((str(build_metadata), "resources"))
 datas += collect_data_files("paddlex", includes=["configs/**/*.yaml", "configs/**/*.yml"])

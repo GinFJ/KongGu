@@ -11,9 +11,11 @@ type PendingRequest = {
 const REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
 
 const ALLOWED_COMMANDS = new Set([
-  "resources.status", "resources.repair", "data.clear", "settings.calendar.get", "settings.calendar.save",
+  "resources.status", "resources.repair", "data.clear", "data.usage", "data.clear_cache", "settings.calendar.get", "settings.calendar.save",
+  "workspace.get", "workspace.save", "workspace.history", "workspace.open", "workspace.attach", "review.source_pdf",
+  "cloud.status", "cloud.register", "cloud.login", "cloud.logout", "cloud.list", "cloud.open", "cloud.save", "cloud.copy_guest",
   "pdf.inspect", "job.start", "job.get", "job.cancel", "job.retry_failed", "review.get", "review.apply",
-  "review.confirm", "exports.excel"
+  "review.confirm", "review.verify", "review.mutate", "review.slot", "review.member", "review.flag", "exports.excel", "ai.prepare", "ai.run", "ai.adopt"
 ]);
 
 export class SidecarClient {
@@ -28,6 +30,12 @@ export class SidecarClient {
   private answered = false;
   private startupReason = "";
   private closeError: Error | null = null;
+  scope = "";
+  onAccountWorkerLoss?: () => void;
+
+  get hasPendingRequests() {
+    return this.pending.size > 0;
+  }
 
   onEvent(listener: (event: ProgressEvent) => void) {
     this.listeners.add(listener);
@@ -46,6 +54,7 @@ export class SidecarClient {
   }
 
   async request<T>(command: string, payload: Record<string, unknown> = {}, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
+    const scope = this.scope;
     if (!ALLOWED_COMMANDS.has(command)) throw new Error("不支持的本地操作。");
     await this.start();
     const child = this.child;
@@ -67,7 +76,7 @@ export class SidecarClient {
       });
     });
     try {
-      await child.write(`${JSON.stringify({ id, command, payload })}\n`);
+      await child.write(`${JSON.stringify({ id, command, payload, scope })}\n`);
     } catch (error) {
       // 写入失败时立即结束该请求；否则调用方会一直等一个永不返回的 Promise 直至超时。
       const normalized = error instanceof Error ? error : new Error(String(error));
@@ -78,10 +87,19 @@ export class SidecarClient {
       }
       rejectRequest(normalized);
     }
-    return promise;
+    const reply = await promise;
+    if (command === "cloud.login" || command === "cloud.register") {
+      const next = (reply as {scope?: string}).scope;
+      if (!next) throw new Error("账号连接异常，请重新登录。");
+      this.scope = next;
+    } else if (command === "cloud.logout") {
+      this.scope = "";
+    }
+    return reply;
   }
 
   async forceRestart() {
+    if (this.scope) this.onAccountWorkerLoss?.();
     this.intentionalStop = true;
     const previous = this.child;
     // 先清空当前会话引用：旧进程迟到的 close 和输出都不能再影响重启后的新会话。
@@ -186,6 +204,7 @@ export class SidecarClient {
   private onClosed(command: Command<string>, code: number | null) {
     // 只接受当前进程的 close；被替换掉的旧进程迟到 close 不得清掉新会话或误杀新请求。
     if (this.command !== command) return;
+    if (this.scope && !this.intentionalStop) this.onAccountWorkerLoss?.();
     this.child = null;
     this.command = null;
     // 旧进程写了一半的 NDJSON 行必须丢弃，否则会拼到新进程的首条响应上导致解析失败。
@@ -203,6 +222,7 @@ export class SidecarClient {
 
   private onSpawnError(command: Command<string>, error: unknown) {
     if (this.command !== command) return;
+    if (this.scope && !this.intentionalStop) this.onAccountWorkerLoss?.();
     this.child = null;
     this.command = null;
     this.buffer = "";

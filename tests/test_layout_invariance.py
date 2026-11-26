@@ -1,6 +1,38 @@
 from core import schedule_core as sc
 
 
+def test_browser_footer_date_cannot_override_a_clipped_weekday():
+    def i(text,y):return dict(text=text,x0=20,x1=90,y0=y,y1=y+10)
+    items=[i('Monday',100),i('2026-12-07',112),i('Tuesday',150),i('2026-12-08',162),
+           i('Wednesday',200),i('https://example.test/?start=2026-10-22',216)]
+    # Two full-row anchors suffice even when the page ends within the third.
+    rows=sc._find_english_day_rows(items)
+    assert any(str(r['date'])=='2026-12-09' for r in rows)
+    assert not sc._is_english_date_token(items[-1]['text'])
+
+
+def test_date_only_page_continuation_requires_two_calendar_anchors():
+    def i(text,y):return dict(text=text,x0=20,x1=90,y0=y,y1=y+10)
+    items=[i('2026-12-09',20),i('Thursday',55),i('2026-12-10',67),
+           i('Friday',105),i('2026-12-11',117)]
+    assert str(sc._find_english_day_rows(items)[0]['date'])=='2026-12-09'
+    assert not any(str(r['date'])=='2026-12-09' for r in sc._find_english_day_rows(items[:3]))
+
+
+def test_unreadable_week_end_date_requires_two_aligned_anchors():
+    def item(text,y,x=20):return dict(text=text,x0=x,x1=x+70,y0=y,y1=y+10)
+    items=[]
+    for offset,day in enumerate(['Monday','Tuesday','Wednesday','Thursday','Friday']):
+        items.extend([item(day,100+offset*50),item(f'2026-11-{23+offset}' if offset<4 else '2026-1↑27',112+offset*50)])
+    rows=sc._find_english_day_rows(items)
+    assert [str(r['date']) for r in rows]==[f'2026-11-{n}' for n in range(23,28)]
+    assert rows[-1]['date_evidence']=='weekday_and_two_same_week_anchors'
+    assert len(sc._find_english_day_rows(items[-4:]))==1  # one anchor is insufficient
+    # A readable but contradictory date must not be silently replaced.
+    items[-1]['text']='2026-11-28'
+    assert len(sc._find_english_day_rows(items))==4
+
+
 def test_dated_rows_survive_page_translation():
     def item(text, x, y):
         return dict(text=text, x0=x, x1=x+70, y0=y, y1=y+12)

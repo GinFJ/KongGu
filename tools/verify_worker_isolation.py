@@ -165,9 +165,26 @@ def verify(worker: Path, *, work_dir: Path | None = None, timeout: float = 180) 
         if not saved.get('ok'):
             raise RuntimeError('Isolated calendar save failed.')
         parsed = session.request('schedules.parse', paths=[str(sources['中方']), str(sources['英方'])])
-        if not parsed.get('ok') or parsed.get('quality_state') != 'accepted' or not parsed.get('can_export'):
-            raise RuntimeError('Synthetic text pair did not produce an exportable preview.')
+        if (not parsed.get('ok') or parsed.get('quality_state') != 'accepted'
+                or parsed.get('can_export') is not False or not parsed.get('verification', {}).get('pending')):
+            raise RuntimeError('Synthetic text pair did not enter course verification.')
         report['steps'].append(dict(stage='text_pair_preview', ok=True))
+        job_id = parsed['result_ref']
+        premature = stage/'unverified-text.xlsx'
+        denied = session.request('exports.excel', result_ref=job_id, target_path=str(premature))
+        if denied.get('ok') or premature.exists() or '待人工核验' not in str(denied.get('error', '')):
+            raise RuntimeError('Unverified text pair did not fail at the course verification gate.')
+        review = session.request('review.get', job_id=job_id)
+        pending_items = review['verification']['items']
+        if len(pending_items) != parsed['verification']['pending'] or any(i['confirmed'] for i in pending_items):
+            raise RuntimeError('Unexpected initial verification queue for the synthetic text pair.')
+        for index, item in enumerate(pending_items, 1):
+            review = session.request('review.verify', job_id=job_id, item_id=item['item_id'], revision=review['revision'])
+            if not review.get('ok') or review['verification']['confirmed'] != index:
+                raise RuntimeError('Synthetic course verification was not recorded.')
+        if review['verification']['pending']:
+            raise RuntimeError('Synthetic text pair has verification items left.')
+        report['steps'].append(dict(stage='text_pair_course_verification', ok=True, verified=len(pending_items)))
         exported = session.request('exports.excel', result_ref=parsed['result_ref'], target_path=str(stage/'synthetic.xlsx'))
         target = stage/'synthetic.xlsx'
         if not exported.get('ok') or not target.is_file():

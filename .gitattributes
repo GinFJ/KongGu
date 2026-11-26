@@ -1,4 +1,6 @@
 *.bat text eol=crlf
+*.cmd text eol=crlf
+*.pdf binary
 *.csv text eol=lf
 *.html text eol=lf
 *.json text eol=lf

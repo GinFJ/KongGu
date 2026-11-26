@@ -20,13 +20,13 @@ const names = new Set(['bindActions', 'issueAction', 'waitForJob', 'saveSettings
 const source = ast.statements.filter(n => ts.isFunctionDeclaration(n) && names.has(n.name?.text))
   .map(n => n.getText(ast)).join('\n');
 const input = name => ({focus() { focus = name; }, scrollIntoView() { scroll = name; }});
-const fields = {'#semesterStart': input('date'), '#teachingWeeks': input('weeks')};
+const fields = {'#semesterStart': input('date'), '#teachingWeeks': input('weeks'), '#semesterSettings': {open:false}};
 let click, scroll, focus;
-const globals = {state: {}, completedJobId: '', savedCalendarSettings: {semester_start_date:'2026-03-02', teaching_weeks:18},
+const globals = {state: {}, completedJobId: '', outsideSemester: () => false, savedCalendarSettings: {semester_start_date:'2026-03-02', teaching_weeks:18},
   escapeHtml: value => value, window:{addEventListener() {}, confirm: () => true}, appRoot: {addEventListener(type, fn) {if (type === 'click') click = fn;}},
-  document:{querySelector: key => fields[key] ? {...fields[key], addEventListener() {}} : null},
+  document:{querySelector: key => fields[key] ? Object.assign(fields[key], {addEventListener() {}}) : null},
   chooseFiles() {}, parseSchedules() {}, cancelJob() {}, retryFailed() {}, exportExcel() {}, repairResources() {},
-  clearLocalData() {}, render() {}, setStatus() {}, delay() {}, client: {}};
+  clearLocalData() {}, persistDraft() {}, render() {}, setStatus() {}, delay() {}, client: {}};
 const ctx = vm.createContext(globals);
 vm.runInContext(ts.transpileModule(source, {compilerOptions:{target: ts.ScriptTarget.ES2020}}).outputText, ctx);
 vm.runInContext('bindActions()', ctx);
@@ -36,11 +36,15 @@ for (const [code, field] of [['PRE_TERM_DATE', 'date'], ['WEEK_OUT_OF_SEMESTER',
   const match = html.match(/data-semester-setting="(semesterStart|teachingWeeks)"/);
   assert.ok(match, html);
   assert.match(html, /前往学期设置/);
+  fields['#semesterSettings'].open = false;
   click({target:{closest: selector => selector === '[data-semester-setting]' ? {dataset:{semesterSetting:match[1]}} : null}});
+  assert.equal(fields['#semesterSettings'].open, true);
   assert.equal(scroll, field); assert.equal(focus, field);
 }
 ctx.issue = {code:'MISSING_INPUT', severity:'error', confirmed:false};
 assert.doesNotMatch(vm.runInContext('issueAction(issue)', ctx), /data-semester-setting|data-confirm-inline/);
+ctx.issue = {code:'TIMETABLE_COVERAGE_LIMIT', severity:'info', confirmed:false, blocks_export:false};
+assert.equal(vm.runInContext('issueAction(issue)', ctx), '');
 Object.assign(ctx.state, {result:{can_export:false}, files:['anonymous.pdf'], calendarSettings:{semester_start_date:'2026-09-07', teaching_weeks:20}});
 ctx.client.request = async (name, {settings}) => {assert.equal(name, 'settings.calendar.save'); return {settings};};
 await vm.runInContext('saveSettings()', ctx);

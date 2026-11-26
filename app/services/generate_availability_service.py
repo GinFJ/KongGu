@@ -38,6 +38,7 @@ class AvailabilityGenerationResult:
     file_records: list[FileProcessRecord]
     elapsed_seconds: float
     pdf_inspections: list[dict[str, Any]] = field(default_factory=list)
+    removed_blocks: list[dict[str, Any]] = field(default_factory=list)
 
 
 def generate_availability(
@@ -77,8 +78,11 @@ def generate_availability(
     # Inference evidence belongs to the parsed source, not a surviving course
     # block. Carry it in memory too: a failed optional cache write must never
     # make a review suggestion disappear from the result.
-    notice_getter = getattr(schedule_core, 'visual_notice_consensus_evidence', None)
-    if callable(notice_getter):
+    for getter_name, inspection_key in [('visual_notice_consensus_evidence', 'nonclass_consensus'),
+                                         ('english_grid_evidence', 'english_grid_evidence')]:
+        notice_getter = getattr(schedule_core, getter_name, None)
+        if not callable(notice_getter):
+            continue
         for source, legacy in zip(model_sources, legacy_sources):
             notes = notice_getter(legacy)
             if not notes:
@@ -88,7 +92,7 @@ def generate_availability(
             if inspection is None:
                 inspection = dict(source_hash=source.content_hash, file_name=source.file_name)
                 inspections.append(inspection)
-            inspection['nonclass_consensus'] = notes
+            inspection[inspection_key] = notes
 
     if calendar_df is None or calendar_df.empty:
         calendar_df = schedule_core.synthesize_calendar_from_blocks(blocks)
@@ -110,6 +114,8 @@ def generate_availability(
         digest = sources_by_key.get(str(marker)) if marker else None
         if digest:
             legacy_block["source_hash"] = digest
+    from core.identity_completion import complete_pair_identities
+    complete_pair_identities(blocks, model_sources)
     course_blocks = course_blocks_from_legacy(blocks)
     for legacy_block, model_block in zip(blocks, course_blocks):
         legacy_block.setdefault("periods", list(model_block.periods))
@@ -134,6 +140,21 @@ def generate_availability(
     # 解析出的课程周必须并入结果周：只取日历周会让晚于教学周的课程在空课表里
     # 静默消失（课程占用明细有、空课明细没有）。
     weeks = sorted(set(_weeks_from_calendar(calendar_df)) | block_weeks)
+    from core.timetable_coverage import english_grid_coverage, covered_weeks
+    if callable(getattr(schedule_core, '_open_pdf_document', None)):
+        for source, legacy in zip(model_sources, legacy_sources):
+            if source.kind != '英方':
+                continue
+            inspection = next((i for i in inspections if i.get('source_hash')==source.content_hash), None)
+            if inspection is None:
+                continue
+            coverage = english_grid_coverage(legacy, schedule_core,
+                allow_ocr=bool(inspection.get('pages_needing_ocr')) or any(
+                    str(b.get('text_source','')).startswith('OCR')
+                    and b.get('source_file') in {source.file_name,source.source_path} for b in blocks))
+            if coverage is not None:
+                inspection['date_coverage'] = coverage
+    weeks = covered_weeks(inspections, calendar_df, weeks)
     periods = _periods_from_timetable(schedule_core)
     all_slot_df = align_slot_dates(
         schedule_core.build_slot_table(occupancy, students, weeks, weekdays, periods),

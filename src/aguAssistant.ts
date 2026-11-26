@@ -62,7 +62,7 @@ export function answerAgu(question: string, context: AguAssistantContext, userNa
   if (/夸夸|真棒|厉害|聪明|喜欢你/.test(query)) return { text: "嘿嘿，先把课表核准了再夸我。我更在意最后导出的结果能不能放心用。" };
 
   if (/隐私|上传|联网|云端|安全|数据去哪/.test(query)) {
-    return { text: "课表和这段对话都只在这台电脑上处理，不会为了聊天上传到云端。阿谷也没有绕过空谷的质量检查；不确定的内容仍然会留给你核对。" };
+    return { text: "默认识别和这段对话在本机处理。只有你在原文核对中预览、遮盖并同意发送后，AI 核对才会把选定页面发送至 OpenAI。AI 建议仍需核对，不会绕过质量检查。" };
   }
 
   if (/下一步|接下来|怎么办|怎么做|做什么/.test(query)) return nextStep(context);
@@ -87,7 +87,7 @@ export function answerAgu(question: string, context: AguAssistantContext, userNa
   if (/待处理|问题|错误|异常|核对|为什么不能导出|导出不了|导出/.test(query)) {
     if (!result) return { text: "还没有生成结果，所以暂时没有可以核对的内容。先导入课表并生成空课表。", action: context.files.length ? { label: "生成空课表", value: "generate" } : { label: "导入课表", value: "choose-files" } };
     if (unresolved) {
-      const firstIssue = result.issues.find((issue) => !issue.confirmed);
+      const firstIssue = result.issues.find((issue) => !issue.confirmed && issue.blocks_export);
       const detail = firstIssue ? `现在最先要看的，是“${firstIssue.message}”。` : "有一些内容还没有确认。";
       return { text: `当前还有 ${unresolved} 个待处理问题，${detail}我不会把它们当成已经没事。`, action: { label: "打开待处理", value: "open-issues" } };
     }

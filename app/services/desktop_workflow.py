@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable
@@ -14,7 +14,11 @@ import os
 import pandas as pd
 
 from app.services.availability_preview_service import build_availability_preview
+from app.services.department_availability import build_department_scopes
 from app.services.desktop_serialization import file_record_has_warning, serialize_process_result
+from app.services.course_verification import workflow_verification
+from app.services.date_review import member_counts, selected_calendar, workflow_view
+from app.services.review_operations import correction_export_values
 from app.services.export_excel_service import ExcelExportRequest, build_export_excel_bytes
 from app.services.generate_availability_service import AvailabilityGenerationResult, generate_availability
 from app.services.pdf_source_service import add_pdf_sources
@@ -32,7 +36,9 @@ from core.pdf_inspection import MAX_PDF_BYTES, inspect_pdf_sources
 
 
 WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-MAX_INPUT_FILES = 32
+# A complete student-organisation batch commonly contains more than 32 PDFs.
+# Parsing stays sequential; the independent byte/page ceilings still apply.
+MAX_INPUT_FILES = 128
 MAX_TOTAL_PDF_BYTES = 200 * 1024 * 1024
 MAX_TOTAL_PDF_PAGES = 1000
 
@@ -46,6 +52,8 @@ class DesktopWorkflowResult:
     preview_df: pd.DataFrame
     warnings: list[str]
     errors: list[str]
+    verified_items: set[str] = field(default_factory=set)
+    date_review: dict[str, Any] | None = None
 
 
 def parse_pdf_paths(
@@ -222,6 +230,49 @@ def parse_pdf_paths(
             progress=report_ready_progress,
         )
     notice_evidence = getattr(schedule_core, "visual_notice_consensus_evidence", None)
+    if any(i.get('date_coverage') is not None for i in generation.pdf_inspections):
+        allowed = '、'.join(map(str, generation.weeks))
+        inspection_issues.append(ParseIssue(
+            code='TIMETABLE_COVERAGE_LIMIT' if generation.weeks else 'TIMETABLE_COVERAGE_EMPTY',
+            message=(f'原课表共同覆盖的完整工作周为第 {allowed} 周；空课预览和导出仅包含这些周次。'
+                     if generation.weeks else '原课表没有共同覆盖的完整工作周，不能生成可靠空课表。'),
+            severity='info' if generation.weeks else 'error',
+            suggestion='其他周次缺少英方原课表数据，不能视为空闲；需要时补充对应日期的原课表。',
+            blocks_export=not bool(generation.weeks),
+        ))
+    for inspection in generation.pdf_inspections:
+        for note in inspection.get('english_grid_evidence', []):
+            if note.get('source_hash') != inspection.get('source_hash'):
+                raise ValueError('英方课程格证据与课表来源不一致，请重新解析。')
+            is_overlay = note.get('kind') == 'overlay'
+            page_label = f"第 {int(note.get('page', 0))+1} 页"
+            if note.get('kind') == 'unresolved_date_row':
+                inspection_issues.append(ParseIssue(
+                    code='ENGLISH_DATE_ROW_UNRESOLVED',
+                    message=f'{page_label}有可见日期行未能与星期可靠配对，该行不能当作空课。',
+                    severity='error',source_file=inspection.get('source_file'),source_hash=note['source_hash'],
+                    suggestion='请在原文核对中检查该行的日期和星期，必要时重新导出清晰完整的原课表。',
+                    blocks_export=True,
+                ))
+                continue
+            if note.get('kind') == 'overlay_verified_empty':
+                inspection_issues.append(ParseIssue(
+                    code='ENGLISH_OVERLAY_EMPTY_VERIFIED',
+                    message=f'{page_label}的课程详情浮层已核验：原 PDF 保留的完整底层格子为空，未计为课程占用。',
+                    severity='info',source_file=inspection.get('source_file'),source_hash=note['source_hash'],
+                    suggestion='可在原文核对中查看浮层及对应日期；原件或解析规则变化后会重新核验。',
+                    blocks_export=False,
+                ))
+                continue
+            inspection_issues.append(ParseIssue(
+                code='ENGLISH_GRID_OVERLAY' if is_overlay else 'ENGLISH_UNNUMBERED_MIDDAY',
+                message=(f'{page_label}有悬浮课程详情覆盖表格，遮挡区域不能可靠判断为空闲。' if is_overlay
+                         else f"{page_label}，{note.get('date', '')} 的午间课程格没有对应节次和时间，不能套用下午节次。"),
+                severity='error', source_file=inspection.get('source_file'), source_hash=note['source_hash'],
+                suggestion=('请移开鼠标、关闭悬浮详情后重新导出完整课表 PDF。' if is_overlay
+                            else '请核实原课表午间列的起止时间，补全时间映射后重新计算。'),
+                blocks_export=True,
+            ))
     for source, inspection in zip(add_result.added, pdf_inspections):
         if source not in ready_sources:
             continue
@@ -248,6 +299,9 @@ def parse_pdf_paths(
             _notice_consensus_issue(source.file_name, source.content_hash, note)
             for note in notes
         )
+        notes = [note for note in notes if note.get('requires_review', True)]
+        if not notes:
+            continue
         previous = str(inspection.get("warning") or "").strip()
         labels = "、".join(sorted({str(note.get("canonical_label") or "非课标记") for note in notes}))
         excluded = sum(note.get('action') == 'excluded_from_preview_occupancy' for note in notes)
@@ -357,7 +411,7 @@ def parse_pdf_paths(
             "review" if quality_state != "accepted" else "completed",
             len(ready_sources),
             len(ready_sources),
-            "课表已处理，请核对标记内容" if quality_state != "accepted" else "空课表已生成，可以导出",
+            "课表识别完成，请逐项对照原件核验",
         )
 
     return DesktopWorkflowResult(
@@ -376,10 +430,12 @@ def export_excel(
     target_path: str,
     mode: str = "classic",
     export_week_count: int | None = None,
+    department: str = "",
+    week: int | None = None,
 ) -> Path:
     """Export the parsed availability result to an Excel file."""
 
-    if mode != "classic":
+    if mode not in {"classic", "qinghe"}:
         raise ValueError("visual 导出模式已预留，等待可视化表格样式后实现。")
     if workflow_result.process_result.parser_signature != build_parser_signature().digest:
         raise ValueError("学期设置或解析规则已变化，请重新生成空课表后导出。")
@@ -387,81 +443,140 @@ def export_excel(
         workflow_result.process_result.quality_state,
         workflow_result.process_result.issues,
     )
+    scoped = workflow_result.date_review
+    if scoped and (week is not None or export_week_count is not None):
+        raise ValueError('本次导出采用建立合表时选择的起止日期。')
+    if scoped:
+        counts = member_counts(workflow_view(workflow_result))
+        if not counts['total'] or counts['pending']:
+            raise ValueError(f"还有 {counts['pending']} 位成员待核对，请先确认本次日期范围。")
+    pending = 0 if scoped else workflow_verification(workflow_result)['pending']
+    if pending:
+        raise ValueError(f'还有 {pending} 项课程待人工核验，请对照原件逐项确认后导出。')
+    if not isinstance(department, str):
+        raise ValueError("请选择一个有效部门。")
+    department = department.strip()
     target = Path(target_path)
     if target.suffix.lower() != ".xlsx":
         target = target.with_suffix(".xlsx")
     target.parent.mkdir(parents=True, exist_ok=True)
     generation = workflow_result.generation_result
     export_weeks = _export_weeks(generation.weeks, export_week_count)
-    data = build_export_excel_bytes(
-        schedule_core=schedule_core,
-        request=ExcelExportRequest(
-            occupancy=generation.occupancy,
-            students=generation.students,
-            weeks=export_weeks,
-            calendar_df=generation.calendar_df,
-            timetable_df=schedule_core.default_timetable(),
-            threshold=0,
-            blocks_df=generation.blocks_df,
-            all_slot_df=generation.all_slot_df,
-            member_course_df=generation.blocks_df,
-            issue_df=pd.DataFrame(
-                [
-                    {
-                        "问题ID": issue.issue_id,
-                        "级别": issue.severity,
-                        "错误码": issue.code,
-                        "来源文件": issue.source_file or "",
-                        "字段": issue.field or "",
-                        "问题": issue.message,
-                        "修复建议": issue.suggestion,
-                        "已确认": "是" if issue.confirmed else "否",
-                    }
-                    for issue in workflow_result.process_result.issues
-                ]
-            ),
-            file_df=pd.DataFrame(
-                [
-                    {
-                        "文件名": record.source.file_name,
-                        "成员": record.member_name or "",
-                        "类型": record.display_kind,
-                        "状态": record.status,
-                        "质量状态": record.quality_state,
-                        "课程块数": record.block_count,
-                        "说明": record.display_result,
-                    }
-                    for record in workflow_result.process_result.file_records
-                ]
-            ),
-            correction_df=pd.DataFrame(
-                [
-                    {
-                        # 内部标识与内容哈希不进导出物：只保留可追溯的短编号。
-                        "来源编号": (correction.source_hash or "")[:8],
-                        "课程块": (correction.block_id or "")[:8],
-                        "字段": correction.field,
-                        "原值": json.dumps(correction.original_value, ensure_ascii=False),
-                        "新值": json.dumps(correction.new_value, ensure_ascii=False),
-                        "原因": correction.reason,
-                        "操作者": correction.operator_id,
-                        "时间": correction.created_at,
-                        "是否过期": "是" if correction.stale else "否",
-                    }
-                    for correction in workflow_result.process_result.corrections
-                ]
-            ),
-            instructions_df=pd.DataFrame(
-                [
-                    {"项目": "质量状态", "说明": workflow_result.process_result.quality_state},
-                    {"项目": "解析器签名", "说明": workflow_result.process_result.parser_signature},
-                    {"项目": "数据范围", "说明": "仅包含本次导入并通过质量门禁的课表。"},
-                    {"项目": "隐私", "说明": "原始 PDF 未复制到数据库或工作簿。"},
-                    {"项目": "复核", "说明": "问题和人工修正分别记录在对应工作表。"},
-                ]
-            ),
+    if scoped:
+        export_weeks = sorted({int(w) for w in selected_calendar(generation.calendar_df, scoped)['week']})
+    elif department or mode == "qinghe" or any(i.get('date_coverage') is not None for i in generation.pdf_inspections):
+        export_weeks = sorted(set(export_weeks) & set(generation.weeks))
+        if not export_weeks:
+            raise ValueError('没有原课表共同覆盖的完整工作周，请补充对应日期的课表。')
+    if week is not None:
+        if type(week) is not int or week not in export_weeks or week not in generation.weeks:
+            raise ValueError("所选周次不在本批可导出的范围内。")
+        export_weeks = [week]
+    request = ExcelExportRequest(
+        occupancy=generation.occupancy,
+        students=generation.students,
+        weeks=export_weeks,
+        calendar_df=generation.calendar_df,
+        timetable_df=schedule_core.default_timetable(),
+        threshold=0,
+        blocks_df=generation.blocks_df,
+        all_slot_df=generation.all_slot_df,
+        member_course_df=generation.blocks_df,
+        issue_df=pd.DataFrame(
+            [
+                {
+                    "问题ID": issue.issue_id,
+                    "级别": issue.severity,
+                    "错误码": issue.code,
+                    "来源文件": issue.source_file or "",
+                    "字段": issue.field or "",
+                    "问题": issue.message,
+                    "修复建议": issue.suggestion,
+                    "已确认": "是" if issue.confirmed else "否",
+                }
+                for issue in workflow_result.process_result.issues
+            ]
         ),
+        file_df=pd.DataFrame(
+            [
+                {
+                    "文件名": record.source.file_name,
+                    "成员": record.member_name or "",
+                    "类型": record.display_kind,
+                    "状态": record.status,
+                    "质量状态": record.quality_state,
+                    "课程块数": record.block_count,
+                    "说明": record.display_result,
+                }
+                for record in workflow_result.process_result.file_records
+            ]
+        ),
+        correction_df=pd.DataFrame(
+            [
+                {
+                    # 内部标识与内容哈希不进导出物：只保留可追溯的短编号。
+                    "来源编号": (correction.source_hash or "")[:8],
+                    "课程块": (correction.block_id or "")[:8],
+                    **correction_export_values(correction),
+                    "原因": correction.reason,
+                    "操作者": correction.operator_id,
+                    "时间": correction.created_at,
+                    "是否过期": "是" if correction.stale else "否",
+                }
+                for correction in workflow_result.process_result.corrections
+            ]
+        ),
+        instructions_df=pd.DataFrame(
+            [
+                {"项目": "质量状态", "说明": workflow_result.process_result.quality_state},
+                {"项目": "解析器签名", "说明": workflow_result.process_result.parser_signature},
+                {"项目": "数据范围", "说明": "仅包含本次导入并通过质量门禁的课表；空课周次：" + '、'.join(map(str, export_weeks)) + '。范围外不代表空闲。'},
+                {"项目": "隐私", "说明": "原始 PDF 未复制到数据库或工作簿。"},
+                {"项目": "复核", "说明": "问题和人工修正分别记录在对应工作表。"},
+            ]
+        ),
+        weekly_only=mode == "qinghe",
+        department=department,
     )
+    if department:
+        from app.services.department_scope import department_workbook_request
+        request = department_workbook_request(request, workflow_result, schedule_core, department)
+    elif week is not None:
+        if "week" in request.blocks_df.columns:
+            request.blocks_df = request.blocks_df[request.blocks_df["week"] == week]
+            request.member_course_df = request.blocks_df
+        if "week" in request.all_slot_df.columns:
+            request.all_slot_df = request.all_slot_df[request.all_slot_df["week"] == week]
+    if week is not None:
+        request.instructions_df.loc[len(request.instructions_df)] = {
+            "项目": "单周范围", "说明": f"排班、空课与课程明细只列第{week}周。名册、文件、问题和修正记录按本次导出的部门或全协会批次列示。"
+        }
+    if scoped:
+        request.start_date, request.end_date = scoped['start_date'], scoped['end_date']
+        request.calendar_df = selected_calendar(generation.calendar_df, scoped)
+        date_by_slot = {(int(r.week), r.weekday): str(r.date)[:10] for r in request.calendar_df.itertuples()}
+        request.occupancy = {key: values for key, values in request.occupancy.items() if key[:2] in date_by_slot}
+        for name in ('all_slot_df', 'blocks_df', 'member_course_df'):
+            frame = getattr(request, name)
+            if not frame.empty:
+                mask = [(int(w), d) in date_by_slot for w, d in zip(frame['week'], frame['weekday'])]
+                setattr(request, name, frame.loc[mask].copy())
+        request.instructions_df.loc[len(request.instructions_df)] = {
+            '项目': '人工核对日期', '说明': f"{request.start_date} 至 {request.end_date}，含首尾；成员已逐人核对。"}
+        selected_members = set(request.students)
+        def review_event_label(event):
+            if event['action'] == 'flag':
+                return '标记待核实' if event['open'] else '问题已核实'
+            if event['action'] == 'slot':
+                return '补上有课' if event['marked'] else '取消有课'
+            return '确认成员'
+        logs = [dict(时间=e['created_at'], 成员=e['member_key'], 操作=review_event_label(e),
+                    日期=e.get('date') or '', 节次=e.get('period') or '',
+                    来源编号=(e.get('source_hash') or '')[:8], 人工核实缺资料日期='、'.join(e.get('missing_dates', [])))
+                for e in scoped['log'] if e['member_key'] in selected_members]
+        if logs:
+            request.correction_df = pd.concat([request.correction_df, pd.DataFrame(logs)], ignore_index=True)
+    data = build_export_excel_bytes(schedule_core=schedule_core, request=request)
     temporary = target.with_name(target.name + ".tmp")
     try:
         # 先写临时文件再原子替换：写失败或目标被 Excel 占用时不能留下半截工作簿，
@@ -484,6 +599,8 @@ def save_workflow_result(
     store: StateStore,
     job_id: str | None = None,
     request: dict[str, Any] | None = None,
+    *,
+    completed: bool = True,
 ) -> str:
     """Persist a versioned JSON result under a stable job UUID."""
 
@@ -503,6 +620,7 @@ def save_workflow_result(
         current=file_count,
         total=file_count,
         issues=snapshot.get("issues", []),
+        completed=completed,
     )
     return result_id
 
@@ -532,7 +650,30 @@ def serialize_workflow_result(workflow_result: DesktopWorkflowResult, result_ref
     )
     # Keep the result's historical quality state, but mirror the live export
     # guard so an old accepted snapshot does not advertise export readiness.
-    payload["can_export"] = payload["can_export"] and signature_current
+    if workflow_result.date_review is not None:
+        view = workflow_view(workflow_result)
+        payload['date_review'] = view
+        verification = member_counts(view)
+        if verification['pending'] or not verification['total'] or not signature_current or not payload['can_export']:
+            payload['availability'] = []
+            payload['availability_preview'] = []
+            payload['summary']['availability_slot_count'] = 0
+    else:
+        verification = workflow_verification(workflow_result)
+    payload["department_scopes"] = build_department_scopes(workflow_result, payload["availability_preview"])
+    payload["verification"] = {key: verification[key] for key in ("total", "confirmed", "pending")}
+    payload["can_export"] = payload["can_export"] and signature_current and not verification["pending"]
+    generation = workflow_result.generation_result
+    range_codes = {i.code for i in workflow_result.process_result.issues
+                   if i.code in {"WEEK_OUT_OF_SEMESTER", "PRE_TERM_DATE"}}
+    if range_codes:
+        from core.quality import schedule_range_blocks
+        frame = generation.calendar_df
+        weeks = {int(value) for value in frame.get("week", []) if pd.notna(value)}
+        start = min((str(value) for value in frame.get("date", []) if pd.notna(value)), default=None)
+        affected = schedule_range_blocks(generation.blocks, weeks, start)
+        payload["range_evidence"] = {code: [row["block_id"] for row in affected[code] if row.get("block_id")]
+                                     for code in range_codes}
     detected_weeks = _detected_weeks(workflow_result.generation_result.blocks)
     payload["detected_weeks"] = detected_weeks
     payload["detected_week_count"] = len(detected_weeks)
@@ -584,6 +725,17 @@ def serialize_workflow_result(workflow_result: DesktopWorkflowResult, result_ref
 
 
 def _notice_consensus_issue(source_file: str, source_hash: str | None, note: dict[str, Any]) -> ParseIssue:
+    if note.get('kind') == 'native_crop_offcampus' and not note.get('requires_review', True):
+        return ParseIssue(code='LOCAL_LOCATION_OCR_VERIFIED',
+            message=f'第 {int(note["page"])+1} 页地点“{note["canonical_label"]}”已通过局部重识别核验，按校外课程规则不计占用。',
+            severity='info',source_file=source_file,source_hash=source_hash,
+            suggestion='可在原文核对中查看该课程所在的完整行。',blocks_export=False)
+    if note.get('kind') == 'native_crop_notice' and not note.get('requires_review', True):
+        label = str(note['canonical_label'])
+        return ParseIssue(code='LOCAL_NOTICE_OCR_VERIFIED',
+            message=f'第 {int(note["page"])+1} 页“{label}”已通过局部重识别核验，为日历说明，不计作课程。',
+            severity='info',source_file=source_file,source_hash=source_hash,
+            suggestion='可在原文核对中查看该说明所在的完整行。',blocks_export=False)
     original = note.get("original_ocr") or []
     if isinstance(original, list):
         original_text = "、".join(str(item.get("text", "") if isinstance(item, dict) else item) for item in original)
@@ -597,8 +749,8 @@ def _notice_consensus_issue(source_file: str, source_hash: str | None, note: dic
     excluded = note.get('action') == 'excluded_from_preview_occupancy'
     message = (f"{location}：原OCR“{original_text or '未提取到文字'}”按同页规范字形判断为“{label}”；预览已按非课程排除，请核对原页。"
                if excluded else f"{location}：原OCR“{original_text or '未提取到文字'}”与同页规范标记字形相似，疑似“{label}”；预览仍保留原占用，请核对原页。")
-    suggestion = (f"请对照同页两处规范“{label}”标记核对上述周次与节次；若判断有误，请保留待复核，修复后重新解析。"
-                  if excluded else "确认此提示只记录核对，不会自动排除原占用。若确为非课程，请保留待复核，修复后重新解析；若确为课程，可确认此提示。")
+    suggestion = (f"请对照同页两处规范“{label}”标记核对上述周次与节次；若判断有误，在原文核对中选择该区域并使用“恢复为课程并重算”；尚未处理时保留待复核。"
+                  if excluded else "确认此提示只记录核对，不会自动排除原占用。若确为非课程，在原文核对中选择该区域并使用“排除并重算”；尚未处理时保留待复核。若确为课程，可确认此提示。")
     return ParseIssue(
         code="VISUAL_NOTICE_CONSENSUS_REVIEW",
         message=message,

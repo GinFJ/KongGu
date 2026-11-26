@@ -10,6 +10,20 @@ from core import schedule_core as sc
 from core.bordered_timetables import parse_chinese_bordered_image
 
 
+def test_english_source_problem_survives_cache_and_rejects_stale_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv('KONGGU_PARSE_CACHE', str(tmp_path))
+    source = dict(bytes=b'anonymous-source', file_name='测试-英方课表.pdf', kind='英方')
+    note = dict(kind='overlay', source_hash=sc._source_digest(source),
+                parser_signature=sc.cache_signature(), ocr_signature=sc._ocr_cache_signature(), page=0)
+    source['_english_grid_evidence'] = [note]
+    sc._write_parse_cache(source, '英方', [dict(week=1)])
+    fresh = {k:v for k,v in source.items() if not k.startswith('_')}
+    assert sc.english_grid_evidence(fresh)==[note]
+    assert sc.english_grid_evidence({**fresh,'bytes':b'changed'})==[]
+    monkeypatch.setattr(sc,'cache_signature',lambda:'changed')
+    assert sc.english_grid_evidence(fresh)==[]
+
+
 def test_optional_cache_write_failure_keeps_source_evidence_in_memory(tmp_path, monkeypatch):
     monkeypatch.setenv('KONGGU_PARSE_CACHE', str(tmp_path))
     source = dict(bytes=b'anonymous-source', file_name='测试-中方课表.pdf', kind='中方')

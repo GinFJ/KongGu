@@ -1,0 +1,30 @@
+.localHistory {
+  width: min(560px, calc(100vw - 32px));
+  max-height: 86vh;
+  box-sizing: border-box;
+  overflow: auto;
+  padding: 24px;
+  color: var(--ink);
+  background: var(--paper-solid);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+.localHistory::backdrop { background: #10271eb5; }
+.localHistory header, .localHistory footer, .historyStorage > div, .historyList li {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+}
+.localHistory h2, .localHistory h3 { margin: 0; }
+.localHistory h2 { font-size: 22px; }
+.localHistory h3 { font-size: 16px; }
+.historyActions { display: flex; gap: 10px; margin: 16px 0 10px; }
+.historyEmpty { margin: 14px 0; color: var(--muted); }
+.historyList { padding: 0; margin: 0; list-style: none; max-height: 33vh; overflow: auto; }
+.historyList li { border-top: 1px solid var(--line); padding: 12px 0; }
+.historyList li > div { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.historyList li span, .historyList li small, .historyStorage strong { font-size: 13px; color: var(--muted); }
+.historyList button, .historyStorage button, .localHistory footer button { flex: none; }
+.historyStorage { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 12px; }
+.historyStorage > div { margin: 9px 0; }
+.historyStorage strong { margin-left: 6px; font-weight: 500; }
+.localHistory footer { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 12px; }
+#historyNotice { color: var(--muted); font-size: 13px; }

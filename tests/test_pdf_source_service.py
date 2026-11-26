@@ -86,6 +86,18 @@ def test_add_pdf_sources_reports_same_content_with_different_member_names(tmp_pa
     assert "李四" in str(result.errors[0][1])
 
 
+@pytest.mark.parametrize("second", ["活动部-张三-部长-中方课表.pdf", "活动部-张三-中方课表.pdf"])
+def test_same_name_duplicate_requires_consistent_role(tmp_path, second):
+    first = tmp_path / "活动部-张三-干事-中方课表.pdf"
+    other = tmp_path / second
+    first.write_bytes(b"same content")
+    other.write_bytes(first.read_bytes())
+    result = add_pdf_sources(paths=[str(first),str(other)], explicit_kind=None,
+                             existing_sources=[], schedule_core=FakeKindCore())
+    assert len(result.errors) == 1 and not result.skipped
+    assert first.name in str(result.errors[0][1]) and other.name in str(result.errors[0][1])
+
+
 def test_add_pdf_sources_rejects_placeholder_member_file_name(tmp_path: Path):
     placeholder = tmp_path / "路人甲_外联部 张三 干事 中方课表.pdf"
     placeholder.write_bytes(b"placeholder")

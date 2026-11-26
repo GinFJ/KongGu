@@ -41,7 +41,7 @@
 {"type":"event","event":"job.progress","job_id":"uuid","source_id":"uuid","stage":"course_parse","current":0,"total":2,"message":"正在解析课程占用槽"}
 ```
 
-任务命令为 `job.start`、`job.get`、`job.cancel`、`job.retry_failed`；复核命令为 `review.get`、`review.apply`、`review.confirm`；导出命令为 `exports.excel`。另有 `resources.status`、`resources.repair`、`settings.calendar.get`、`settings.calendar.save`、`pdf.inspect` 和 `data.clear`。实际协议见 [sidecar](../app/sidecar.py)；响应和事件共用启动时固定的输出管道，防止 OCR 重定向 stdout 后丢失回复。
+任务命令为 `job.start`、`job.get`、`job.cancel`、`job.retry_failed`；复核命令为 `review.get`、`review.apply`、`review.mutate`、`review.confirm`；导出命令为 `exports.excel`。另有 `resources.status`、`resources.repair`、`settings.calendar.get`、`settings.calendar.save`、`pdf.inspect` 和 `data.clear`。实际协议见 [sidecar](../app/sidecar.py)；响应和事件共用启动时固定的输出管道，防止 OCR 重定向 stdout 后丢失回复。
 
 任务仅在复核凭据复用、质量与文件状态保存完毕后报告 `completed`；任务结束不等于质量已接受，导出仍须检查实时门禁。
 
@@ -75,3 +75,6 @@
 2. 使用标注结果比较 `paddle_v4`、`paddle_v6_small` 和 `rapidocr_v6_onnx`；实验模型在达标前不进入生产安装包。
 3. 由 3～5 名协会成员完成导入、失败解释、修正、重启恢复、复用和导出试运行。
 4. 试运行通过后再更新公开 Roadmap 和发布版本。
+
+
+0.8.0 的 `review.mutate` 处理补录、删除、恢复、区域排除/恢复和最近操作撤销；必须提供当前结果 revision、唯一操作编号、来源哈希与原因。服务校验当前签名及会话中的原文件哈希，事务中一并保存修正、快照、问题及重算结果。删除记录单独保留在快照的 `removed_blocks`，不会进入占用，但继续证明成员及来源已提交。现有 SQLite 修正表存储事件，无数据库结构迁移；重放验证来源绑定、前置课程状态及原区域证据，失配时停止该来源后续操作并要求核对。

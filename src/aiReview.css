@@ -1,0 +1,20 @@
+.aiReviewDialog { width:min(900px,92vw); max-height:90vh; padding:24px; border:1px solid var(--border,#d2d9d2); border-radius:18px; background:var(--surface,#fafbf8); color:var(--text,#20372e); box-shadow:0 24px 80px #15291f40; overflow:auto; }
+.aiReviewDialog::backdrop { background:#102b2359; }
+.aiReviewDialog header { display:flex; justify-content:space-between; align-items:start; gap:16px; }
+.aiReviewDialog h2 { margin:0; }
+.aiReviewDialog p { line-height:1.65; overflow-wrap:anywhere; }
+.aiNotice { padding:12px 16px; background:#edf3ec; border-radius:10px; }
+.aiCanvasWrap { max-height:55vh; overflow:auto; border:1px solid #cbd6ce; background:#e6ebe5; margin:12px 0; }
+.aiCanvasWrap canvas { display:block; width:100%; height:auto; cursor:crosshair; touch-action:none; }
+.aiOptions { display:flex; flex-wrap:wrap; gap:16px; align-items:center; margin:16px 0; }
+.aiOptions select { display:block; padding:8px; }
+.aiConsent { display:flex; align-items:center; gap:8px; flex:1; min-width:230px; }
+.aiConsent input { width:18px; height:18px; flex-shrink:0; }
+.aiFinePrint { color:#55675e; font-size:13px; }
+.aiReviewDialog textarea { display:block; width:100%; box-sizing:border-box; margin:8px 0; padding:10px; }
+.aiCandidates { display:grid; gap:10px; margin:16px 0; }
+.aiCandidate { border:1px solid #d1dbd2; border-radius:10px; padding:14px; }
+.aiCandidate p { margin:6px 0; }
+.aiWarnings { color:#8b4c16; }
+.aiEntry { padding:12px 0; }
+.aiEntry p { font-size:13px; color:#55675e; line-height:1.6; }

@@ -128,12 +128,12 @@ def test_dependency_audit_never_treats_an_installed_vc_runtime_as_a_windows_syst
     assert not release_gate._is_vc_runtime('msvcrt.dll')
 
 
-@pytest.mark.parametrize('problem', ['wrong_worker', 'missing_ocr', 'inherited_python', 'nonzero_exit',
+@pytest.mark.parametrize('problem', ['wrong_worker', 'missing_ocr', 'missing_verification', 'inherited_python', 'nonzero_exit',
                                     'no_image_preview', 'accepted_image', 'missing_result_denial', 'none'])
 def test_isolation_report_requires_all_stages_and_the_exact_worker(tmp_path, problem):
     worker = tmp_path/'worker.exe'
     worker.write_bytes(b'candidate')
-    stages = ['resource_restore_and_inference_probe', 'text_pair_preview', 'excel_export',
+    stages = ['resource_restore_and_inference_probe', 'text_pair_preview', 'text_pair_course_verification', 'excel_export',
               'actual_image_ocr', 'unreviewed_export_denied']
     report = dict(format_version=1, ok=True, exit_code=0,
                   worker_sha256=hashlib.sha256(b'candidate').hexdigest(),
@@ -147,6 +147,8 @@ def test_isolation_report_requires_all_stages_and_the_exact_worker(tmp_path, pro
         report['worker_sha256'] = '0'*64
     elif problem == 'missing_ocr':
         report['steps'] = [step for step in report['steps'] if step['stage'] != 'actual_image_ocr']
+    elif problem == 'missing_verification':
+        report['steps'] = [step for step in report['steps'] if step['stage'] != 'text_pair_course_verification']
     elif problem == 'inherited_python':
         report['environment']['inherited_python'] = True
     elif problem == 'nonzero_exit':

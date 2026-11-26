@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import re
 import unicodedata
 from collections import OrderedDict, defaultdict
@@ -20,6 +21,7 @@ from openpyxl.styles import Alignment, Border, Font, NamedStyle, PatternFill, Si
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.worksheet.worksheet import Worksheet
+from core.date_range_export import free_members_by_slot, scoped_rows, selected_days
 
 from core.ocr_engines import PaddleV4Engine
 from core.runtime_control import raise_if_cancelled
@@ -367,6 +369,14 @@ def _load_parse_cache(source: dict[str, Any], kind: str) -> list[dict[str, Any]]
     ):
         return None
     source['_visual_notice_evidence'] = notes
+    grid_notes = payload.get('grid_evidence', [])
+    if not isinstance(grid_notes, list) or any(
+        not isinstance(note, dict) or note.get('source_hash') != _source_digest(source)
+        or note.get('parser_signature') != cache_signature()
+        or note.get('ocr_signature') != _ocr_cache_signature() for note in grid_notes
+    ):
+        return None
+    source['_english_grid_evidence'] = grid_notes
     return payload["blocks"]
 
 
@@ -377,6 +387,17 @@ def visual_notice_consensus_evidence(source: dict[str, Any]) -> list[dict[str, A
     notes = source.get('_visual_notice_evidence', [])
     if not isinstance(notes, list):
         return []
+    valid = [note for note in notes if isinstance(note, dict)
+             and note.get('source_hash') == _source_digest(source)
+             and note.get('parser_signature') == cache_signature()
+             and note.get('ocr_signature') == _ocr_cache_signature()]
+    return json.loads(json.dumps(valid, ensure_ascii=False))
+
+
+def english_grid_evidence(source: dict[str, Any]) -> list[dict[str, Any]]:
+    if '_english_grid_evidence' not in source:
+        _load_parse_cache(source, str(source.get('kind') or '英方'))
+    notes = source.get('_english_grid_evidence', [])
     valid = [note for note in notes if isinstance(note, dict)
              and note.get('source_hash') == _source_digest(source)
              and note.get('parser_signature') == cache_signature()
@@ -398,6 +419,7 @@ def _write_parse_cache(source: dict[str, Any], kind: str, blocks: list[dict[str,
         "block_count": len(blocks),
         "blocks": blocks,
         "source_evidence": visual_notice_consensus_evidence(source),
+        "grid_evidence": english_grid_evidence(source),
     }
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -623,6 +645,7 @@ def parse_actual_pdf_sources(
 
             LOGGER.info("解析文件: %s kind=%s", file_name, kind)
             source['_visual_notice_evidence'] = []
+            source['_english_grid_evidence'] = []
             parsed: list[dict[str, Any]] = []
             if kind == "中方":
                 parsed = _parse_chinese_pdf_layout(source, file_name)
@@ -888,13 +911,16 @@ def build_slot_table(
     all_students = set(students)
     for week in weeks:
         for weekday in weekdays:
+            day = date_lookup.get((week, weekday))
+            if day is None:
+                day = _date_for_weekday(week, weekday).isoformat()
             for period in periods:
                 occupied = set(occupancy.get((week, weekday, period), set()))
                 free = sorted(all_students - occupied)
                 rows.append(
                     {
                         "week": week,
-                        "date": date_lookup.get((week, weekday), _date_for_weekday(week, weekday).isoformat()),
+                        "date": day,
                         "weekday": weekday,
                         "period": period,
                         "time": period_time_range(period),
@@ -979,6 +1005,8 @@ def _finalize_parsed_blocks(blocks: list[dict[str, Any]], file_name: str, kind: 
 
 def _course_quality(course: Any) -> int:
     text = str(course or "").strip()
+    if text.startswith('待核对占用（'):
+        return -100
     if not text or text == "课程":
         return 0
     score = len(text)
@@ -1122,11 +1150,48 @@ def build_empty_schedule_excel_bytes(
     file_df: pd.DataFrame | None = None,
     correction_df: pd.DataFrame | None = None,
     instructions_df: pd.DataFrame | None = None,
+    weekly_only: bool = False,
+    department: str = "",
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> bytes:
     timetable, _ = validate_timetable(timetable_df)
     member_labels = _export_member_labels(students)
     export_students = _export_member_names(students, member_labels)
     export_occupancy = _export_occupancy(occupancy, member_labels)
+    selected_weeks = sorted({int(week) for week in weeks})
+    dated_headers = {}
+    confirmed_free = None
+    if start_date is not None or end_date is not None:
+        days = selected_days(calendar_df, start_date, end_date, WEEKDAYS)
+        for (week, weekday), day in days.items():
+            dated_headers.setdefault(week, {})[weekday] = day
+        selected_weeks = list(dated_headers)
+        all_slot_df = scoped_rows(all_slot_df, days)
+        confirmed_free = _export_occupancy(free_members_by_slot(all_slot_df, days, timetable["period"]), member_labels)
+        blocks_df = scoped_rows(blocks_df, days)
+        member_course_df = scoped_rows(member_course_df, days)
+    workbook = Workbook()
+    ordered_weeks = selected_weeks or _ordered_weeks_from_calendar(calendar_df)
+    if ordered_weeks:
+        for index, week in enumerate(ordered_weeks):
+            sheet = workbook.active if index == 0 else workbook.create_sheet()
+            sheet.title = f"第{week}周"
+            _populate_weekly_availability_sheet(
+                sheet=sheet, week=week, students=export_students, occupancy=export_occupancy,
+                threshold=threshold, dated_headers=dated_headers.get(week), confirmed_free=confirmed_free,
+            )
+            if department:
+                sheet["A1"] = _excel_safe_cell(f"{department} · {sheet['A1'].value}")
+    else:
+        sheet = workbook.active
+        sheet.title = "空课表"
+        _populate_empty_weekly_sheet(sheet)
+    output = io.BytesIO()
+    if weekly_only:
+        workbook.save(output)
+        return output.getvalue()
+
     if all_slot_df is None or all_slot_df.empty:
         all_slot_df = build_slot_table(
             export_occupancy,
@@ -1141,7 +1206,6 @@ def build_empty_schedule_excel_bytes(
     export_df = all_slot_df.copy()
     if threshold:
         export_df = export_df[export_df["free_count"] >= threshold]
-    selected_weeks = sorted({int(week) for week in weeks})
     if selected_weeks and "week" in export_df.columns:
         export_df = export_df[export_df["week"].astype(int).isin(selected_weeks)]
     export_df = export_df.rename(
@@ -1166,29 +1230,12 @@ def build_empty_schedule_excel_bytes(
         [
             {"项目": "成员数量", "值": len(students)},
             {"项目": "时间格数量", "值": len(all_slot_df)},
-            {"项目": "周次工作表数量", "值": len(weeks)},
+            {"项目": "周次工作表数量", "值": len(dated_headers) if dated_headers else len(weeks)},
             {"项目": "生成时间", "值": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
         ]
     )
-
-    output = io.BytesIO()
-    workbook = Workbook()
-    ordered_weeks = selected_weeks or _ordered_weeks_from_calendar(calendar_df)
-    if ordered_weeks:
-        for index, week in enumerate(ordered_weeks):
-            sheet = workbook.active if index == 0 else workbook.create_sheet()
-            sheet.title = f"第{week}周"
-            _populate_weekly_availability_sheet(
-                sheet=sheet,
-                week=week,
-                students=export_students,
-                occupancy=export_occupancy,
-                threshold=threshold,
-            )
-    else:
-        sheet = workbook.active
-        sheet.title = "空课表"
-        _populate_empty_weekly_sheet(sheet)
+    if dated_headers:
+        logs_df.loc[len(logs_df)] = {"项目": "导出日期", "值": f"{start_date} 至 {end_date}"}
 
     _append_dataframe_sheet(workbook, "空课明细", export_df)
     _append_dataframe_sheet(workbook, "成员完整性检查", member_df)
@@ -1378,6 +1425,18 @@ def _export_block_dataframe(
 
     if frame is None or frame.empty:
         return pd.DataFrame()
+    # A reviewed course can span several periods. Export each occupied period
+    # just like parser-produced single-period records, including its own clock.
+    if "periods" in frame.columns:
+        rows = []
+        for row in frame.to_dict("records"):
+            periods = row.get("periods")
+            if isinstance(periods, (list, tuple)) and periods:
+                for period in dict.fromkeys(int(value) for value in periods):
+                    rows.append({**row, "period": period, "time": period_time_range(period)})
+            else:
+                rows.append(row)
+        frame = pd.DataFrame(rows)
     columns = [column for column in _BLOCK_EXPORT_COLUMNS if column in frame.columns]
     if not columns:
         return pd.DataFrame()
@@ -1435,18 +1494,27 @@ def _populate_weekly_availability_sheet(
     students: list[str],
     occupancy: dict[tuple[int, str, int], set[str]],
     threshold: int,
+    dated_headers: dict[str, date] | None = None,
+    confirmed_free: dict[tuple[int, str, int], set[str]] | None = None,
 ) -> None:
     """Create the association-style weekly free-time matrix."""
 
-    _prepare_weekly_sheet_grid(sheet)
+    weekdays = list(dated_headers) if dated_headers else EXPORT_WEEKDAYS
+    _prepare_weekly_sheet_grid(sheet, len(weekdays))
     sheet["A1"] = f"第{_to_chinese_number(week)}周空课表"
+    if dated_headers:
+        sheet["A1"] = f"{sheet['A1'].value}（{min(dated_headers.values())} 至 {max(dated_headers.values())}）"
 
-    for day_index, weekday in enumerate(EXPORT_WEEKDAYS):
+    for day_index, weekday in enumerate(weekdays):
         start_column = 2 + day_index * 4
         end_column = start_column + 3
         sheet.merge_cells(start_row=3, start_column=start_column, end_row=4, end_column=end_column)
         cell = sheet.cell(row=3, column=start_column)
-        cell.value = weekday
+        if dated_headers:
+            cell.value = dated_headers[weekday]
+            cell.number_format = f'yyyy-mm-dd" {weekday}"'
+        else:
+            cell.value = weekday
         cell.font = Font(name="宋体", size=12)
 
     for label, periods, start_row in EXPORT_PERIOD_BLOCKS:
@@ -1456,18 +1524,20 @@ def _populate_weekly_availability_sheet(
         period_cell.value = label
         period_cell.font = Font(name="宋体", size=11)
 
-        for day_index, weekday in enumerate(EXPORT_WEEKDAYS):
+        for day_index, weekday in enumerate(weekdays):
             start_column = 2 + day_index * 4
             end_column = start_column + 3
             sheet.merge_cells(start_row=start_row, start_column=start_column, end_row=end_row, end_column=end_column)
-            free_members = _free_members_for_period_block(
-                occupancy=occupancy,
-                students=students,
-                week=week,
-                weekday=weekday,
-                periods=periods,
-            )
-            value = "，".join(free_members) if not threshold or len(free_members) >= threshold else ""
+            if confirmed_free is None:
+                free_members = _free_members_for_period_block(
+                    occupancy=occupancy, students=students, week=week, weekday=weekday, periods=periods,
+                )
+            else:
+                # The weekly matrix combines periods. Only names confirmed free
+                # for every constituent period may appear in the combined cell.
+                slots = [(week, weekday, p) for p in periods]
+                free_members = [name for name in students if all(name in confirmed_free.get(k, ()) for k in slots)]
+            value = "，".join(free_members) if len(free_members) >= threshold else ""
             cell = sheet.cell(row=start_row, column=start_column)
             cell.value = _excel_safe_cell(value)
             cell.font = Font(name="宋体", size=11)
@@ -1508,25 +1578,26 @@ def _named_style(
     return name
 
 
-def _prepare_weekly_sheet_grid(sheet: Worksheet) -> None:
+def _prepare_weekly_sheet_grid(sheet: Worksheet, day_count: int = len(EXPORT_WEEKDAYS)) -> None:
     thin = Side(style="thin", color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     workbook = sheet.parent
     grid_style = _named_style(workbook, "空谷周表网格", alignment=alignment, border=border)
 
-    sheet.merge_cells("A1:U2")
+    last_column = 1 + 4 * day_count
+    sheet.merge_cells(start_row=1, start_column=1, end_row=2, end_column=last_column)
     title = sheet["A1"]
     title.font = Font(name="宋体", size=18)
     title.fill = PatternFill(fill_type="solid", fgColor="FFFFFF")
 
     sheet.merge_cells("A3:A4")
-    for column in range(1, 22):
+    for column in range(1, last_column + 1):
         sheet.column_dimensions[get_column_letter(column)].width = 13
     max_row = 4 + len(EXPORT_PERIOD_BLOCKS) * 14
     for row in range(1, max_row + 1):
         sheet.row_dimensions[row].height = 18
-        for column in range(1, 22):
+        for column in range(1, last_column + 1):
             sheet.cell(row=row, column=column).style = grid_style
     sheet.row_dimensions[1].height = 24
     sheet.row_dimensions[2].height = 24
@@ -1779,7 +1850,9 @@ def _extract_pdf_ocr_items(
                 and payload["items"]
             ):
                 LOGGER.info("命中 OCR 坐标缓存: %s", _source_name(source))
-                return payload["items"]
+                from core.ocr_notice_refinement import refine_notice_items
+                from core.ocr_location_refinement import refine_missing_locations
+                return refine_missing_locations(source, refine_notice_items(source, payload['items'], sys.modules[__name__]), sys.modules[__name__])
         except Exception as exc:
             LOGGER.warning("OCR 坐标缓存读取失败: %s error=%s", cache_path.name, exc)
 
@@ -1834,7 +1907,9 @@ def _extract_pdf_ocr_items(
         cache_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     except Exception as exc:
         LOGGER.warning("OCR 坐标缓存写入失败: %s error=%s", cache_path.name, exc)
-    return payload["items"]
+    from core.ocr_notice_refinement import refine_notice_items
+    from core.ocr_location_refinement import refine_missing_locations
+    return refine_missing_locations(source, refine_notice_items(source, payload['items'], sys.modules[__name__]), sys.modules[__name__])
 
 
 def _build_ocr_engine():
@@ -2636,6 +2711,9 @@ def _parse_chinese_full_term_visual_image(gray: Any, name: str, ocr_items: list[
     # 每个 OCR 项的中心点/归一化文本只算一次：逐格扫描曾对 389×735 项重复求中心，
     # 单页因此多花约 0.4 秒。entries = (原始x, 原始y, 缩放x, 缩放y, 文本, 可忽略)。
     entries = _prepare_visual_entries(ocr_items, x_scale, y_scale)
+    verified_notices = [[float(value)*(x_scale if axis%2==0 else y_scale)
+                         for axis,value in enumerate(item['verified_notice_bounds'])]
+                        for item in ocr_items if item.get('verified_notice_bounds')]
     blocks: list[dict[str, Any]] = []
     slot_units = [("1-2", 2), ("3-4", 2), ("午", 1), ("5-6", 2), ("7-8", 2), ("9-11", 3)]
     unit_total = sum(unit for _label, unit in slot_units)
@@ -2657,7 +2735,10 @@ def _parse_chinese_full_term_visual_image(gray: Any, name: str, ocr_items: list[
             occupied_cells: list[tuple[str, list[str], float]] = []
             for label, units in slot_units:
                 next_cursor = cursor + unit_width * units
-                if label != "午" and _visual_cell_has_occupancy(
+                is_notice = any(left < (cursor+next_cursor)/2 < right
+                                and top < (row_top+row_bottom)/2 < bottom
+                                for left,top,right,bottom in verified_notices)
+                if label != "午" and not is_notice and _visual_cell_has_occupancy(
                     text_mask,
                     int(cursor),
                     int(row_top),
@@ -3435,6 +3516,19 @@ def _parse_english_ocr_week_grid(
         int(item.get("page", 0)), float(item.get("y0", 0)),
         float(item.get("x0", 0)), str(item.get("text", "")),
     ))
+    from core.english_continuation import link_page_edge_dates
+    page_ids = sorted({int(i.get('page', 0)) for i in items})
+    original_pages = [[{**i, 'text': _normalize_ocr_text(str(i['text']))}
+                       for i in items if int(i.get('page', 0)) == p] for p in page_ids]
+    sizes = [(max((float(i.get('page_width', 0)) for i in words), default=0),
+              max((float(i.get('page_height', 0)) for i in words), default=0))
+             for words in original_pages]
+    linked_pages, edge_notes = link_page_edge_dates(original_pages, sizes, sys.modules[__name__])
+    items = [i for words in linked_pages for i in words]
+    source.setdefault('_english_grid_evidence', []).extend(
+        {**note, 'page': page_ids[note['page']], 'source_hash': _source_digest(source),
+         'parser_signature': cache_signature(), 'ocr_signature': _ocr_cache_signature()}
+        for note in edge_notes)
     name = _extract_chinese_name("", file_name)
     date_grid_blocks: list[dict[str, Any]] = []
     fallback_columns: list[dict[str, Any]] | None = None
@@ -3466,6 +3560,8 @@ def _parse_english_ocr_week_grid(
         ))
         fallback_columns = best_template["columns"]
     for page in sorted({int(item.get("page", 0)) for item in items}):
+        page_gray = None
+        popup_underlay = None
         page_items = [
             {
                 "x0": float(item.get("x0", 0)),
@@ -3477,15 +3573,19 @@ def _parse_english_ocr_week_grid(
             for item in items
             if int(item.get("page", 0)) == page and str(item.get("text", "")).strip()
         ]
+        row_candidate_items = page_items
         doc = _open_pdf_document(source)
         if doc is not None:
             try:
                 image = _page_image(source, doc[page], page, 120)
                 if image is not None:
+                    page_gray = image[:, :, :3].mean(axis=2).astype('uint8')
                     from core.bordered_timetables import english_header_items, english_course_row_items
                     page_items = english_course_row_items(
                         image[:, :, :3].mean(axis=2).astype('uint8'), page_items,
                     )
+                    from core.english_popup_underlay import inspect_underlay
+                    popup_underlay = inspect_underlay(doc[page],page_items)
                     border_headers = english_header_items(image[:, :, :3].mean(axis=2).astype('uint8'))
                     if border_headers:
                         header_ys = {_item_center(item)[1] for item in border_headers}
@@ -3514,15 +3614,26 @@ def _parse_english_ocr_week_grid(
                     "x1": float(column["center"]) + 2,
                     "y1": 8.0,
                     "text": str(column["period"]),
+                    **{key: column[key] for key in ("cell_left", "cell_right") if key in column},
                 }
                 for column in fallback_columns
             )
-        page_blocks = _parse_english_grid_page_items_from_pdf_words(page_items, name)
-        if page_blocks:
+        from core.english_bordered_grid import parse_dated_cells
+        grid_notes: list[dict[str, Any]] = []
+        geometric = parse_dated_cells(page_gray, page_items, name, page=page,
+            evidence_out=grid_notes, popup_underlay=popup_underlay,
+            row_candidate_items=row_candidate_items) if page_gray is not None else None
+        source.setdefault('_english_grid_evidence', []).extend(
+            {**note, 'source_hash': _source_digest(source), 'parser_signature': cache_signature(),
+             'ocr_signature': _ocr_cache_signature()} for note in grid_notes
+        )
+        page_blocks = geometric if geometric is not None else _parse_english_grid_page_items_from_pdf_words(page_items, name)
+        if page_blocks and geometric is None:
             page_blocks.extend(_english_ocr_merged_cell_supplements(source, page, page_items, page_blocks))
         date_grid_blocks.extend(page_blocks)
     if date_grid_blocks:
-        return date_grid_blocks
+        from core.english_split_course import recover_split_courses
+        return recover_split_courses(source, date_grid_blocks, items, sys.modules[__name__])
 
     normalized_text = "\n".join(_normalize_ocr_text(str(item.get("text", ""))) for item in items)
     if "第" not in normalized_text or "周" not in normalized_text or "周一" not in normalized_text:
@@ -3655,9 +3766,18 @@ def _parse_english_pdf_grid_layout(source: dict[str, Any], file_name: str) -> li
     blocks: list[dict[str, Any]] = []
     fallback_columns: list[dict[str, Any]] | None = None
     try:
-        for page in doc:
+        from core.english_continuation import link_page_edge_dates
+        pages = list(doc)
+        word_pages, notes = link_page_edge_dates(
+            [_page_words(page) for page in pages],
+            [(float(getattr(getattr(page, 'rect', None), 'width', 0)),
+              float(getattr(getattr(page, 'rect', None), 'height', 0))) for page in pages],
+            sys.modules[__name__])
+        source.setdefault('_english_grid_evidence', []).extend(
+            {**note, 'source_hash': _source_digest(source), 'parser_signature': cache_signature(),
+             'ocr_signature': _ocr_cache_signature()} for note in notes)
+        for page, items in zip(pages, word_pages):
             raise_if_cancelled()
-            items = _page_words(page)
             if not items:
                 continue
             headers = _find_english_period_header_rows(items)
@@ -3671,6 +3791,7 @@ def _parse_english_pdf_grid_layout(source: dict[str, Any], file_name: str) -> li
                         "x1": float(column["center"]) + 2,
                         "y1": 8.0,
                         "text": str(column["period"]),
+                        "inherited_columns": True,
                     }
                     for column in fallback_columns
                 )
@@ -3727,6 +3848,8 @@ def _parse_english_grid_page_items_from_rectangles(
         row_y = float(row["y"])
         header = max((h for h in headers if h["y"] < row_y), key=lambda h: h["y"], default=headers[0])
         centers = {int(column["period"]): float(column["center"]) for column in header["columns"]}
+        from core.english_clock_axis import fit_clock_axis, midday_periods
+        clock_axis = fit_clock_axis(header['columns'])
         gap = centers[5] - centers[4]
         normal_gap = max(1.0, centers[2] - centers[1])
         midday_centers = (
@@ -3736,7 +3859,7 @@ def _parse_english_grid_page_items_from_rectangles(
         previous = float(days[index - 1]["y"]) if index else None
         following = float(days[index + 1]["y"]) if index + 1 < len(days) else None
         top = (previous + row_y) / 2 if previous is not None else row_y - 20
-        if header["y"] < row_y:
+        if header["y"] < row_y and not header.get('inherited_columns'):
             top = max(top, float(header["y"]) + 8)
         bottom = (following + row_y) / 2 if following is not None else row_y + 24
         by_rectangle: dict[tuple[float, float, float, float], list[dict[str, Any]]] = defaultdict(list)
@@ -3760,7 +3883,9 @@ def _parse_english_grid_page_items_from_rectangles(
             by_rectangle[rect].append(word)
         for rect, words in by_rectangle.items():
             periods = [period for period, center in centers.items() if rect[0] - 1 <= center <= rect[2] + 1]
-            if unmapped_midday is not None and any(rect[0] - 1 <= center <= rect[2] + 1 for center in midday_centers):
+            noon_periods = midday_periods(clock_axis, rect[0], rect[2])
+            periods.extend(p for p in noon_periods if p not in periods)
+            if unmapped_midday is not None and not noon_periods and any(rect[0] - 1 <= center <= rect[2] + 1 for center in midday_centers):
                 unmapped_midday.append({"date": row["date"].isoformat(), "cell": rect})
             if not periods:
                 continue
@@ -3844,7 +3969,7 @@ def _parse_english_grid_page_items_from_pdf_words(items: list[dict[str, Any]], n
         next_day_y = day_rows[index + 1]["y"] if index + 1 < len(day_rows) else None
         next_header_y = min((row["y"] for row in header_rows if row["y"] > row_y), default=row_y + 80)
         row_top = (previous_day_y + row_y) / 2 if previous_day_y is not None else row_y - ordinary_gap / 2
-        if header["y"] < row_y:
+        if header["y"] < row_y and not header.get('inherited_columns'):
             # A repeated header between weeks can fall inside the midpoint
             # band for the next Monday. Its leftover line tokens then prefix
             # real course names with "-", causing the final filter to drop them.
@@ -3942,6 +4067,7 @@ def _find_english_period_header_rows(items: list[dict[str, Any]]) -> list[dict[s
                 "y": sum(_item_center(item)[1] for item in group) / len(group),
                 "columns": columns,
                 "direct_count": sum(1 for column in columns if not column.get("synthetic")),
+                "inherited_columns": all(item.get('inherited_columns') for item in group),
             }
         )
     return _align_english_header_rows(sorted(rows, key=lambda row: row["y"]))
@@ -4056,6 +4182,8 @@ def _extract_english_period_time_header_numbers(token: str) -> list[int]:
 
 
 def _find_english_day_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    from core.english_dates import normalize_weekday_label
+    items=[{**i,'text':normalize_weekday_label(i['text']) or i['text']} for i in items]
     rows: list[dict[str, Any]] = []
     weekday_items = [
         item
@@ -4106,7 +4234,13 @@ def _find_english_day_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         if WEEKDAYS[day.weekday()] != ENGLISH_WEEKDAY_MAP[weekday_text]:
             continue
-        rows.append({"weekday_text": weekday_text, "date": day, "y": _item_center(item)[1]})
+        row = {"weekday_text": weekday_text, "date": day, "y": _item_center(item)[1]}
+        if item.get('date_evidence'):
+            row['date_evidence'] = item['date_evidence']
+        rows.append(row)
+    from core.english_dates import recover_weekday_dates, recover_date_only_edges
+    rows = recover_weekday_dates(rows, items)
+    rows = recover_date_only_edges(rows, items)
     dedup: dict[date, dict[str, Any]] = {}
     for row in rows:
         dedup.setdefault(row["date"], row)
@@ -4282,6 +4416,8 @@ def _split_english_ocr_clock_course_items(items: list[dict[str, Any]]) -> list[d
 
 
 def _is_english_grid_noise_token(token: str) -> bool:
+    if re.search(r"^Timetable\s*for|\bSino[- ]British\b|https?://", token, re.IGNORECASE):
+        return True
     if not token or token in WEEKDAYS:
         return True
     if re.fullmatch(r"[A-Z]", token):
@@ -4472,8 +4608,12 @@ def _parse_date(text: str) -> date:
 
 
 def _is_english_date_token(text: str) -> bool:
+    # Browser URL query dates and print timestamps are not table date cells.
+    compact=str(text).strip().strip('.,_，。 ')
+    if not re.fullmatch(r'(?:20\d{2}[-/ ]?\d{2}[-/ ]?\d{2}|\d{2}/\d{2})',compact):
+        return False
     try:
-        day = _parse_date(str(text))
+        day = _parse_date(compact)
     except Exception:
         return False
     return 2020 <= day.year <= 2035
