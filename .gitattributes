@@ -6,3 +6,7 @@
 *.json text eol=lf
 *.md text eol=lf
 *.py text eol=lf
+
+# These installed resources are verified against byte-level SHA-256 hashes.
+resources/ocr_models/**/inference.yml -text
+assets/brand/agu/manifest*.json -text !eol whitespace=cr-at-eol
